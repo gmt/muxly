@@ -182,6 +182,28 @@ pub const Store = struct {
         self.document.resetView();
     }
 
+    pub fn appendNode(self: *Store, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
+        const node_id = try self.document.appendNode(parent_id, kind, title, .{ .none = {} });
+        return node_id;
+    }
+
+    pub fn updateNode(self: *Store, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
+        if (title) |value| try self.document.setNodeTitle(node_id, value);
+        if (content) |value| try self.document.setNodeContent(node_id, value);
+    }
+
+    pub fn removeNode(self: *Store, node_id: ids.NodeId) !void {
+        try self.document.removeNode(node_id);
+    }
+
+    pub fn clearViewRoot(self: *Store) void {
+        self.document.clearViewRoot();
+    }
+
+    pub fn expandNode(self: *Store, node_id: ids.NodeId) !void {
+        try self.document.setElided(node_id, false);
+    }
+
     fn attachPaneRef(self: *Store, pane_ref: tmux.PaneRef) !ids.NodeId {
         const node_id = try self.document.appendNode(
             self.document.root_node_id,

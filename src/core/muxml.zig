@@ -48,6 +48,11 @@ pub const Node = struct {
         self.content = try allocator.dupe(u8, content);
     }
 
+    pub fn setTitle(self: *Node, allocator: std.mem.Allocator, title: []const u8) !void {
+        allocator.free(self.title);
+        self.title = try allocator.dupe(u8, title);
+    }
+
     pub fn appendContent(self: *Node, allocator: std.mem.Allocator, chunk: []const u8) !void {
         var buffer = std.ArrayList(u8).init(allocator);
         defer buffer.deinit();

@@ -56,6 +56,25 @@ def main() -> None:
         ping = run_cli(env, "ping")
         assert ping["result"]["pong"] is True
 
+        appended = run_cli(env, "node", "append", "1", "subdocument", "notes")
+        assert appended["result"]["nodeId"] > 0
+        node_id = appended["result"]["nodeId"]
+        updated = run_cli(env, "node", "update", str(node_id), "content", "hello document")
+        assert updated["result"]["ok"] is True
+        node = run_cli(env, "node", "get", str(node_id))
+        assert node["result"]["content"] == "hello document"
+
+        root = run_cli(env, "view", "set-root", str(node_id))
+        assert root["result"]["ok"] is True
+        clear_root = run_cli(env, "view", "clear-root")
+        assert clear_root["result"]["ok"] is True
+        elide = run_cli(env, "view", "elide", str(node_id))
+        assert elide["result"]["ok"] is True
+        expand = run_cli(env, "view", "expand", str(node_id))
+        assert expand["result"]["ok"] is True
+        removed = run_cli(env, "node", "remove", str(node_id))
+        assert removed["result"]["ok"] is True
+
         with tempfile.TemporaryDirectory() as temp_dir:
             static_path = pathlib.Path(temp_dir) / "static.txt"
             static_path.write_text("alpha\nbeta\n")

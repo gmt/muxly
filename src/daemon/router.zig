@@ -98,6 +98,47 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"lifecycle\":\"frozen\"}");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "node.append")) {
+        const parent_id = protocol.getInteger(parsed.value.params, "parentId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "parentId is required");
+        const kind_name = protocol.getString(parsed.value.params, "kind") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "kind is required");
+        const title = protocol.getString(parsed.value.params, "title") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "title is required");
+        const kind = parseNodeKind(kind_name) orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported node kind");
+        const node_id = store.appendNode(@intCast(parent_id), kind, title) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to append node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, @tagName(kind));
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "node.update")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const title = protocol.getString(parsed.value.params, "title");
+        const content = protocol.getString(parsed.value.params, "content");
+        store.updateNode(@intCast(node_id), title, content) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to update node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "node.remove")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        store.removeNode(@intCast(node_id)) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to remove node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "session.create")) {
         const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
@@ -247,10 +288,23 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "view.clearRoot")) {
+        store.clearViewRoot();
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "view.elide")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
         store.document.toggleElided(@intCast(node_id)) catch
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "view.expand")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        store.expandNode(@intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
@@ -466,4 +520,13 @@ fn writePaneList(store: *store_mod.Store, writer: anytype) !void {
         }
     }
     try writer.writeAll("]");
+}
+
+fn parseNodeKind(name: []const u8) ?muxly.types.NodeKind {
+    inline for (std.meta.fields(muxly.types.NodeKind)) |field| {
+        if (std.mem.eql(u8, field.name, name)) {
+            return @enumFromInt(field.value);
+        }
+    }
+    return null;
 }

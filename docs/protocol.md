@@ -23,13 +23,19 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 - `document.serialize`
 - `document.freeze`
 - `node.get`
+- `node.append`
+- `node.update`
+- `node.remove`
 - `session.list`
 - `window.list`
 - `pane.list`
 - `graph.get`
 - `view.get`
+- `view.clearRoot`
 - `view.setRoot`
 - `view.elide`
+- `view.expand`
+- `view.reset`
 
 ### Leaf/source operations
 

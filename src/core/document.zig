@@ -69,6 +69,11 @@ pub const Document = struct {
         try self.nodes.items[index].setContent(self.allocator, content);
     }
 
+    pub fn setNodeTitle(self: *Document, node_id: ids.NodeId, title: []const u8) !void {
+        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        try self.nodes.items[index].setTitle(self.allocator, title);
+    }
+
     pub fn findNode(self: *Document, node_id: ids.NodeId) ?*muxml.Node {
         const index = self.findNodeIndex(node_id) orelse return null;
         return &self.nodes.items[index];
@@ -138,6 +143,17 @@ pub const Document = struct {
             }
         }
         try self.elided_node_ids.append(self.allocator, node_id);
+    }
+
+    pub fn setElided(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
+        _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        for (self.elided_node_ids.items, 0..) |existing, index| {
+            if (existing == node_id) {
+                if (!enabled) _ = self.elided_node_ids.swapRemove(index);
+                return;
+            }
+        }
+        if (enabled) try self.elided_node_ids.append(self.allocator, node_id);
     }
 
     pub fn setFollowTail(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
