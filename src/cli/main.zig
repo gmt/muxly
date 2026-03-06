@@ -1,12 +1,105 @@
 const std = @import("std");
+const muxly = @import("muxly");
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
-        \\muxly bootstrap
-        \\  daemon: muxlyd
-        \\  viewer: muxview
-        \\  library: libmuxly
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    if (args.len <= 1) return printUsage();
+
+    var socket_path = muxly.api.defaultSocketPath();
+    var cursor: usize = 1;
+    if (cursor + 1 < args.len and std.mem.eql(u8, args[cursor], "--socket")) {
+        socket_path = args[cursor + 1];
+        cursor += 2;
+    }
+
+    if (cursor >= args.len) return printUsage();
+
+    var client = try muxly.client.Client.init(allocator, socket_path);
+    defer client.deinit();
+
+    const response = if (std.mem.eql(u8, args[cursor], "ping"))
+        try client.request("ping", "{}")
+    else if (std.mem.eql(u8, args[cursor], "initialize"))
+        try client.request("initialize", "{}")
+    else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
+        try client.request("document.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
+        try client.request("document.serialize", "{}")
+    else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file"))
+        blk: {
+            const request_json = try buildAttachFileRequest(allocator, args[cursor + 2], args[cursor + 3]);
+            defer allocator.free(request_json);
+            break :blk try client.requestJson(request_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-tty"))
+        blk: {
+            const request_json = try buildAttachTtyRequest(allocator, args[cursor + 2]);
+            defer allocator.free(request_json);
+            break :blk try client.requestJson(request_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root"))
+        blk: {
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
+            defer allocator.free(params_json);
+            break :blk try client.request("view.setRoot", params_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "elide"))
+        blk: {
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
+            defer allocator.free(params_json);
+            break :blk try client.request("view.elide", params_json);
+        }
+    else
+        return printUsage();
+    defer allocator.free(response);
+
+    try std.io.getStdOut().writer().writeAll(response);
+}
+
+fn jsonStringAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).init(allocator);
+    errdefer buffer.deinit();
+    try std.json.stringify(value, .{}, buffer.writer());
+    return try buffer.toOwnedSlice();
+}
+
+fn buildAttachFileRequest(allocator: std.mem.Allocator, kind: []const u8, path: []const u8) ![]u8 {
+    const path_json = try jsonStringAlloc(allocator, path);
+    defer allocator.free(path_json);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"leaf.source.attach\",\"params\":{{\"kind\":\"{s}\",\"path\":{s}}}}}",
+        .{ kind, path_json },
+    );
+}
+
+fn buildAttachTtyRequest(allocator: std.mem.Allocator, session_name: []const u8) ![]u8 {
+    const session_name_json = try jsonStringAlloc(allocator, session_name);
+    defer allocator.free(session_name_json);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"leaf.source.attach\",\"params\":{{\"kind\":\"tty\",\"sessionName\":{s}}}}}",
+        .{session_name_json},
+    );
+}
+
+fn printUsage() !void {
+    try std.io.getStdOut().writer().writeAll(
+        \\muxly usage:
+        \\  muxly [--socket PATH] ping
+        \\  muxly [--socket PATH] initialize
+        \\  muxly [--socket PATH] document get
+        \\  muxly [--socket PATH] document serialize
+        \\  muxly [--socket PATH] leaf attach-file <static-file|monitored-file> <path>
+        \\  muxly [--socket PATH] leaf attach-tty <session-name>
+        \\  muxly [--socket PATH] view set-root <node-id>
+        \\  muxly [--socket PATH] view elide <node-id>
         \\
     );
 }

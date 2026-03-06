@@ -8,3 +8,7 @@ pub const errors = @import("core/errors.zig");
 pub const capabilities = @import("core/capabilities.zig");
 pub const client = @import("lib/client.zig");
 pub const api = @import("lib/api.zig");
+pub const platform = struct {
+    pub const unix_socket = @import("platform/unix_socket.zig");
+    pub const windows_pipe = @import("platform/windows_pipe.zig");
+};
