@@ -49,9 +49,13 @@ zig build muxview
 ## Documentation
 
 - `docs/architecture.md`
+- `docs/platform-matrix.md`
 - `docs/muxml.md`
 - `docs/protocol.md`
+- `docs/tmux-backend.md`
 - `docs/viewer-architecture.md`
+- `docs/keybinding-model.md`
+- `docs/neovim-integration.md`
 - `docs/demos.md`
 
 ## Examples
