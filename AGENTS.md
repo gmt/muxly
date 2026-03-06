@@ -16,6 +16,26 @@ Terminal automation is a core concern. QEMU multi-arch is used for cross-archite
 
 ### Toolchain & Runtimes
 
+#### Library Language Bindings (11 languages)
+
+The muxly library exposes a C-ABI and is consumed from all of these languages:
+
+| # | Language | Version | FFI Method | Notes |
+|---|---|---|---|---|
+| 1 | CPython | 3.12.3 | ctypes, cffi 2.0 | `python3-dev` headers installed for embedding/extending |
+| 2 | .NET | 8.0.418 (SDK) | P/Invoke (`DllImport`) | Installed via `dotnet-install.sh`; set `DOTNET_CLI_TELEMETRY_OPTOUT=1` |
+| 3 | C | GCC 13.3.0 | Direct linking | Native; `-L. -lmuxly` |
+| 4 | C++ | G++ 13.3.0 | `extern "C"` linking | Native; same as C with `extern "C"` block |
+| 5 | Rust | 1.83.0 | `libloading` crate | "sorta" — dynamic loading via libloading, or static via `#[link]` |
+| 6 | Zig | 0.13.0 | `@cImport` / dlopen | Use `dlopen` approach or `zig cc` with `-lc` for `cImport` |
+| 7 | Go | 1.22.2 | cgo | `CGO_ENABLED=1`; note cgo `#cgo LDFLAGS` does not allow `-Wl,` flags |
+| 8 | Ruby | 3.2.3 | `fiddle` (stdlib) | No gem needed; `require "fiddle/import"` |
+| 9 | JavaScript | Node.js 22.22.0 | `koffi` npm package | Lightweight FFI, no native build step |
+| 10 | TypeScript | 5.9.3 | `koffi` (via tsc+Node) | Same as JS; compile with `tsc --esModuleInterop --module nodenext` |
+| 11 | Lua | LuaJIT 2.1 / Lua 5.4 | LuaJIT `ffi` module | Use LuaJIT for FFI; plain Lua 5.4 requires C extension module |
+
+#### Build & Cross-Compilation Tools
+
 | Category | Tool | Version |
 |---|---|---|
 | C/C++ compiler (native) | gcc / g++ | 13.3.0 |
@@ -24,13 +44,11 @@ Terminal automation is a core concern. QEMU multi-arch is used for cross-archite
 | Build tools | GNU Make / CMake | 4.3 / 3.28 |
 | TUI library | ncurses (libncurses-dev) | 6.4 |
 | tmux (core dependency) | tmux | 3.4 |
-| Rust | rustc / cargo | 1.83.0 |
-| Go | go | 1.22.2 |
-| Python | python3 | 3.12.3 |
-| Node.js | node / npm | 22.22.0 / 10.9.4 |
+| Clang/LLVM | clang | 18.1.3 |
 | Perl | perl | 5.38.2 |
 | Tcl/Expect | expect | 5.45.4 |
-| Clang/LLVM | clang | 18.1.3 |
+| SWIG | swig | 4.2.0 |
+| Cython | cython | 3.2.4 |
 
 ### Cross-Compilation Toolchains
 
@@ -102,6 +120,11 @@ All targets are pre-installed via `rustup target add`. Example: `cargo build --t
 ### Gotchas
 
 - **Zig cc for libraries**: Use `-c` flag to produce object files. Without it, Zig tries to link an executable and fails with "undefined symbol: main".
+- **Zig FFI consumer**: Linking directly with `-lmuxly` can segfault; prefer the `dlopen`/`@cImport("dlfcn.h")` approach with `-lc`.
+- **Go cgo LDFLAGS**: Does not allow `-Wl,` prefixed linker flags (security restriction). Use `LD_LIBRARY_PATH` at runtime instead of `-Wl,-rpath`.
+- **.NET SDK**: Installed to `/usr/local/share/dotnet`; set `DOTNET_CLI_TELEMETRY_OPTOUT=1` to suppress first-run telemetry. `dotnet new` does not support `--quiet`.
+- **Lua FFI**: Only LuaJIT has built-in `ffi` module. Plain Lua 5.4 needs a C extension or `alien` library.
+- **JS/TS FFI**: Use `koffi` npm package (lightweight, no native compile step). Avoid `ffi-napi` which requires `node-gyp` and native build.
 - **Rust Windows arm64**: Uses the `gnullvm` ABI (`aarch64-pc-windows-gnullvm`), not `msvc`.
 - **Go static binaries**: Go produces statically linked Linux binaries by default; for CGo-enabled builds, use `CGO_ENABLED=0` for static linking.
 - libtmux `Pane.split(direction=...)` uses `PaneDirection` enum, not string literals like `"horizontal"`.
