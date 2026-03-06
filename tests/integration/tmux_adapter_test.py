@@ -89,10 +89,19 @@ def main() -> None:
         )
         assert session["result"]["nodeId"] > 0
 
+        sessions = run_cli(env, "session", "list")
+        assert any(item["sessionName"] == SESSION_NAME for item in sessions["result"])
+
         document = run_cli(env, "document", "get")["result"]
         tty_nodes = [node for node in document["nodes"] if node["kind"] == "tty_leaf"]
         assert tty_nodes, document
         pane_id = tty_nodes[-1]["source"]["paneId"]
+        windows = run_cli(env, "window", "list")
+        panes = run_cli(env, "pane", "list")
+        node = run_cli(env, "node", "get", str(session["result"]["nodeId"]))
+        assert any(item["paneId"] == pane_id for item in panes["result"])
+        assert node["result"]["id"] == session["result"]["nodeId"]
+        assert windows["result"]
 
         capture = run_cli(env, "pane", "capture", pane_id)
         assert "integration-tmux" in capture["result"]["content"]

@@ -22,6 +22,10 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 - `document.status`
 - `document.serialize`
 - `document.freeze`
+- `node.get`
+- `session.list`
+- `window.list`
+- `pane.list`
 - `graph.get`
 - `view.get`
 - `view.setRoot`

@@ -28,6 +28,18 @@ pub fn main() !void {
         try client.request("initialize", "{}")
     else if (std.mem.eql(u8, args[cursor], "capabilities") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("capabilities.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
+        blk: {
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
+            defer allocator.free(params_json);
+            break :blk try client.request("node.get", params_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "session") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
+        try client.request("session.list", "{}")
+    else if (std.mem.eql(u8, args[cursor], "window") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
+        try client.request("window.list", "{}")
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
+        try client.request("pane.list", "{}")
     else if (std.mem.eql(u8, args[cursor], "list"))
         try client.request("graph.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "split") and cursor + 2 < args.len)
@@ -409,6 +421,10 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] ping
         \\  muxly [--socket PATH] initialize
         \\  muxly [--socket PATH] capabilities get
+        \\  muxly [--socket PATH] node get <node-id>
+        \\  muxly [--socket PATH] session list
+        \\  muxly [--socket PATH] window list
+        \\  muxly [--socket PATH] pane list
         \\  muxly [--socket PATH] list
         \\  muxly [--socket PATH] split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] capture <pane-id>

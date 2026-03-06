@@ -47,6 +47,38 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "node.get")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node = store.document.findNode(@intCast(node_id)) orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try node.writeJson(result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "session.list")) {
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try writeSessionList(store, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "window.list")) {
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try writeWindowList(store, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.list")) {
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try writePaneList(store, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "document.serialize")) {
         try store.refreshSources();
         var xml = std.ArrayList(u8).init(allocator);
@@ -343,4 +375,95 @@ fn buildError(
     defer buffer.deinit();
     try protocol.writeError(buffer.writer(), id, code, message);
     return try buffer.toOwnedSlice();
+}
+
+fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
+    var seen = std.ArrayList([]const u8).init(store.allocator);
+    defer seen.deinit();
+    try writer.writeAll("[");
+    var first = true;
+    for (store.document.nodes.items) |node| {
+        switch (node.source) {
+            .tty => |tty| {
+                var duplicate = false;
+                for (seen.items) |existing| {
+                    if (std.mem.eql(u8, existing, tty.session_name)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                try seen.append(tty.session_name);
+                if (!first) try writer.writeAll(",");
+                first = false;
+                try writer.writeAll("{\"sessionName\":");
+                try std.json.stringify(tty.session_name, .{}, writer);
+                try writer.writeAll("}");
+            },
+            else => {},
+        }
+    }
+    try writer.writeAll("]");
+}
+
+fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
+    const WindowKey = struct { session: []const u8, window: []const u8 };
+    var seen = std.ArrayList(WindowKey).init(store.allocator);
+    defer seen.deinit();
+    try writer.writeAll("[");
+    var first = true;
+    for (store.document.nodes.items) |node| {
+        switch (node.source) {
+            .tty => |tty| {
+                if (tty.window_id) |window_id| {
+                    var duplicate = false;
+                    for (seen.items) |existing| {
+                        if (std.mem.eql(u8, existing.session, tty.session_name) and std.mem.eql(u8, existing.window, window_id)) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (duplicate) continue;
+                    try seen.append(.{ .session = tty.session_name, .window = window_id });
+                    if (!first) try writer.writeAll(",");
+                    first = false;
+                    try writer.writeAll("{\"sessionName\":");
+                    try std.json.stringify(tty.session_name, .{}, writer);
+                    try writer.writeAll(",\"windowId\":");
+                    try std.json.stringify(window_id, .{}, writer);
+                    try writer.writeAll("}");
+                }
+            },
+            else => {},
+        }
+    }
+    try writer.writeAll("]");
+}
+
+fn writePaneList(store: *store_mod.Store, writer: anytype) !void {
+    try writer.writeAll("[");
+    var first = true;
+    for (store.document.nodes.items) |node| {
+        switch (node.source) {
+            .tty => |tty| {
+                if (tty.pane_id) |pane_id| {
+                    if (!first) try writer.writeAll(",");
+                    first = false;
+                    try writer.writeAll("{\"nodeId\":");
+                    try writer.print("{d}", .{node.id});
+                    try writer.writeAll(",\"sessionName\":");
+                    try std.json.stringify(tty.session_name, .{}, writer);
+                    if (tty.window_id) |window_id| {
+                        try writer.writeAll(",\"windowId\":");
+                        try std.json.stringify(window_id, .{}, writer);
+                    }
+                    try writer.writeAll(",\"paneId\":");
+                    try std.json.stringify(pane_id, .{}, writer);
+                    try writer.writeAll("}");
+                }
+            },
+            else => {},
+        }
+    }
+    try writer.writeAll("]");
 }
