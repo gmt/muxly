@@ -387,6 +387,30 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "bindings.inspect") or
+        std.mem.eql(u8, parsed.value.method, "bindings.validate") or
+        std.mem.eql(u8, parsed.value.method, "bindings.propose"))
+    {
+        return try buildError(allocator, parsed.value.id, .unsupported, "keybinding analysis is scaffolded but not implemented in this slice");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "mouse.set")) {
+        return try buildError(allocator, parsed.value.id, .unsupported, "mouse control is viewer-scaffolded but not implemented in this slice");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "modeline.set") or
+        std.mem.eql(u8, parsed.value.method, "menu.set") or
+        std.mem.eql(u8, parsed.value.method, "menu.project"))
+    {
+        return try buildError(allocator, parsed.value.id, .unsupported, "menu/modeline infrastructure is scaffolded but not implemented in this slice");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "nvim.attach") or
+        std.mem.eql(u8, parsed.value.method, "nvim.detach"))
+    {
+        return try buildError(allocator, parsed.value.id, .unsupported, "Neovim integration is scaffolded but not implemented in this slice");
+    }
+
     return try buildError(allocator, parsed.value.id, .method_not_found, "unknown method");
 }
 

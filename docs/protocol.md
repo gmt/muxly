@@ -72,11 +72,14 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 
 ## Planned-but-not-yet-implemented families
 
-- richer node mutation methods such as `node.append`, `node.update`
 - keybinding analysis methods
 - menu/modeline APIs
 - richer tmux control-mode event/subscription methods
 - Neovim and external menu integration methods
+
+Some later-phase methods are intentionally present only as **structured
+unsupported-capability stubs** so clients receive stable JSON-RPC errors instead
+of `method_not_found`.
 
 The same public protocol should be used by:
 
