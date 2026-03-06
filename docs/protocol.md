@@ -38,16 +38,25 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 - `window.create`
 - `pane.split`
 - `pane.capture`
+- `pane.scroll`
 - `pane.resize`
 - `pane.focus`
 - `pane.sendKeys`
 - `pane.close`
+- `pane.followTail`
+
+### file-backed helpers
+
+- `file.capture`
+- `file.followTail`
 
 ## Current response-shape notes
 
 - `graph.get` currently aliases the same muxml/tree payload returned by
   `document.get` / `view.get`
 - `document.status` returns a smaller lifecycle/count-oriented payload
+- `view.reset` clears local root/elision overrides without mutating ground-truth
+  source structure
 - TTY-backed leaves serialize **derived muxml/view state**, not underlying
   process runtime state
 

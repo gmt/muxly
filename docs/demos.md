@@ -26,5 +26,6 @@ zig build
 ./zig-out/bin/muxlyd
 ./zig-out/bin/muxly capabilities get
 ./zig-out/bin/muxly leaf attach-file static-file /tmp/example.txt
+./zig-out/bin/muxly file capture 3
 ./zig-out/bin/muxview
 ```
