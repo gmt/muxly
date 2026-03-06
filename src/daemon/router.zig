@@ -29,11 +29,21 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
-    if (std.mem.eql(u8, parsed.value.method, "document.get")) {
+    if (std.mem.eql(u8, parsed.value.method, "document.get") or
+        std.mem.eql(u8, parsed.value.method, "graph.get") or
+        std.mem.eql(u8, parsed.value.method, "view.get"))
+    {
         try store.refreshSources();
         var result = std.ArrayList(u8).init(allocator);
         defer result.deinit();
         try store.document.writeJson(result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "document.status")) {
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try store.document.writeStatusJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
@@ -140,6 +150,20 @@ pub fn handleRequest(
         }
 
         return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported leaf source kind");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "leaf.source.get")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node = store.document.findNode(@intCast(node_id)) orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
+
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try result.writer().print("{{\"nodeId\":{d},\"source\":", .{node.id});
+        try muxly.muxml.writeSourceJson(node.source, result.writer());
+        try result.writer().writeAll("}");
+        return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     return try buildError(allocator, parsed.value.id, .method_not_found, "unknown method");

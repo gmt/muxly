@@ -13,6 +13,9 @@ pub const Capabilities = struct {
     supports_tmux_backend: bool = true,
     supports_unix_socket: bool = true,
     supports_named_pipes: bool = true,
+    supports_mouse: bool = false,
+    supports_menu_projection: bool = false,
+    supports_nvim_integration: bool = false,
 
     pub fn writeJson(self: Capabilities, writer: anytype) !void {
         try writer.writeAll("{");
@@ -27,7 +30,10 @@ pub const Capabilities = struct {
         try writer.print("\"supportsRehydrate\":{},", .{self.supports_rehydrate});
         try writer.print("\"supportsTmuxBackend\":{},", .{self.supports_tmux_backend});
         try writer.print("\"supportsUnixSocket\":{},", .{self.supports_unix_socket});
-        try writer.print("\"supportsNamedPipes\":{}", .{self.supports_named_pipes});
+        try writer.print("\"supportsNamedPipes\":{},", .{self.supports_named_pipes});
+        try writer.print("\"supportsMouse\":{},", .{self.supports_mouse});
+        try writer.print("\"supportsMenuProjection\":{},", .{self.supports_menu_projection});
+        try writer.print("\"supportsNvimIntegration\":{}", .{self.supports_nvim_integration});
         try writer.writeAll("}");
     }
 };

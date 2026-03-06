@@ -127,6 +127,21 @@ pub const Document = struct {
         try writer.writeAll("]}");
     }
 
+    pub fn writeStatusJson(self: *const Document, writer: anytype) !void {
+        try writer.writeAll("{");
+        try writer.print("\"id\":{d},", .{self.id});
+        try writer.print("\"lifecycle\":\"{s}\",", .{@tagName(self.lifecycle)});
+        try writer.print("\"rootNodeId\":{d},", .{self.root_node_id});
+        if (self.view_root_node_id) |view_root_node_id| {
+            try writer.print("\"viewRootNodeId\":{d},", .{view_root_node_id});
+        } else {
+            try writer.writeAll("\"viewRootNodeId\":null,");
+        }
+        try writer.print("\"nodeCount\":{d},", .{self.nodes.items.len});
+        try writer.print("\"elidedCount\":{d}", .{self.elided_node_ids.items.len});
+        try writer.writeAll("}");
+    }
+
     pub fn writeXml(self: *const Document, writer: anytype) !void {
         try writer.print("<muxml id=\"{d}\" lifecycle=\"{s}\">", .{
             self.id,

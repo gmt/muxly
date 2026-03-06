@@ -26,6 +26,8 @@ pub fn main() !void {
         try client.request("ping", "{}")
     else if (std.mem.eql(u8, args[cursor], "initialize"))
         try client.request("initialize", "{}")
+    else if (std.mem.eql(u8, args[cursor], "capabilities") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
+        try client.request("capabilities.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "session") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "create"))
         blk: {
             break :blk try requestWithOptionalCommand(allocator, &client, "session.create", args[cursor + 2], if (cursor + 3 < args.len) args[cursor + 3] else null);
@@ -50,6 +52,8 @@ pub fn main() !void {
         }
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("document.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "status"))
+        try client.request("document.status", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
         try client.request("document.serialize", "{}")
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file"))
@@ -58,12 +62,20 @@ pub fn main() !void {
             defer allocator.free(request_json);
             break :blk try client.requestJson(request_json);
         }
+    else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "source-get"))
+        blk: {
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
+            defer allocator.free(params_json);
+            break :blk try client.request("leaf.source.get", params_json);
+        }
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-tty"))
         blk: {
             const request_json = try buildAttachTtyRequest(allocator, args[cursor + 2]);
             defer allocator.free(request_json);
             break :blk try client.requestJson(request_json);
         }
+    else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
+        try client.request("view.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root"))
         blk: {
             const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
@@ -177,13 +189,17 @@ fn printUsage() !void {
         \\muxly usage:
         \\  muxly [--socket PATH] ping
         \\  muxly [--socket PATH] initialize
+        \\  muxly [--socket PATH] capabilities get
         \\  muxly [--socket PATH] session create <session-name> [command]
         \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] pane capture <pane-id>
         \\  muxly [--socket PATH] document get
+        \\  muxly [--socket PATH] document status
         \\  muxly [--socket PATH] document serialize
         \\  muxly [--socket PATH] leaf attach-file <static-file|monitored-file> <path>
+        \\  muxly [--socket PATH] leaf source-get <node-id>
         \\  muxly [--socket PATH] leaf attach-tty <session-name>
+        \\  muxly [--socket PATH] view get
         \\  muxly [--socket PATH] view set-root <node-id>
         \\  muxly [--socket PATH] view elide <node-id>
         \\
