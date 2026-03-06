@@ -62,6 +62,14 @@ pub fn getInteger(params: ?std.json.Value, field_name: []const u8) ?i64 {
     return field.integer;
 }
 
+pub fn getBool(params: ?std.json.Value, field_name: []const u8) ?bool {
+    const value = params orelse return null;
+    if (value != .object) return null;
+    const field = value.object.get(field_name) orelse return null;
+    if (field != .bool) return null;
+    return field.bool;
+}
+
 fn writeId(writer: anytype, id: ?std.json.Value) !void {
     if (id) |value| {
         try std.json.stringify(value, .{}, writer);

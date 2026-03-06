@@ -52,6 +52,16 @@ pub fn main() !void {
         blk: {
             break :blk try requestWithOptionalCommand(allocator, &client, "session.create", args[cursor + 2], if (cursor + 3 < args.len) args[cursor + 3] else null);
         }
+    else if (std.mem.eql(u8, args[cursor], "window") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "create"))
+        blk: {
+            break :blk try requestWindowCreate(
+                allocator,
+                &client,
+                args[cursor + 2],
+                if (cursor + 3 < args.len) args[cursor + 3] else null,
+                if (cursor + 4 < args.len) args[cursor + 4] else null,
+            );
+        }
     else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "split"))
         blk: {
             break :blk try requestSplitPane(
@@ -69,6 +79,28 @@ pub fn main() !void {
             const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
             defer allocator.free(params_json);
             break :blk try client.request("pane.capture", params_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "resize"))
+        blk: {
+            break :blk try requestPaneResize(allocator, &client, args[cursor + 2], args[cursor + 3], args[cursor + 4]);
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "focus"))
+        blk: {
+            break :blk try requestPaneIdOnly(allocator, &client, "pane.focus", args[cursor + 2]);
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "send-keys"))
+        blk: {
+            break :blk try requestPaneSendKeys(
+                allocator,
+                &client,
+                args[cursor + 2],
+                args[cursor + 3],
+                if (cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 4], "--enter")) true else false,
+            );
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "close"))
+        blk: {
+            break :blk try requestPaneIdOnly(allocator, &client, "pane.close", args[cursor + 2]);
         }
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("document.get", "{}")
@@ -206,6 +238,97 @@ fn requestSplitPane(
     return try client.request("pane.split", params_json);
 }
 
+fn requestWindowCreate(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    target: []const u8,
+    window_name: ?[]const u8,
+    command: ?[]const u8,
+) ![]u8 {
+    const target_json = try jsonStringAlloc(allocator, target);
+    defer allocator.free(target_json);
+
+    if (window_name) |name| {
+        const name_json = try jsonStringAlloc(allocator, name);
+        defer allocator.free(name_json);
+        if (command) |value| {
+            const command_json = try jsonStringAlloc(allocator, value);
+            defer allocator.free(command_json);
+            const params_json = try std.fmt.allocPrint(
+                allocator,
+                "{{\"target\":{s},\"windowName\":{s},\"command\":{s}}}",
+                .{ target_json, name_json, command_json },
+            );
+            defer allocator.free(params_json);
+            return try client.request("window.create", params_json);
+        }
+        const params_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"target\":{s},\"windowName\":{s}}}",
+            .{ target_json, name_json },
+        );
+        defer allocator.free(params_json);
+        return try client.request("window.create", params_json);
+    }
+
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"target\":{s}}}", .{target_json});
+    defer allocator.free(params_json);
+    return try client.request("window.create", params_json);
+}
+
+fn requestPaneResize(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    pane_id: []const u8,
+    direction: []const u8,
+    amount_text: []const u8,
+) ![]u8 {
+    const pane_id_json = try jsonStringAlloc(allocator, pane_id);
+    defer allocator.free(pane_id_json);
+    const direction_json = try jsonStringAlloc(allocator, direction);
+    defer allocator.free(direction_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"direction\":{s},\"amount\":{s}}}",
+        .{ pane_id_json, direction_json, amount_text },
+    );
+    defer allocator.free(params_json);
+    return try client.request("pane.resize", params_json);
+}
+
+fn requestPaneIdOnly(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    method: []const u8,
+    pane_id: []const u8,
+) ![]u8 {
+    const pane_id_json = try jsonStringAlloc(allocator, pane_id);
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+    defer allocator.free(params_json);
+    return try client.request(method, params_json);
+}
+
+fn requestPaneSendKeys(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    pane_id: []const u8,
+    keys: []const u8,
+    press_enter: bool,
+) ![]u8 {
+    const pane_id_json = try jsonStringAlloc(allocator, pane_id);
+    defer allocator.free(pane_id_json);
+    const keys_json = try jsonStringAlloc(allocator, keys);
+    defer allocator.free(keys_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"keys\":{s},\"enter\":{s}}}",
+        .{ pane_id_json, keys_json, if (press_enter) "true" else "false" },
+    );
+    defer allocator.free(params_json);
+    return try client.request("pane.sendKeys", params_json);
+}
+
 fn printUsage() !void {
     try std.io.getStdOut().writer().writeAll(
         \\muxly usage:
@@ -216,8 +339,13 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] capture <pane-id>
         \\  muxly [--socket PATH] session create <session-name> [command]
+        \\  muxly [--socket PATH] window create <target-session> [window-name] [command]
         \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] pane capture <pane-id>
+        \\  muxly [--socket PATH] pane resize <pane-id> <direction> <amount>
+        \\  muxly [--socket PATH] pane focus <pane-id>
+        \\  muxly [--socket PATH] pane send-keys <pane-id> <keys> [--enter]
+        \\  muxly [--socket PATH] pane close <pane-id>
         \\  muxly [--socket PATH] document get
         \\  muxly [--socket PATH] document status
         \\  muxly [--socket PATH] document freeze

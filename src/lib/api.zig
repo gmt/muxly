@@ -71,6 +71,94 @@ pub fn paneSplit(
     return try request(allocator, socket_path, "pane.split", params_json);
 }
 
+pub fn paneResize(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    pane_id: []const u8,
+    direction: []const u8,
+    amount: i64,
+) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const direction_json = try std.json.stringifyAlloc(allocator, direction, .{});
+    defer allocator.free(direction_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"direction\":{s},\"amount\":{d}}}",
+        .{ pane_id_json, direction_json, amount },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.resize", params_json);
+}
+
+pub fn paneFocus(allocator: std.mem.Allocator, socket_path: []const u8, pane_id: []const u8) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.focus", params_json);
+}
+
+pub fn paneSendKeys(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    pane_id: []const u8,
+    keys: []const u8,
+    press_enter: bool,
+) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const keys_json = try std.json.stringifyAlloc(allocator, keys, .{});
+    defer allocator.free(keys_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"keys\":{s},\"enter\":{s}}}",
+        .{ pane_id_json, keys_json, if (press_enter) "true" else "false" },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.sendKeys", params_json);
+}
+
+pub fn paneClose(allocator: std.mem.Allocator, socket_path: []const u8, pane_id: []const u8) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.close", params_json);
+}
+
+pub fn windowCreate(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    target: []const u8,
+    window_name: ?[]const u8,
+    command: ?[]const u8,
+) ![]u8 {
+    const target_json = try std.json.stringifyAlloc(allocator, target, .{});
+    defer allocator.free(target_json);
+
+    const params_json = if (window_name) |name| blk: {
+        const name_json = try std.json.stringifyAlloc(allocator, name, .{});
+        defer allocator.free(name_json);
+        if (command) |value| {
+            const command_json = try std.json.stringifyAlloc(allocator, value, .{});
+            defer allocator.free(command_json);
+            break :blk try std.fmt.allocPrint(
+                allocator,
+                "{{\"target\":{s},\"windowName\":{s},\"command\":{s}}}",
+                .{ target_json, name_json, command_json },
+            );
+        }
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"target\":{s},\"windowName\":{s}}}",
+            .{ target_json, name_json },
+        );
+    } else try std.fmt.allocPrint(allocator, "{{\"target\":{s}}}", .{target_json});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "window.create", params_json);
+}
+
 pub fn sessionCreate(
     allocator: std.mem.Allocator,
     socket_path: []const u8,

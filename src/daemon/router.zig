@@ -78,6 +78,19 @@ pub fn handleRequest(
         return try buildNodeAttached(allocator, parsed.value.id, node_id, "tty");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "window.create")) {
+        const target = protocol.getString(parsed.value.params, "target") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
+        const window_name = protocol.getString(parsed.value.params, "windowName");
+        const command = protocol.getString(parsed.value.params, "command");
+        const node_id = store.createTmuxWindow(target, window_name, command) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to create tmux window: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, "tty");
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "pane.split")) {
         const target = protocol.getString(parsed.value.params, "target") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
@@ -105,6 +118,57 @@ pub fn handleRequest(
         try std.json.stringify(capture, .{}, result.writer());
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.resize")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        const direction = protocol.getString(parsed.value.params, "direction") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "direction is required");
+        const amount = protocol.getInteger(parsed.value.params, "amount") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "amount is required");
+        store.resizeTmuxPane(pane_id, direction, amount) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to resize tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.focus")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        store.focusTmuxPane(pane_id) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to focus tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.sendKeys")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        const keys = protocol.getString(parsed.value.params, "keys") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "keys is required");
+        const press_enter = protocol.getBool(parsed.value.params, "enter") orelse false;
+        store.sendKeysTmuxPane(pane_id, keys, press_enter) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to send tmux keys: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.close")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        store.closeTmuxPane(pane_id) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to close tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.setRoot")) {

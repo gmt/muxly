@@ -74,6 +74,39 @@ pub const Document = struct {
         return &self.nodes.items[index];
     }
 
+    pub fn removeNode(self: *Document, node_id: ids.NodeId) !void {
+        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        if (self.nodes.items[index].children.items.len != 0) return error.NodeHasChildren;
+
+        if (self.nodes.items[index].parent_id) |parent_id| {
+            const parent_index = self.findNodeIndex(parent_id) orelse return error.UnknownParent;
+            var child_index: ?usize = null;
+            for (self.nodes.items[parent_index].children.items, 0..) |child_id, idx| {
+                if (child_id == node_id) {
+                    child_index = idx;
+                    break;
+                }
+            }
+            if (child_index) |idx| {
+                _ = self.nodes.items[parent_index].children.swapRemove(idx);
+            }
+        }
+
+        self.nodes.items[index].deinit(self.allocator);
+        _ = self.nodes.swapRemove(index);
+
+        if (self.view_root_node_id != null and self.view_root_node_id.? == node_id) {
+            self.view_root_node_id = null;
+        }
+
+        for (self.elided_node_ids.items, 0..) |elided_id, idx| {
+            if (elided_id == node_id) {
+                _ = self.elided_node_ids.swapRemove(idx);
+                break;
+            }
+        }
+    }
+
     pub fn freeze(self: *Document) void {
         self.lifecycle = .frozen;
     }

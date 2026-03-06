@@ -27,6 +27,23 @@ pub fn createSession(
     return try parsePaneRef(allocator, trimTrailingNewline(result.stdout));
 }
 
+pub fn createWindow(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+    window_name: ?[]const u8,
+    command: ?[]const u8,
+) !PaneRef {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.appendSlice(&.{ "tmux", "new-window", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-t", target });
+    if (window_name) |value| try argv.appendSlice(&.{ "-n", value });
+    if (command) |value| try argv.append(value);
+
+    const result = try run(allocator, argv.items);
+    defer freeRunResult(allocator, result);
+    return try parsePaneRef(allocator, trimTrailingNewline(result.stdout));
+}
+
 pub fn splitPane(
     allocator: std.mem.Allocator,
     target: []const u8,
@@ -57,6 +74,47 @@ pub fn capturePane(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
     }
     allocator.free(result.stderr);
     return result.stdout;
+}
+
+pub fn resizePane(
+    allocator: std.mem.Allocator,
+    pane_id: []const u8,
+    direction: []const u8,
+    amount: i64,
+) !void {
+    const amount_text = try std.fmt.allocPrint(allocator, "{d}", .{amount});
+    defer allocator.free(amount_text);
+
+    const flag = if (std.mem.eql(u8, direction, "left"))
+        "-L"
+    else if (std.mem.eql(u8, direction, "right"))
+        "-R"
+    else if (std.mem.eql(u8, direction, "up") or std.mem.eql(u8, direction, "above"))
+        "-U"
+    else
+        "-D";
+
+    const result = try run(allocator, &.{ "tmux", "resize-pane", "-t", pane_id, flag, amount_text });
+    defer freeRunResult(allocator, result);
+}
+
+pub fn focusPane(allocator: std.mem.Allocator, pane_id: []const u8) !void {
+    const result = try run(allocator, &.{ "tmux", "select-pane", "-t", pane_id });
+    defer freeRunResult(allocator, result);
+}
+
+pub fn sendKeys(allocator: std.mem.Allocator, pane_id: []const u8, keys: []const u8, press_enter: bool) !void {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.appendSlice(&.{ "tmux", "send-keys", "-t", pane_id, keys });
+    if (press_enter) try argv.append("Enter");
+    const result = try run(allocator, argv.items);
+    defer freeRunResult(allocator, result);
+}
+
+pub fn closePane(allocator: std.mem.Allocator, pane_id: []const u8) !void {
+    const result = try run(allocator, &.{ "tmux", "kill-pane", "-t", pane_id });
+    defer freeRunResult(allocator, result);
 }
 
 fn run(allocator: std.mem.Allocator, argv: []const []const u8) !std.process.Child.RunResult {

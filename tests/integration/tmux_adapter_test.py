@@ -90,6 +90,47 @@ def main() -> None:
         capture = run_cli(env, "pane", "capture", pane_id)
         assert "integration-tmux" in capture["result"]["content"]
 
+        send_keys = run_cli(env, "pane", "send-keys", pane_id, "echo from-send-keys", "--enter")
+        assert send_keys["result"]["ok"] is True
+        time.sleep(0.2)
+        capture = run_cli(env, "pane", "capture", pane_id)
+        assert "from-send-keys" in capture["result"]["content"]
+
+        split = run_cli(
+            env,
+            "pane",
+            "split",
+            pane_id,
+            "right",
+            "sh -lc 'printf split-pane\\\\n; sleep 5'",
+        )
+        assert split["result"]["nodeId"] > 0
+        document = run_cli(env, "document", "get")["result"]
+        nodes = {node["id"]: node for node in document["nodes"]}
+        split_pane_id = nodes[split["result"]["nodeId"]]["source"]["paneId"]
+
+        resize = run_cli(env, "pane", "resize", split_pane_id, "left", "5")
+        assert resize["result"]["ok"] is True
+
+        focus = run_cli(env, "pane", "focus", split_pane_id)
+        assert focus["result"]["ok"] is True
+
+        window = run_cli(
+            env,
+            "window",
+            "create",
+            SESSION_NAME,
+            "extra",
+            "sh -lc 'printf window-pane\\\\n; sleep 5'",
+        )
+        assert window["result"]["nodeId"] > 0
+
+        close = run_cli(env, "pane", "close", split_pane_id)
+        assert close["result"]["ok"] is True
+        document = run_cli(env, "document", "get")["result"]
+        node_ids = {node["id"] for node in document["nodes"]}
+        assert split["result"]["nodeId"] not in node_ids
+
         print("integration test passed")
     finally:
         subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], cwd=REPO, env=env, check=False)

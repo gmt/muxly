@@ -108,6 +108,17 @@ pub const Store = struct {
         return try self.attachPaneRef(pane_ref);
     }
 
+    pub fn createTmuxWindow(
+        self: *Store,
+        target: []const u8,
+        window_name: ?[]const u8,
+        command: ?[]const u8,
+    ) !ids.NodeId {
+        var pane_ref = try tmux.createWindow(self.allocator, target, window_name, command);
+        defer pane_ref.deinit(self.allocator);
+        return try self.attachPaneRef(pane_ref);
+    }
+
     pub fn splitTmuxPane(self: *Store, target: []const u8, direction: []const u8, command: ?[]const u8) !ids.NodeId {
         var pane_ref = try tmux.splitPane(self.allocator, target, direction, command);
         defer pane_ref.deinit(self.allocator);
@@ -116,6 +127,29 @@ pub const Store = struct {
 
     pub fn captureTmuxPane(self: *Store, pane_id: []const u8) ![]u8 {
         return try tmux.capturePane(self.allocator, pane_id);
+    }
+
+    pub fn resizeTmuxPane(self: *Store, pane_id: []const u8, direction: []const u8, amount: i64) !void {
+        try tmux.resizePane(self.allocator, pane_id, direction, amount);
+        try self.refreshSources();
+    }
+
+    pub fn focusTmuxPane(self: *Store, pane_id: []const u8) !void {
+        try tmux.focusPane(self.allocator, pane_id);
+        try self.refreshSources();
+    }
+
+    pub fn sendKeysTmuxPane(self: *Store, pane_id: []const u8, keys: []const u8, press_enter: bool) !void {
+        try tmux.sendKeys(self.allocator, pane_id, keys, press_enter);
+        try self.refreshSources();
+    }
+
+    pub fn closeTmuxPane(self: *Store, pane_id: []const u8) !void {
+        try tmux.closePane(self.allocator, pane_id);
+        if (self.findNodeIdByPaneId(pane_id)) |node_id| {
+            _ = self.document.removeNode(node_id) catch {};
+        }
+        try self.refreshSources();
     }
 
     fn attachPaneRef(self: *Store, pane_ref: tmux.PaneRef) !ids.NodeId {
@@ -131,6 +165,20 @@ pub const Store = struct {
         );
         try self.refreshSources();
         return node_id;
+    }
+
+    fn findNodeIdByPaneId(self: *Store, pane_id: []const u8) ?ids.NodeId {
+        for (self.document.nodes.items) |node| {
+            switch (node.source) {
+                .tty => |tty| {
+                    if (tty.pane_id) |value| {
+                        if (std.mem.eql(u8, value, pane_id)) return node.id;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 };
 
