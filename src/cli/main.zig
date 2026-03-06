@@ -1,0 +1,12 @@
+const std = @import("std");
+
+pub fn main() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.writeAll(
+        \\muxly bootstrap
+        \\  daemon: muxlyd
+        \\  viewer: muxview
+        \\  library: libmuxly
+        \\
+    );
+}

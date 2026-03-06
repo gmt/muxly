@@ -39,3 +39,7 @@
 
 # debug information files
 *.dwo
+
+# Zig build outputs
+.zig-cache/
+zig-out/
