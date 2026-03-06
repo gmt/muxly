@@ -12,4 +12,10 @@ pub fn main() !void {
     defer c.muxly_string_free(response_ptr);
 
     try stdout.print("ping => {s}\n", .{std.mem.span(response_ptr)});
+
+    const document_ptr = c.muxly_document_get("/tmp/muxly.sock");
+    if (document_ptr == null) return error.DocumentGetFailed;
+    defer c.muxly_string_free(document_ptr);
+
+    try stdout.print("document => {s}\n", .{std.mem.span(document_ptr)});
 }
