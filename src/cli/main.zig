@@ -80,6 +80,10 @@ pub fn main() !void {
             defer allocator.free(params_json);
             break :blk try client.request("pane.capture", params_json);
         }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "scroll"))
+        blk: {
+            break :blk try requestPaneScroll(allocator, &client, args[cursor + 2], args[cursor + 3], args[cursor + 4]);
+        }
     else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "resize"))
         blk: {
             break :blk try requestPaneResize(allocator, &client, args[cursor + 2], args[cursor + 3], args[cursor + 4]);
@@ -102,6 +106,10 @@ pub fn main() !void {
         blk: {
             break :blk try requestPaneIdOnly(allocator, &client, "pane.close", args[cursor + 2]);
         }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "follow-tail"))
+        blk: {
+            break :blk try requestEnabledByPaneId(allocator, &client, "pane.followTail", args[cursor + 2], args[cursor + 3]);
+        }
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("document.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "status"))
@@ -122,6 +130,16 @@ pub fn main() !void {
             defer allocator.free(params_json);
             break :blk try client.request("leaf.source.get", params_json);
         }
+    else if (std.mem.eql(u8, args[cursor], "file") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "capture"))
+        blk: {
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
+            defer allocator.free(params_json);
+            break :blk try client.request("file.capture", params_json);
+        }
+    else if (std.mem.eql(u8, args[cursor], "file") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "follow-tail"))
+        blk: {
+            break :blk try requestEnabledByNodeId(allocator, &client, "file.followTail", args[cursor + 2], args[cursor + 3]);
+        }
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-tty"))
         blk: {
             const request_json = try buildAttachTtyRequest(allocator, args[cursor + 2]);
@@ -130,6 +148,8 @@ pub fn main() !void {
         }
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("view.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "reset"))
+        try client.request("view.reset", "{}")
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root"))
         blk: {
             const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
@@ -296,6 +316,24 @@ fn requestPaneResize(
     return try client.request("pane.resize", params_json);
 }
 
+fn requestPaneScroll(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    pane_id: []const u8,
+    start_line: []const u8,
+    end_line: []const u8,
+) ![]u8 {
+    const pane_id_json = try jsonStringAlloc(allocator, pane_id);
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"startLine\":{s},\"endLine\":{s}}}",
+        .{ pane_id_json, start_line, end_line },
+    );
+    defer allocator.free(params_json);
+    return try client.request("pane.scroll", params_json);
+}
+
 fn requestPaneIdOnly(
     allocator: std.mem.Allocator,
     client: *muxly.client.Client,
@@ -305,6 +343,42 @@ fn requestPaneIdOnly(
     const pane_id_json = try jsonStringAlloc(allocator, pane_id);
     defer allocator.free(pane_id_json);
     const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+    defer allocator.free(params_json);
+    return try client.request(method, params_json);
+}
+
+fn requestEnabledByPaneId(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    method: []const u8,
+    pane_id: []const u8,
+    enabled_text: []const u8,
+) ![]u8 {
+    const pane_id_json = try jsonStringAlloc(allocator, pane_id);
+    defer allocator.free(pane_id_json);
+    const enabled = if (std.mem.eql(u8, enabled_text, "true")) "true" else "false";
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"enabled\":{s}}}",
+        .{ pane_id_json, enabled },
+    );
+    defer allocator.free(params_json);
+    return try client.request(method, params_json);
+}
+
+fn requestEnabledByNodeId(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    method: []const u8,
+    node_id_text: []const u8,
+    enabled_text: []const u8,
+) ![]u8 {
+    const enabled = if (std.mem.eql(u8, enabled_text, "true")) "true" else "false";
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"nodeId\":{s},\"enabled\":{s}}}",
+        .{ node_id_text, enabled },
+    );
     defer allocator.free(params_json);
     return try client.request(method, params_json);
 }
@@ -342,18 +416,23 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] window create <target-session> [window-name] [command]
         \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] pane capture <pane-id>
+        \\  muxly [--socket PATH] pane scroll <pane-id> <start-line> <end-line>
         \\  muxly [--socket PATH] pane resize <pane-id> <direction> <amount>
         \\  muxly [--socket PATH] pane focus <pane-id>
         \\  muxly [--socket PATH] pane send-keys <pane-id> <keys> [--enter]
         \\  muxly [--socket PATH] pane close <pane-id>
+        \\  muxly [--socket PATH] pane follow-tail <pane-id> <true|false>
         \\  muxly [--socket PATH] document get
         \\  muxly [--socket PATH] document status
         \\  muxly [--socket PATH] document freeze
         \\  muxly [--socket PATH] document serialize
+        \\  muxly [--socket PATH] file capture <node-id>
+        \\  muxly [--socket PATH] file follow-tail <node-id> <true|false>
         \\  muxly [--socket PATH] leaf attach-file <static-file|monitored-file> <path>
         \\  muxly [--socket PATH] leaf source-get <node-id>
         \\  muxly [--socket PATH] leaf attach-tty <session-name>
         \\  muxly [--socket PATH] view get
+        \\  muxly [--socket PATH] view reset
         \\  muxly [--socket PATH] view set-root <node-id>
         \\  muxly [--socket PATH] view elide <node-id>
         \\

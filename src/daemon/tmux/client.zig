@@ -76,6 +76,26 @@ pub fn capturePane(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
     return result.stdout;
 }
 
+pub fn capturePaneRange(
+    allocator: std.mem.Allocator,
+    pane_id: []const u8,
+    start_line: i64,
+    end_line: i64,
+) ![]u8 {
+    const start_text = try std.fmt.allocPrint(allocator, "{d}", .{start_line});
+    defer allocator.free(start_text);
+    const end_text = try std.fmt.allocPrint(allocator, "{d}", .{end_line});
+    defer allocator.free(end_text);
+
+    const result = try run(allocator, &.{ "tmux", "capture-pane", "-p", "-S", start_text, "-E", end_text, "-t", pane_id });
+    if (!success(result.term)) {
+        defer freeRunResult(allocator, result);
+        return error.TmuxCommandFailed;
+    }
+    allocator.free(result.stderr);
+    return result.stdout;
+}
+
 pub fn resizePane(
     allocator: std.mem.Allocator,
     pane_id: []const u8,

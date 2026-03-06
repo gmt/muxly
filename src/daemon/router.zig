@@ -120,6 +120,29 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "pane.scroll")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        const start_line = protocol.getInteger(parsed.value.params, "startLine") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "startLine is required");
+        const end_line = protocol.getInteger(parsed.value.params, "endLine") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "endLine is required");
+        const capture = store.scrollTmuxPane(pane_id, start_line, end_line) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to scroll tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        defer allocator.free(capture);
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try result.writer().writeAll("{\"paneId\":");
+        try std.json.stringify(pane_id, .{}, result.writer());
+        try result.writer().writeAll(",\"content\":");
+        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().writeAll("}");
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "pane.resize")) {
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
@@ -165,6 +188,19 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         store.closeTmuxPane(pane_id) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to close tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.followTail")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "enabled is required");
+        store.setPaneFollowTail(pane_id, enabled) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to set pane follow tail: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
         };
@@ -228,6 +264,41 @@ pub fn handleRequest(
         try muxly.muxml.writeSourceJson(node.source, result.writer());
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "file.capture")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const capture = store.captureFileNode(@intCast(node_id)) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to capture file node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .source_error, message);
+        };
+        defer allocator.free(capture);
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try result.writer().print("{{\"nodeId\":{d},\"content\":", .{node_id});
+        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().writeAll("}");
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "file.followTail")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "enabled is required");
+        store.setFileFollowTail(@intCast(node_id), enabled) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to set file follow tail: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .source_error, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "view.reset")) {
+        store.resetView();
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
     return try buildError(allocator, parsed.value.id, .method_not_found, "unknown method");

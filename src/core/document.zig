@@ -124,6 +124,11 @@ pub const Document = struct {
         self.view_root_node_id = null;
     }
 
+    pub fn resetView(self: *Document) void {
+        self.view_root_node_id = null;
+        self.elided_node_ids.clearRetainingCapacity();
+    }
+
     pub fn toggleElided(self: *Document, node_id: ids.NodeId) !void {
         _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         for (self.elided_node_ids.items, 0..) |existing, index| {
@@ -133,6 +138,11 @@ pub const Document = struct {
             }
         }
         try self.elided_node_ids.append(self.allocator, node_id);
+    }
+
+    pub fn setFollowTail(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        node.follow_tail = enabled;
     }
 
     pub fn writeJson(self: *const Document, writer: anytype) !void {

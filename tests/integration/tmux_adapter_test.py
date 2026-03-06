@@ -67,11 +67,18 @@ def main() -> None:
             assert static_attach["result"]["nodeId"] > 0
             assert monitored_attach["result"]["nodeId"] > 0
 
+            static_capture = run_cli(env, "file", "capture", str(static_attach["result"]["nodeId"]))
+            assert "alpha" in static_capture["result"]["content"]
+
+            monitored_follow = run_cli(env, "file", "follow-tail", str(monitored_attach["result"]["nodeId"]), "false")
+            assert monitored_follow["result"]["ok"] is True
+
             monitored_path.write_text("line-1\nline-2\n")
             document = run_cli(env, "document", "get")["result"]
             nodes = {node["id"]: node for node in document["nodes"]}
             monitored_node = nodes[monitored_attach["result"]["nodeId"]]
             assert "line-2" in monitored_node["content"]
+            assert monitored_node["followTail"] is False
 
         session = run_cli(
             env,
@@ -89,6 +96,12 @@ def main() -> None:
 
         capture = run_cli(env, "pane", "capture", pane_id)
         assert "integration-tmux" in capture["result"]["content"]
+
+        scroll = run_cli(env, "pane", "scroll", pane_id, "-5", "-1")
+        assert "integration-tmux" in scroll["result"]["content"]
+
+        pane_follow = run_cli(env, "pane", "follow-tail", pane_id, "false")
+        assert pane_follow["result"]["ok"] is True
 
         send_keys = run_cli(env, "pane", "send-keys", pane_id, "echo from-send-keys", "--enter")
         assert send_keys["result"]["ok"] is True
@@ -130,6 +143,13 @@ def main() -> None:
         document = run_cli(env, "document", "get")["result"]
         node_ids = {node["id"] for node in document["nodes"]}
         assert split["result"]["nodeId"] not in node_ids
+
+        root = run_cli(env, "view", "set-root", str(window["result"]["nodeId"]))
+        assert root["result"]["ok"] is True
+        reset = run_cli(env, "view", "reset")
+        assert reset["result"]["ok"] is True
+        status = run_cli(env, "document", "status")
+        assert status["result"]["viewRootNodeId"] is None
 
         print("integration test passed")
     finally:

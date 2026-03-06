@@ -64,12 +64,10 @@ pub const Store = struct {
                             @errorName(err),
                         });
                         try node.setContent(self.allocator, fallback.items);
-                        node.follow_tail = file.mode == .monitored;
                         continue;
                     };
                     defer self.allocator.free(content);
                     try node.setContent(self.allocator, content);
-                    node.follow_tail = file.mode == .monitored;
                 },
             }
         }
@@ -129,6 +127,10 @@ pub const Store = struct {
         return try tmux.capturePane(self.allocator, pane_id);
     }
 
+    pub fn scrollTmuxPane(self: *Store, pane_id: []const u8, start_line: i64, end_line: i64) ![]u8 {
+        return try tmux.capturePaneRange(self.allocator, pane_id, start_line, end_line);
+    }
+
     pub fn resizeTmuxPane(self: *Store, pane_id: []const u8, direction: []const u8, amount: i64) !void {
         try tmux.resizePane(self.allocator, pane_id, direction, amount);
         try self.refreshSources();
@@ -150,6 +152,34 @@ pub const Store = struct {
             _ = self.document.removeNode(node_id) catch {};
         }
         try self.refreshSources();
+    }
+
+    pub fn setPaneFollowTail(self: *Store, pane_id: []const u8, enabled: bool) !void {
+        const node_id = self.findNodeIdByPaneId(pane_id) orelse return error.UnknownNode;
+        try self.document.setFollowTail(node_id, enabled);
+    }
+
+    pub fn captureFileNode(self: *Store, node_id: ids.NodeId) ![]u8 {
+        try self.refreshSources();
+        const node = self.document.findNode(node_id) orelse return error.UnknownNode;
+        switch (node.source) {
+            .file => {},
+            else => return error.InvalidSourceKind,
+        }
+        return try self.allocator.dupe(u8, node.content);
+    }
+
+    pub fn setFileFollowTail(self: *Store, node_id: ids.NodeId, enabled: bool) !void {
+        const node = self.document.findNode(node_id) orelse return error.UnknownNode;
+        switch (node.source) {
+            .file => {},
+            else => return error.InvalidSourceKind,
+        }
+        node.follow_tail = enabled;
+    }
+
+    pub fn resetView(self: *Store) void {
+        self.document.resetView();
     }
 
     fn attachPaneRef(self: *Store, pane_ref: tmux.PaneRef) !ids.NodeId {

@@ -42,6 +42,24 @@ pub fn paneCapture(allocator: std.mem.Allocator, socket_path: []const u8, pane_i
     return try request(allocator, socket_path, "pane.capture", params_json);
 }
 
+pub fn paneScroll(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    pane_id: []const u8,
+    start_line: i64,
+    end_line: i64,
+) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"startLine\":{d},\"endLine\":{d}}}",
+        .{ pane_id_json, start_line, end_line },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.scroll", params_json);
+}
+
 pub fn paneSplit(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
@@ -127,6 +145,18 @@ pub fn paneClose(allocator: std.mem.Allocator, socket_path: []const u8, pane_id:
     return try request(allocator, socket_path, "pane.close", params_json);
 }
 
+pub fn paneFollowTail(allocator: std.mem.Allocator, socket_path: []const u8, pane_id: []const u8, enabled: bool) ![]u8 {
+    const pane_id_json = try std.json.stringifyAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"enabled\":{s}}}",
+        .{ pane_id_json, if (enabled) "true" else "false" },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "pane.followTail", params_json);
+}
+
 pub fn windowCreate(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
@@ -191,8 +221,28 @@ pub fn leafSourceGet(allocator: std.mem.Allocator, socket_path: []const u8, node
     return try request(allocator, socket_path, "leaf.source.get", params_json);
 }
 
+pub fn fileCapture(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "file.capture", params_json);
+}
+
+pub fn fileFollowTail(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64, enabled: bool) ![]u8 {
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"nodeId\":{d},\"enabled\":{s}}}",
+        .{ node_id, if (enabled) "true" else "false" },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "file.followTail", params_json);
+}
+
 pub fn capabilitiesGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "capabilities.get", "{}");
+}
+
+pub fn viewReset(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "view.reset", "{}");
 }
 
 pub fn request(
