@@ -7,7 +7,7 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
-    var socket_path = muxly.api.defaultSocketPath();
+    var socket_path = try muxly.api.socketPathFromEnv(allocator);
     if (args.len >= 3 and std.mem.eql(u8, args[1], "--socket")) socket_path = args[2];
 
     const response = try muxly.api.documentGet(allocator, socket_path);
@@ -31,15 +31,27 @@ fn renderDocument(document_value: std.json.Value, writer: anytype) !void {
 
     const title = document_value.object.get("title") orelse return error.InvalidDocument;
     const root_node_id = document_value.object.get("rootNodeId") orelse return error.InvalidDocument;
+    const view_root_node_id = document_value.object.get("viewRootNodeId") orelse return error.InvalidDocument;
+    const elided_node_ids = document_value.object.get("elidedNodeIds") orelse return error.InvalidDocument;
     const nodes = document_value.object.get("nodes") orelse return error.InvalidDocument;
 
-    if (title != .string or root_node_id != .integer or nodes != .array) return error.InvalidDocument;
+    if (title != .string or root_node_id != .integer or nodes != .array or elided_node_ids != .array) return error.InvalidDocument;
 
     try writer.print("muxview :: {s}\n", .{title.string});
-    try renderNodeTree(nodes.array.items, @intCast(root_node_id.integer), 0, writer);
+    const start_node_id: u64 = if (view_root_node_id == .integer)
+        @intCast(view_root_node_id.integer)
+    else
+        @intCast(root_node_id.integer);
+    try renderNodeTree(nodes.array.items, elided_node_ids.array.items, start_node_id, 0, writer);
 }
 
-fn renderNodeTree(nodes: []const std.json.Value, node_id: u64, depth: usize, writer: anytype) !void {
+fn renderNodeTree(
+    nodes: []const std.json.Value,
+    elided_node_ids: []const std.json.Value,
+    node_id: u64,
+    depth: usize,
+    writer: anytype,
+) !void {
     const node = findNode(nodes, node_id) orelse return error.InvalidDocument;
     const title = node.object.get("title") orelse return error.InvalidDocument;
     const kind = node.object.get("kind") orelse return error.InvalidDocument;
@@ -60,9 +72,15 @@ fn renderNodeTree(nodes: []const std.json.Value, node_id: u64, depth: usize, wri
         }
     }
 
+    if (isElided(elided_node_ids, node_id)) {
+        for (0..depth + 1) |_| try writer.writeAll("  ");
+        try writer.writeAll("… elided …\n");
+        return;
+    }
+
     for (children.array.items) |child| {
         if (child != .integer) return error.InvalidDocument;
-        try renderNodeTree(nodes, @intCast(child.integer), depth + 1, writer);
+        try renderNodeTree(nodes, elided_node_ids, @intCast(child.integer), depth + 1, writer);
     }
 }
 
@@ -74,4 +92,12 @@ fn findNode(nodes: []const std.json.Value, node_id: u64) ?std.json.Value {
         if (@as(u64, @intCast(id_value.integer)) == node_id) return node;
     }
     return null;
+}
+
+fn isElided(elided_node_ids: []const std.json.Value, node_id: u64) bool {
+    for (elided_node_ids) |value| {
+        if (value != .integer) continue;
+        if (@as(u64, @intCast(value.integer)) == node_id) return true;
+    }
+    return false;
 }

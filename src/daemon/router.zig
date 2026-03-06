@@ -56,6 +56,47 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"lifecycle\":\"frozen\"}");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "session.create")) {
+        const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
+        const command = protocol.getString(parsed.value.params, "command");
+        const node_id = store.createTmuxSession(session_name, command) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to create tmux session: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, "tty");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.split")) {
+        const target = protocol.getString(parsed.value.params, "target") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
+        const direction = protocol.getString(parsed.value.params, "direction") orelse "below";
+        const command = protocol.getString(parsed.value.params, "command");
+        const node_id = store.splitTmuxPane(target, direction, command) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to split tmux pane: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, "tty");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "pane.capture")) {
+        const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
+        const capture = store.captureTmuxPane(pane_id) catch
+            return try buildError(allocator, parsed.value.id, .backend_unavailable, "unable to capture tmux pane");
+        defer allocator.free(capture);
+        var result = std.ArrayList(u8).init(allocator);
+        defer result.deinit();
+        try result.writer().writeAll("{\"paneId\":");
+        try std.json.stringify(pane_id, .{}, result.writer());
+        try result.writer().writeAll(",\"content\":");
+        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().writeAll("}");
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "view.setRoot")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
@@ -79,16 +120,22 @@ pub fn handleRequest(
         if (std.mem.eql(u8, kind, "static-file") or std.mem.eql(u8, kind, "monitored-file")) {
             const path = protocol.getString(parsed.value.params, "path") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "path is required");
-            const node_id = store.attachFile(path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch
-                return try buildError(allocator, parsed.value.id, .source_error, "unable to attach file source");
+            const node_id = store.attachFile(path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch |err| {
+                const message = try std.fmt.allocPrint(allocator, "unable to attach file source: {s}", .{@errorName(err)});
+                defer allocator.free(message);
+                return try buildError(allocator, parsed.value.id, .source_error, message);
+            };
             return try buildNodeAttached(allocator, parsed.value.id, node_id, kind);
         }
 
         if (std.mem.eql(u8, kind, "tty")) {
             const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
-            const node_id = store.attachTty(session_name) catch
-                return try buildError(allocator, parsed.value.id, .source_error, "unable to attach tty source");
+            const node_id = store.attachTty(session_name) catch |err| {
+                const message = try std.fmt.allocPrint(allocator, "unable to attach tty source: {s}", .{@errorName(err)});
+                defer allocator.free(message);
+                return try buildError(allocator, parsed.value.id, .source_error, message);
+            };
             return try buildNodeAttached(allocator, parsed.value.id, node_id, kind);
         }
 

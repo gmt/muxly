@@ -9,7 +9,8 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     if (args.len <= 1) return printUsage();
 
-    var socket_path = muxly.api.defaultSocketPath();
+    const socket_path_from_env = try muxly.api.socketPathFromEnv(allocator);
+    var socket_path = socket_path_from_env;
     var cursor: usize = 1;
     if (cursor + 1 < args.len and std.mem.eql(u8, args[cursor], "--socket")) {
         socket_path = args[cursor + 1];
@@ -25,6 +26,28 @@ pub fn main() !void {
         try client.request("ping", "{}")
     else if (std.mem.eql(u8, args[cursor], "initialize"))
         try client.request("initialize", "{}")
+    else if (std.mem.eql(u8, args[cursor], "session") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "create"))
+        blk: {
+            break :blk try requestWithOptionalCommand(allocator, &client, "session.create", args[cursor + 2], if (cursor + 3 < args.len) args[cursor + 3] else null);
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "split"))
+        blk: {
+            break :blk try requestSplitPane(
+                allocator,
+                &client,
+                args[cursor + 2],
+                args[cursor + 3],
+                if (cursor + 4 < args.len) args[cursor + 4] else null,
+            );
+        }
+    else if (std.mem.eql(u8, args[cursor], "pane") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "capture"))
+        blk: {
+            const pane_id_json = try jsonStringAlloc(allocator, args[cursor + 2]);
+            defer allocator.free(pane_id_json);
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+            defer allocator.free(params_json);
+            break :blk try client.request("pane.capture", params_json);
+        }
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("document.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
@@ -89,11 +112,74 @@ fn buildAttachTtyRequest(allocator: std.mem.Allocator, session_name: []const u8)
     );
 }
 
+fn requestWithOptionalCommand(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    method: []const u8,
+    name: []const u8,
+    command: ?[]const u8,
+) ![]u8 {
+    const name_json = try jsonStringAlloc(allocator, name);
+    defer allocator.free(name_json);
+
+    if (command) |value| {
+        const command_json = try jsonStringAlloc(allocator, value);
+        defer allocator.free(command_json);
+        const params_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"sessionName\":{s},\"command\":{s}}}",
+            .{ name_json, command_json },
+        );
+        defer allocator.free(params_json);
+        return try client.request(method, params_json);
+    }
+
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"sessionName\":{s}}}", .{name_json});
+    defer allocator.free(params_json);
+    return try client.request(method, params_json);
+}
+
+fn requestSplitPane(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.Client,
+    target: []const u8,
+    direction: []const u8,
+    command: ?[]const u8,
+) ![]u8 {
+    const target_json = try jsonStringAlloc(allocator, target);
+    defer allocator.free(target_json);
+    const direction_json = try jsonStringAlloc(allocator, direction);
+    defer allocator.free(direction_json);
+
+    if (command) |value| {
+        const command_json = try jsonStringAlloc(allocator, value);
+        defer allocator.free(command_json);
+        const params_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"target\":{s},\"direction\":{s},\"command\":{s}}}",
+            .{ target_json, direction_json, command_json },
+        );
+        defer allocator.free(params_json);
+        return try client.request("pane.split", params_json);
+    }
+
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"target\":{s},\"direction\":{s}}}",
+        .{ target_json, direction_json },
+    );
+    defer allocator.free(params_json);
+    return try client.request("pane.split", params_json);
+}
+
 fn printUsage() !void {
     try std.io.getStdOut().writer().writeAll(
         \\muxly usage:
         \\  muxly [--socket PATH] ping
         \\  muxly [--socket PATH] initialize
+        \\  muxly [--socket PATH] session create <session-name> [command]
+        \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
+        \\  muxly [--socket PATH] pane capture <pane-id>
         \\  muxly [--socket PATH] document get
         \\  muxly [--socket PATH] document serialize
         \\  muxly [--socket PATH] leaf attach-file <static-file|monitored-file> <path>

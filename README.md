@@ -53,3 +53,9 @@ zig build muxview
 - `docs/protocol.md`
 - `docs/viewer-architecture.md`
 - `docs/demos.md`
+
+## Examples
+
+- `examples/zig/basic_client.zig`
+- `examples/c/basic_client.c`
+- `examples/python/basic_client.py`

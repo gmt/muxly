@@ -26,3 +26,15 @@ test "document bootstrap model supports append and xml serialization" {
     try document.writeXml(xml.writer());
     try std.testing.expect(std.mem.indexOf(u8, xml.items, "<muxml") != null);
 }
+
+test "protocol request parsing keeps JSON-RPC fields" {
+    const payload =
+        \\{"jsonrpc":"2.0","id":7,"method":"document.get","params":{}}
+    ;
+    const parsed = try muxly.protocol.parseRequest(std.testing.allocator, payload);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("2.0", parsed.value.jsonrpc);
+    try std.testing.expectEqualStrings("document.get", parsed.value.method);
+    try std.testing.expect(parsed.value.id != null);
+}

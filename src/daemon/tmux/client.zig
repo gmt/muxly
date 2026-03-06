@@ -1,0 +1,100 @@
+const std = @import("std");
+
+pub const PaneRef = struct {
+    pane_id: []u8,
+    window_id: []u8,
+    session_name: []u8,
+
+    pub fn deinit(self: *PaneRef, allocator: std.mem.Allocator) void {
+        allocator.free(self.pane_id);
+        allocator.free(self.window_id);
+        allocator.free(self.session_name);
+    }
+};
+
+pub fn createSession(
+    allocator: std.mem.Allocator,
+    session_name: []const u8,
+    command: ?[]const u8,
+) !PaneRef {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+    try argv.appendSlice(&.{ "tmux", "new-session", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-s", session_name });
+    if (command) |value| try argv.append(value);
+
+    const result = try run(allocator, argv.items);
+    defer freeRunResult(allocator, result);
+    return try parsePaneRef(allocator, trimTrailingNewline(result.stdout));
+}
+
+pub fn splitPane(
+    allocator: std.mem.Allocator,
+    target: []const u8,
+    direction: []const u8,
+    command: ?[]const u8,
+) !PaneRef {
+    var argv = std.ArrayList([]const u8).init(allocator);
+    defer argv.deinit();
+
+    try argv.appendSlice(&.{ "tmux", "split-window", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-t", target });
+    if (std.mem.eql(u8, direction, "right") or std.mem.eql(u8, direction, "horizontal")) {
+        try argv.append("-h");
+    } else {
+        try argv.append("-v");
+    }
+    if (command) |value| try argv.append(value);
+
+    const result = try run(allocator, argv.items);
+    defer freeRunResult(allocator, result);
+    return try parsePaneRef(allocator, trimTrailingNewline(result.stdout));
+}
+
+pub fn capturePane(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
+    const result = try run(allocator, &.{ "tmux", "capture-pane", "-p", "-S", "-", "-t", pane_id });
+    if (!success(result.term)) {
+        defer freeRunResult(allocator, result);
+        return error.TmuxCommandFailed;
+    }
+    allocator.free(result.stderr);
+    return result.stdout;
+}
+
+fn run(allocator: std.mem.Allocator, argv: []const []const u8) !std.process.Child.RunResult {
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+    });
+    if (!success(result.term)) {
+        defer freeRunResult(allocator, result);
+        return error.TmuxCommandFailed;
+    }
+    return result;
+}
+
+fn success(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn parsePaneRef(allocator: std.mem.Allocator, line: []const u8) !PaneRef {
+    var parts = std.mem.splitScalar(u8, line, '\t');
+    const pane_id = parts.next() orelse return error.BadTmuxOutput;
+    const window_id = parts.next() orelse return error.BadTmuxOutput;
+    const session_name = parts.next() orelse return error.BadTmuxOutput;
+    return .{
+        .pane_id = try allocator.dupe(u8, pane_id),
+        .window_id = try allocator.dupe(u8, window_id),
+        .session_name = try allocator.dupe(u8, session_name),
+    };
+}
+
+fn trimTrailingNewline(value: []const u8) []const u8 {
+    return std.mem.trimRight(u8, value, "\r\n");
+}
+
+fn freeRunResult(allocator: std.mem.Allocator, result: std.process.Child.RunResult) void {
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+}
