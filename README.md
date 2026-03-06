@@ -52,6 +52,8 @@ Then, in another shell:
 ./zig-out/bin/muxlyd
 ./zig-out/bin/muxly capabilities get
 ./zig-out/bin/muxly document get
+./zig-out/bin/muxly session create demo "sh -lc 'printf hello\\n; sleep 30'"
+./zig-out/bin/muxly pane split %0 right "sh -lc 'printf split\\n; sleep 30'"
 ./zig-out/bin/muxview
 ```
 

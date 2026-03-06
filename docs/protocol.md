@@ -35,8 +35,13 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 ### tmux-backed helpers
 
 - `session.create`
+- `window.create`
 - `pane.split`
 - `pane.capture`
+- `pane.resize`
+- `pane.focus`
+- `pane.sendKeys`
+- `pane.close`
 
 ## Current response-shape notes
 
