@@ -18,3 +18,13 @@ Reference example locations:
 - `examples/c/basic_client.c`
 - `examples/python/basic_client.py`
 - `tests/integration/tmux_adapter_test.py` for an end-to-end tmux/file-backed flow
+
+Quick manual demo flow:
+
+```sh
+zig build
+./zig-out/bin/muxlyd
+./zig-out/bin/muxly capabilities get
+./zig-out/bin/muxly leaf attach-file static-file /tmp/example.txt
+./zig-out/bin/muxview
+```

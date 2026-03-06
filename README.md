@@ -46,6 +46,15 @@ zig build muxly
 zig build muxview
 ```
 
+Then, in another shell:
+
+```sh
+./zig-out/bin/muxlyd
+./zig-out/bin/muxly capabilities get
+./zig-out/bin/muxly document get
+./zig-out/bin/muxview
+```
+
 ## Documentation
 
 - `docs/architecture.md`
