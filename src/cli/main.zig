@@ -28,6 +28,26 @@ pub fn main() !void {
         try client.request("initialize", "{}")
     else if (std.mem.eql(u8, args[cursor], "capabilities") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try client.request("capabilities.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "list"))
+        try client.request("graph.get", "{}")
+    else if (std.mem.eql(u8, args[cursor], "split") and cursor + 2 < args.len)
+        blk: {
+            break :blk try requestSplitPane(
+                allocator,
+                &client,
+                args[cursor + 1],
+                args[cursor + 2],
+                if (cursor + 3 < args.len) args[cursor + 3] else null,
+            );
+        }
+    else if (std.mem.eql(u8, args[cursor], "capture") and cursor + 1 < args.len)
+        blk: {
+            const pane_id_json = try jsonStringAlloc(allocator, args[cursor + 1]);
+            defer allocator.free(pane_id_json);
+            const params_json = try std.fmt.allocPrint(allocator, "{{\"paneId\":{s}}}", .{pane_id_json});
+            defer allocator.free(params_json);
+            break :blk try client.request("pane.capture", params_json);
+        }
     else if (std.mem.eql(u8, args[cursor], "session") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "create"))
         blk: {
             break :blk try requestWithOptionalCommand(allocator, &client, "session.create", args[cursor + 2], if (cursor + 3 < args.len) args[cursor + 3] else null);
@@ -54,6 +74,8 @@ pub fn main() !void {
         try client.request("document.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "status"))
         try client.request("document.status", "{}")
+    else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze"))
+        try client.request("document.freeze", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
         try client.request("document.serialize", "{}")
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file"))
@@ -190,11 +212,15 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] ping
         \\  muxly [--socket PATH] initialize
         \\  muxly [--socket PATH] capabilities get
+        \\  muxly [--socket PATH] list
+        \\  muxly [--socket PATH] split <target-pane> <direction> [command]
+        \\  muxly [--socket PATH] capture <pane-id>
         \\  muxly [--socket PATH] session create <session-name> [command]
         \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] pane capture <pane-id>
         \\  muxly [--socket PATH] document get
         \\  muxly [--socket PATH] document status
+        \\  muxly [--socket PATH] document freeze
         \\  muxly [--socket PATH] document serialize
         \\  muxly [--socket PATH] leaf attach-file <static-file|monitored-file> <path>
         \\  muxly [--socket PATH] leaf source-get <node-id>
