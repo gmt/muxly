@@ -1,5 +1,8 @@
 const std = @import("std");
 const muxly = @import("muxly");
+const cli_args = @import("args.zig");
+const cli_client = @import("client.zig");
+const cli_format = @import("format.zig");
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -10,16 +13,13 @@ pub fn main() !void {
     if (args.len <= 1) return printUsage();
 
     const socket_path_from_env = try muxly.api.socketPathFromEnv(allocator);
-    var socket_path = socket_path_from_env;
-    var cursor: usize = 1;
-    if (cursor + 1 < args.len and std.mem.eql(u8, args[cursor], "--socket")) {
-        socket_path = args[cursor + 1];
-        cursor += 2;
-    }
+    const parsed = cli_args.parse(args, socket_path_from_env);
+    const socket_path = parsed.socket_path;
+    const cursor = parsed.command_index;
 
     if (cursor >= args.len) return printUsage();
 
-    var client = try muxly.client.Client.init(allocator, socket_path);
+    var client = try cli_client.init(allocator, socket_path);
     defer client.deinit();
 
     const response = if (std.mem.eql(u8, args[cursor], "ping"))
@@ -80,7 +80,7 @@ pub fn main() !void {
         return printUsage();
     defer allocator.free(response);
 
-    try std.io.getStdOut().writer().writeAll(response);
+    try cli_format.writeResponse(std.io.getStdOut().writer(), response);
 }
 
 fn jsonStringAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

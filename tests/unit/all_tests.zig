@@ -1,6 +1,12 @@
 const std = @import("std");
 const muxly = @import("muxly");
 
+comptime {
+    _ = @import("protocol_test.zig");
+    _ = @import("view_test.zig");
+    _ = @import("keymap_test.zig");
+}
+
 test "document bootstrap model supports append and xml serialization" {
     var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
     defer document.deinit();
