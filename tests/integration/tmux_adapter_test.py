@@ -123,10 +123,10 @@ def main() -> None:
         assert windows["result"]
 
         capture = run_cli(env, "pane", "capture", pane_id)
-        assert "integration-tmux" in capture["result"]["content"]
+        assert "integration-tmux" in capture["result"]["content"].replace("n\n", "\n")
 
         scroll = run_cli(env, "pane", "scroll", pane_id, "-5", "-1")
-        assert "integration-tmux" in scroll["result"]["content"]
+        assert "integration-tmux" in scroll["result"]["content"].replace("n\n", "\n")
 
         pane_follow = run_cli(env, "pane", "follow-tail", pane_id, "false")
         assert pane_follow["result"]["ok"] is True

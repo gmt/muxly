@@ -245,6 +245,12 @@ pub fn viewReset(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "view.reset", "{}");
 }
 
+pub fn nodeGet(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "node.get", params_json);
+}
+
 pub fn request(
     allocator: std.mem.Allocator,
     socket_path: []const u8,

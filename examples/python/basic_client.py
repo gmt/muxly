@@ -11,6 +11,8 @@ def main() -> None:
     lib.muxly_client_ping.restype = ctypes.c_void_p
     lib.muxly_client_document_get.argtypes = [ctypes.c_void_p]
     lib.muxly_client_document_get.restype = ctypes.c_void_p
+    lib.muxly_client_node_get.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_node_get.restype = ctypes.c_void_p
     lib.muxly_client_view_set_root.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
     lib.muxly_client_view_set_root.restype = ctypes.c_void_p
     lib.muxly_client_graph_get.argtypes = [ctypes.c_void_p]
@@ -39,6 +41,14 @@ def main() -> None:
         print("document response:", ctypes.cast(document_ptr, ctypes.c_char_p).value.decode())
     finally:
         lib.muxly_string_free(document_ptr)
+
+    node_ptr = lib.muxly_client_node_get(client, 2)
+    if not node_ptr:
+        raise SystemExit("node get failed")
+    try:
+        print("node response:", ctypes.cast(node_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(node_ptr)
 
     root_ptr = lib.muxly_client_view_set_root(client, 2)
     if not root_ptr:

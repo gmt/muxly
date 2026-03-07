@@ -26,6 +26,7 @@ char *muxly_client_ping(muxly_client *client);
 char *muxly_client_document_get(muxly_client *client);
 char *muxly_client_graph_get(muxly_client *client);
 char *muxly_client_document_status(muxly_client *client);
+char *muxly_client_node_get(muxly_client *client, unsigned long long node_id);
 char *muxly_client_leaf_source_get(muxly_client *client, unsigned long long node_id);
 char *muxly_client_view_set_root(muxly_client *client, unsigned long long node_id);
 char *muxly_client_view_elide(muxly_client *client, unsigned long long node_id);

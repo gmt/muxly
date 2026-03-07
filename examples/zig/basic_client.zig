@@ -22,6 +22,11 @@ pub fn main() !void {
 
     try stdout.print("document => {s}\n", .{std.mem.span(document_ptr)});
 
+    const node_ptr = c.muxly_client_node_get(client, 2);
+    if (node_ptr == null) return error.NodeGetFailed;
+    defer c.muxly_string_free(node_ptr);
+    try stdout.print("node => {s}\n", .{std.mem.span(node_ptr)});
+
     const root_ptr = c.muxly_client_view_set_root(client, 2);
     if (root_ptr == null) return error.ViewSetRootFailed;
     defer c.muxly_string_free(root_ptr);

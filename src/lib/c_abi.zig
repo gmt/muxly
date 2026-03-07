@@ -58,6 +58,11 @@ export fn muxly_client_document_status(handle: ?*ClientHandle) ?[*:0]u8 {
     return callHandleStringApi(handle, muxly.api.documentStatus);
 }
 
+export fn muxly_client_node_get(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
+    const client = handle orelse return null;
+    return ownedStringResult(client.allocator, muxly.api.nodeGet(client.allocator, client.socket_path, node_id));
+}
+
 export fn muxly_client_leaf_source_get(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
     const client = handle orelse return null;
     return ownedStringResult(client.allocator, muxly.api.leafSourceGet(client.allocator, client.socket_path, node_id));
