@@ -21,7 +21,8 @@ Reference example locations:
 - `examples/zig/basic_client.zig`
 - `examples/c/basic_client.c`
 - `examples/python/basic_client.py`
-- `tests/integration/tmux_adapter_test.py` for an end-to-end tmux/file-backed flow
+- `tests/integration/tmux_adapter_test.py` as the current living-proof mixed-source
+  / tmux mutation flow
 
 Expectation for future phases:
 
@@ -35,7 +36,19 @@ Quick manual demo flow:
 zig build
 ./zig-out/bin/muxlyd
 ./zig-out/bin/muxly capabilities get
-./zig-out/bin/muxly leaf attach-file static-file /tmp/example.txt
-./zig-out/bin/muxly file capture 3
+printf 'alpha\nbeta\n' >/tmp/muxly-static.txt
+printf 'tail-1\n' >/tmp/muxly-monitored.txt
+./zig-out/bin/muxly leaf attach-file static-file /tmp/muxly-static.txt
+./zig-out/bin/muxly leaf attach-file monitored-file /tmp/muxly-monitored.txt
+./zig-out/bin/muxly session create demo "sh -lc 'printf hello-from-tmux\\n; sleep 30'"
+./zig-out/bin/muxly document get
+./zig-out/bin/muxly view set-root 2
 ./zig-out/bin/muxview
+```
+
+Automated living-proof flow:
+
+```sh
+zig build
+python3 tests/integration/tmux_adapter_test.py
 ```

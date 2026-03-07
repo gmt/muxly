@@ -26,6 +26,10 @@ This repository is in active bootstrap. The first development slice focuses on:
 - **Append mode matters.**
   Terminal and log-like regions usually grow downward, so append-friendly
   operations and tail-following views are first-class.
+- **Phase 2 keeps semantics explicit.**
+  Follow-tail is currently a stored node preference, shared view root/elision
+  state lives in the daemon-backed document, and tmux interaction is still
+  command-backed in this slice.
 - **The reference viewer is an ordinary client.**
   `muxview` should consume the same public surfaces as any third-party tool.
 

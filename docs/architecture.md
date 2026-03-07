@@ -12,14 +12,14 @@ The daemon is responsible for durable/shared semantics such as:
 - muxml document state
 - source attachments
 - append-oriented region updates
-- sharable view transforms
+- shared view transforms in the current phase-2 cutline
 - serialization
 
 The viewer is responsible for local interaction and presentation:
 
 - rendering
-- drill-in navigation
-- follow-tail UX
+- drill-in navigation/orientation cues built on public view state
+- follow-tail inspection of the stored node preference
 - mouse/key UX
 
 This split is guidance, not dogma: if a behavior needs to survive outside one
