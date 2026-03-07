@@ -3,6 +3,10 @@
 This directory breaks the larger muxly roadmap into smaller execution tranches
 that are easier for humans and long-running agents to consume.
 
+`done.md` archives work from phases that are already closed on the current
+branch. Active phase files should prefer tracking only unfinished work and
+handoff notes.
+
 ## How to use these files
 
 - treat each phase file as a self-contained execution target
@@ -25,6 +29,7 @@ Every phase should preserve the project-wide rules documented in
 
 ## Suggested sequence
 
+0. `done.md` for closed work already completed on the branch
 1. `phase-1-foundation-and-protocol.md`
 2. `phase-2-tmux-sources-and-views.md`
 3. `phase-3-ordinary-clients-and-bindings.md`
@@ -33,8 +38,8 @@ Every phase should preserve the project-wide rules documented in
 
 ## Current status snapshot
 
-The current branch has already completed most of phases 1-3 and partially
-covers phase 2 extras. Remaining large work is concentrated in:
+Phases 1 and 2 are closed and summarized in `done.md`. Remaining large work is
+concentrated in:
 
 - richer tmux control-mode/state recovery
 - keybinding analysis engine
