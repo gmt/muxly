@@ -56,6 +56,14 @@ def main() -> None:
         ping = run_cli(env, "ping")
         assert ping["result"]["pong"] is True
 
+        capabilities = run_cli(env, "capabilities", "get")["result"]
+        assert capabilities["followTailSemantics"] == "stored-node-preference"
+        assert capabilities["viewStateScope"] == "shared-document"
+        assert capabilities["tmuxBackendMode"] == "command-backed"
+        assert capabilities["supportsUnixSocket"] is True
+        assert capabilities["supportsNamedPipes"] is False
+        assert capabilities["implementedTransports"] == ["unix-domain-socket"]
+
         appended = run_cli(env, "node", "append", "1", "subdocument", "notes")
         assert appended["result"]["nodeId"] > 0
         node_id = appended["result"]["nodeId"]
@@ -86,6 +94,13 @@ def main() -> None:
             assert static_attach["result"]["nodeId"] > 0
             assert monitored_attach["result"]["nodeId"] > 0
 
+            static_source = run_cli(env, "leaf", "source-get", str(static_attach["result"]["nodeId"]))
+            monitored_source = run_cli(env, "leaf", "source-get", str(monitored_attach["result"]["nodeId"]))
+            assert static_source["result"]["source"]["path"] == str(static_path)
+            assert static_source["result"]["source"]["mode"] == "static"
+            assert monitored_source["result"]["source"]["path"] == str(monitored_path)
+            assert monitored_source["result"]["source"]["mode"] == "monitored"
+
             static_capture = run_cli(env, "file", "capture", str(static_attach["result"]["nodeId"]))
             assert "alpha" in static_capture["result"]["content"]
 
@@ -98,6 +113,19 @@ def main() -> None:
             monitored_node = nodes[monitored_attach["result"]["nodeId"]]
             assert "line-2" in monitored_node["content"]
             assert monitored_node["followTail"] is False
+
+            synthetic_parent = run_cli(env, "node", "append", "1", "subdocument", "mixed-notes")
+            synthetic_parent_id = synthetic_parent["result"]["nodeId"]
+            synthetic_child = run_cli(env, "node", "append", str(synthetic_parent_id), "scroll_region", "child-note")
+            synthetic_child_id = synthetic_child["result"]["nodeId"]
+            updated_child = run_cli(env, "node", "update", str(synthetic_child_id), "content", "notes beside live sources")
+            assert updated_child["result"]["ok"] is True
+            remove_parent = run_cli(env, "node", "remove", str(synthetic_parent_id))
+            assert remove_parent["error"]["message"].endswith("NodeHasChildren")
+            remove_child = run_cli(env, "node", "remove", str(synthetic_child_id))
+            assert remove_child["result"]["ok"] is True
+            remove_parent = run_cli(env, "node", "remove", str(synthetic_parent_id))
+            assert remove_parent["result"]["ok"] is True
 
         session = run_cli(
             env,
@@ -172,8 +200,30 @@ def main() -> None:
         node_ids = {node["id"] for node in document["nodes"]}
         assert split["result"]["nodeId"] not in node_ids
 
-        root = run_cli(env, "view", "set-root", str(window["result"]["nodeId"]))
+        viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
+        viewer_scope_id = viewer_scope["result"]["nodeId"]
+        viewer_child = run_cli(env, "node", "append", str(viewer_scope_id), "scroll_region", "viewer-child")
+        viewer_child_id = viewer_child["result"]["nodeId"]
+        viewer_child_update = run_cli(env, "node", "update", str(viewer_child_id), "content", "viewer payload")
+        assert viewer_child_update["result"]["ok"] is True
+
+        root = run_cli(env, "view", "set-root", str(viewer_scope_id))
         assert root["result"]["ok"] is True
+        elide = run_cli(env, "view", "elide", str(viewer_child_id))
+        assert elide["result"]["ok"] is True
+
+        viewer_output = subprocess.check_output(
+            [str(REPO / "zig-out/bin/muxview")],
+            cwd=REPO,
+            env=env,
+            text=True,
+        )
+        assert "view-state :: shared-document" in viewer_output
+        assert f"scope :: node {viewer_scope_id} (viewer-scope)" in viewer_output
+        assert "path :: muxly / viewer-scope" in viewer_output
+        assert "back-out :: muxly view clear-root | muxly view reset" in viewer_output
+        assert "… elided by shared view state …" in viewer_output
+
         reset = run_cli(env, "view", "reset")
         assert reset["result"]["ok"] is True
         status = run_cli(env, "document", "status")

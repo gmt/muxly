@@ -10,6 +10,7 @@ pub const capabilities = @import("core/capabilities.zig");
 pub const view = @import("core/view.zig");
 pub const keymap = @import("core/keymap.zig");
 pub const menu = @import("core/menu.zig");
+pub const viewer_render = @import("viewer/render.zig");
 pub const client = @import("lib/client.zig");
 pub const api = @import("lib/api.zig");
 pub const platform = struct {

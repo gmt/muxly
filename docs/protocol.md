@@ -1,12 +1,18 @@
 # muxly protocol
 
-The public control surface is JSON-RPC 2.0 over pluggable transports.
+The public control surface is JSON-RPC 2.0.
 
-## Initial transports
+## Currently implemented transport
 
 - Unix domain sockets on Linux/macOS
-- named pipes on Windows
-- stdio for testing and embedding
+
+## Transport roadmap notes
+
+- Windows named pipes are scaffolded in naming/API shape only and are **not**
+  yet implemented in this branch
+- stdio embedding/testing transport is planned but **not** yet implemented
+- `capabilities.get` reports only transports that actually exist on the current
+  runtime target
 
 ## Currently implemented methods
 
@@ -65,8 +71,20 @@ The public control surface is JSON-RPC 2.0 over pluggable transports.
 - `graph.get` currently aliases the same muxml/tree payload returned by
   `document.get` / `view.get`
 - `document.status` returns a smaller lifecycle/count-oriented payload
-- `view.reset` clears local root/elision overrides without mutating ground-truth
-  source structure
+- `document.get` / `view.get` currently expose **shared document-scoped** view
+  state through `viewRootNodeId` and `elidedNodeIds`; these are not
+  per-viewer local overrides in this phase
+- `node.remove` currently succeeds only for childless nodes; callers should
+  remove descendants first when editing synthetic muxml structure
+- `view.reset` clears shared root/elision transforms stored in the daemon's
+  current document state without mutating source attachments or node content
+- `pane.followTail` / `file.followTail` currently persist a node-level
+  follow-tail preference only; they do **not** yet change capture-window or
+  scrollback behavior on their own
+- `capabilities.get` explicitly reports:
+  - `followTailSemantics: "stored-node-preference"`
+  - `viewStateScope: "shared-document"`
+  - `tmuxBackendMode: "command-backed"`
 - TTY-backed leaves serialize **derived muxml/view state**, not underlying
   process runtime state
 

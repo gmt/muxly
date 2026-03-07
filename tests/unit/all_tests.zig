@@ -2,8 +2,10 @@ const std = @import("std");
 const muxly = @import("muxly");
 
 comptime {
+    _ = @import("capabilities_test.zig");
     _ = @import("protocol_test.zig");
     _ = @import("view_test.zig");
+    _ = @import("viewer_render_test.zig");
     _ = @import("keymap_test.zig");
 }
 
