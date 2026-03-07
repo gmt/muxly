@@ -62,6 +62,7 @@ Then, in another shell:
 ## Documentation
 
 - `docs/architecture.md`
+- `docs/trine.md`
 - `docs/platform-matrix.md`
 - `docs/muxml.md`
 - `docs/protocol.md`

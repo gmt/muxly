@@ -18,6 +18,10 @@ Turn muxly into a genuinely useful terminal/document system:
 - node editing for synthetic muxml nodes
 - view set-root / clear-root / elide / expand / reset
 - document/node/session/window/pane introspection
+- depthwise traversal / drill-in semantics for nested sub-muxml or embedded TUI
+  boundaries
+- discoverability/orientation cues so users can understand where they are after
+  drilling into a deeper view target
 
 ## Out of scope
 
@@ -31,6 +35,8 @@ Turn muxly into a genuinely useful terminal/document system:
 - tmux mutation flow works end-to-end
 - scroll/follow-tail/view transforms work via public APIs
 - viewer reflects root/elision state
+- drill-in behavior, or its immediate precursor state model, is documented and
+  testable rather than left as an implicit UI trick
 
 ## Current branch status
 

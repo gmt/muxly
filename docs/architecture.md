@@ -24,3 +24,19 @@ The viewer is responsible for local interaction and presentation:
 
 This split is guidance, not dogma: if a behavior needs to survive outside one
 viewer process or be shared across clients, it belongs in the daemon/core.
+
+## Protocol layering realism
+
+The terminal ecosystem is messy enough that muxly should not assume one perfect,
+universal protocol or embedding strategy will solve every problem cleanly.
+
+Acceptable tools include:
+
+- the public JSON-RPC control surface
+- platform-specific helpers where necessary
+- protocol layering
+- adapter/plugin boundaries
+- carefully scoped escape hatches for broken terminal behavior
+
+The standard for choosing among these is not elegance in isolation, but whether
+the result preserves responsiveness, predictability, and control fidelity.

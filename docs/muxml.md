@@ -9,6 +9,19 @@
 - live/mutable while attached to active sources
 - append-oriented in the common case
 
+## Lifecycle / capability vocabulary
+
+Useful working vocabulary for muxml objects:
+
+- **live** — attached to an active backend/runtime and expected to change
+- **read-only** — inspectable but not directly editable
+- **frozen** — detached from active mutation and treated as a captured form
+- **serializable** — exportable into a durable or transferable representation
+- **rehydratable** — potentially restorable into a live form, subject to source
+  and backend limits
+
+These are capabilities and states, not universal promises for every object.
+
 ## Important distinction
 
 A live TTY is **not** the serialized artifact.

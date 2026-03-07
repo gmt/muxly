@@ -3,6 +3,10 @@
 Examples and demos should stay discoverable rather than being buried in test
 fixtures.
 
+They are not merely bonus material: with a system this cross-platform and
+behavior-heavy, runnable examples are part of the documentation contract and a
+key way to demonstrate the framework's value proposition.
+
 Planned first demos:
 
 1. hello-muxly end-to-end
@@ -18,6 +22,12 @@ Reference example locations:
 - `examples/c/basic_client.c`
 - `examples/python/basic_client.py`
 - `tests/integration/tmux_adapter_test.py` for an end-to-end tmux/file-backed flow
+
+Expectation for future phases:
+
+- major feature tranches should leave behind at least one runnable example or
+  demo path
+- examples should show real user value, not only raw API syntax
 
 Quick manual demo flow:
 

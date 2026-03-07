@@ -11,6 +11,18 @@ that are easier for humans and long-running agents to consume.
   list
 - update repo-visible docs and tests as you complete each phase
 
+## Shared doctrine across all phases
+
+Every phase should preserve the project-wide rules documented in
+`docs/trine.md`, especially:
+
+- function over form
+- ordinary-client viewer discipline
+- append-oriented behavior as the common-case bias
+- TTYs as sources rather than serialized process state
+- aggressive testing, including slow/emulator-heavy paths when useful
+- cross-platform realism over fake uniformity
+
 ## Suggested sequence
 
 1. `phase-1-foundation-and-protocol.md`
@@ -29,6 +41,15 @@ covers phase 2 extras. Remaining large work is concentrated in:
 - menu/modeline projection
 - deeper viewer UX
 - Neovim integration
+
+## Testing expectation
+
+Future phases should continue to treat testing as first-class work:
+
+- unit tests for pure logic
+- integration tests for daemon/protocol/tmux behavior
+- cross-target compile checks
+- runnable examples/demos that future agents and users can use as living proofs
 
 ## Why this exists
 
