@@ -71,6 +71,10 @@ Then, in another shell:
 - `docs/neovim-integration.md`
 - `docs/demos.md`
 
+## Phased planning
+
+Repo-visible phased handoff plans live in `phased-planning/`.
+
 ## Examples
 
 - `examples/zig/basic_client.zig`
