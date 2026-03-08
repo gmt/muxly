@@ -1,6 +1,6 @@
 import ctypes
+import json
 import os
-import time
 
 
 def main() -> None:
@@ -15,15 +15,29 @@ def main() -> None:
     lib.muxly_client_document_status.restype = ctypes.c_void_p
     lib.muxly_client_document_get.argtypes = [ctypes.c_void_p]
     lib.muxly_client_document_get.restype = ctypes.c_void_p
-    lib.muxly_client_session_create.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
-    lib.muxly_client_session_create.restype = ctypes.c_void_p
+    lib.muxly_client_node_append.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
+    lib.muxly_client_node_append.restype = ctypes.c_void_p
+    lib.muxly_client_node_update.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong, ctypes.c_char_p, ctypes.c_char_p]
+    lib.muxly_client_node_update.restype = ctypes.c_void_p
+    lib.muxly_client_node_get.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_node_get.restype = ctypes.c_void_p
+    lib.muxly_client_node_remove.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_node_remove.restype = ctypes.c_void_p
+    lib.muxly_client_view_clear_root.argtypes = [ctypes.c_void_p]
+    lib.muxly_client_view_clear_root.restype = ctypes.c_void_p
+    lib.muxly_client_view_set_root.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_view_set_root.restype = ctypes.c_void_p
+    lib.muxly_client_view_elide.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_view_elide.restype = ctypes.c_void_p
+    lib.muxly_client_view_expand.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
+    lib.muxly_client_view_expand.restype = ctypes.c_void_p
+    lib.muxly_client_view_reset.argtypes = [ctypes.c_void_p]
+    lib.muxly_client_view_reset.restype = ctypes.c_void_p
     lib.muxly_client_graph_get.argtypes = [ctypes.c_void_p]
     lib.muxly_client_graph_get.restype = ctypes.c_void_p
     lib.muxly_string_free.argtypes = [ctypes.c_void_p]
 
     socket_path = os.environ.get("MUXLY_SOCKET", "/tmp/muxly.sock").encode()
-    session_name = f"muxly-python-example-{os.getpid()}".encode()
-    command = b"sh -lc 'printf hello-from-python-binding\\n; sleep 1'"
 
     print("muxly version:", lib.muxly_version().decode())
     print("socket path:", socket_path.decode())
@@ -49,15 +63,72 @@ def main() -> None:
     finally:
         lib.muxly_string_free(status_ptr)
 
-    session_ptr = lib.muxly_client_session_create(client, session_name, command)
-    if not session_ptr:
-        raise SystemExit("session create failed")
+    append_ptr = lib.muxly_client_node_append(client, 1, b"subdocument", b"python c abi scaffold")
+    if not append_ptr:
+        raise SystemExit("node append failed")
     try:
-        print("session create response:", ctypes.cast(session_ptr, ctypes.c_char_p).value.decode())
+        append_response = ctypes.cast(append_ptr, ctypes.c_char_p).value.decode()
+        print("node append response:", append_response)
     finally:
-        lib.muxly_string_free(session_ptr)
+        lib.muxly_string_free(append_ptr)
 
-    time.sleep(0.2)
+    node_id = json.loads(append_response)["result"]["nodeId"]
+
+    update_ptr = lib.muxly_client_node_update(client, node_id, None, b"hello synthetic api from python")
+    if not update_ptr:
+        raise SystemExit("node update failed")
+    try:
+        print("node update response:", ctypes.cast(update_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(update_ptr)
+
+    node_ptr = lib.muxly_client_node_get(client, node_id)
+    if not node_ptr:
+        raise SystemExit("node get failed")
+    try:
+        print("node response:", ctypes.cast(node_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(node_ptr)
+
+    set_root_ptr = lib.muxly_client_view_set_root(client, node_id)
+    if not set_root_ptr:
+        raise SystemExit("view set root failed")
+    try:
+        print("view set root response:", ctypes.cast(set_root_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(set_root_ptr)
+
+    elide_ptr = lib.muxly_client_view_elide(client, node_id)
+    if not elide_ptr:
+        raise SystemExit("view elide failed")
+    try:
+        print("view elide response:", ctypes.cast(elide_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(elide_ptr)
+
+    expand_ptr = lib.muxly_client_view_expand(client, node_id)
+    if not expand_ptr:
+        raise SystemExit("view expand failed")
+    try:
+        print("view expand response:", ctypes.cast(expand_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(expand_ptr)
+
+    clear_root_ptr = lib.muxly_client_view_clear_root(client)
+    if not clear_root_ptr:
+        raise SystemExit("view clear root failed")
+    try:
+        print("view clear root response:", ctypes.cast(clear_root_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(clear_root_ptr)
+
+    reset_ptr = lib.muxly_client_view_reset(client)
+    if not reset_ptr:
+        raise SystemExit("view reset failed")
+    try:
+        print("view reset response:", ctypes.cast(reset_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(reset_ptr)
 
     document_ptr = lib.muxly_client_document_get(client)
     if not document_ptr:
@@ -74,6 +145,14 @@ def main() -> None:
         print("graph response:", ctypes.cast(graph_ptr, ctypes.c_char_p).value.decode())
     finally:
         lib.muxly_string_free(graph_ptr)
+
+    remove_ptr = lib.muxly_client_node_remove(client, node_id)
+    if not remove_ptr:
+        raise SystemExit("node remove failed")
+    try:
+        print("node remove response:", ctypes.cast(remove_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(remove_ptr)
 
     lib.muxly_client_destroy(client)
 

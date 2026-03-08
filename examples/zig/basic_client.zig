@@ -3,6 +3,14 @@ const c = @cImport({
     @cInclude("muxly.h");
 });
 
+fn parseNodeId(response: []const u8) !u64 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, response, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    return @intCast(parsed.value.object.get("result").?.object.get("nodeId").?.integer);
+}
+
 fn socketPathFromEnv(allocator: std.mem.Allocator) ![]u8 {
     const raw = std.process.getEnvVarOwned(allocator, "MUXLY_SOCKET") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return try allocator.dupeZ(u8, "/tmp/muxly.sock"),
@@ -18,9 +26,6 @@ pub fn main() !void {
     const allocator = arena.allocator();
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const socket_path = try socketPathFromEnv(allocator);
-    const session_name_text = try std.fmt.allocPrint(allocator, "muxly-zig-example-{d}", .{std.time.milliTimestamp()});
-    const session_name = try allocator.dupeZ(u8, session_name_text);
-    const command = "sh -lc 'printf hello-from-zig-binding\\n; sleep 1'";
 
     try stdout.print("muxly version => {s}\n", .{std.mem.span(c.muxly_version())});
     try stdout.print("socket path => {s}\n", .{socket_path});
@@ -39,12 +44,47 @@ pub fn main() !void {
     defer c.muxly_string_free(status_ptr);
     try stdout.print("document status => {s}\n", .{std.mem.span(status_ptr)});
 
-    const session_ptr = c.muxly_client_session_create(client, session_name.ptr, command);
-    if (session_ptr == null) return error.SessionCreateFailed;
-    defer c.muxly_string_free(session_ptr);
-    try stdout.print("session create => {s}\n", .{std.mem.span(session_ptr)});
+    const append_ptr = c.muxly_client_node_append(client, 1, "subdocument", "zig c abi scaffold");
+    if (append_ptr == null) return error.NodeAppendFailed;
+    defer c.muxly_string_free(append_ptr);
+    try stdout.print("node append => {s}\n", .{std.mem.span(append_ptr)});
 
-    std.Thread.sleep(200 * std.time.ns_per_ms);
+    const node_id = try parseNodeId(std.mem.span(append_ptr));
+
+    const update_ptr = c.muxly_client_node_update(client, node_id, null, "hello synthetic api from zig");
+    if (update_ptr == null) return error.NodeUpdateFailed;
+    defer c.muxly_string_free(update_ptr);
+    try stdout.print("node update => {s}\n", .{std.mem.span(update_ptr)});
+
+    const node_ptr = c.muxly_client_node_get(client, node_id);
+    if (node_ptr == null) return error.NodeGetFailed;
+    defer c.muxly_string_free(node_ptr);
+    try stdout.print("node => {s}\n", .{std.mem.span(node_ptr)});
+
+    const set_root_ptr = c.muxly_client_view_set_root(client, node_id);
+    if (set_root_ptr == null) return error.ViewSetRootFailed;
+    defer c.muxly_string_free(set_root_ptr);
+    try stdout.print("view set root => {s}\n", .{std.mem.span(set_root_ptr)});
+
+    const elide_ptr = c.muxly_client_view_elide(client, node_id);
+    if (elide_ptr == null) return error.ViewElideFailed;
+    defer c.muxly_string_free(elide_ptr);
+    try stdout.print("view elide => {s}\n", .{std.mem.span(elide_ptr)});
+
+    const expand_ptr = c.muxly_client_view_expand(client, node_id);
+    if (expand_ptr == null) return error.ViewExpandFailed;
+    defer c.muxly_string_free(expand_ptr);
+    try stdout.print("view expand => {s}\n", .{std.mem.span(expand_ptr)});
+
+    const clear_root_ptr = c.muxly_client_view_clear_root(client);
+    if (clear_root_ptr == null) return error.ViewClearRootFailed;
+    defer c.muxly_string_free(clear_root_ptr);
+    try stdout.print("view clear root => {s}\n", .{std.mem.span(clear_root_ptr)});
+
+    const reset_ptr = c.muxly_client_view_reset(client);
+    if (reset_ptr == null) return error.ViewResetFailed;
+    defer c.muxly_string_free(reset_ptr);
+    try stdout.print("view reset => {s}\n", .{std.mem.span(reset_ptr)});
 
     const document_ptr = c.muxly_client_document_get(client);
     if (document_ptr == null) return error.DocumentGetFailed;
@@ -55,4 +95,9 @@ pub fn main() !void {
     if (graph_ptr == null) return error.GraphGetFailed;
     defer c.muxly_string_free(graph_ptr);
     try stdout.print("graph => {s}\n", .{std.mem.span(graph_ptr)});
+
+    const remove_ptr = c.muxly_client_node_remove(client, node_id);
+    if (remove_ptr == null) return error.NodeRemoveFailed;
+    defer c.muxly_string_free(remove_ptr);
+    try stdout.print("node remove => {s}\n", .{std.mem.span(remove_ptr)});
 }

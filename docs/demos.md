@@ -60,8 +60,8 @@ The shipped C / Zig / Python examples now all follow the same contract:
 
 - they read `MUXLY_SOCKET` when it is set
 - they fall back to `/tmp/muxly.sock` otherwise
-- they create a short-lived tmux session from scratch instead of assuming a
-  useful node id already exists
+- they create synthetic document/view state from scratch instead of assuming a
+  useful pre-existing node id
 
 One simple way to exercise them against a live daemon is:
 

@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <string.h>
 
 #include "muxly.h"
 
@@ -18,17 +18,25 @@ static int print_owned(const char *label, char *value) {
     return 1;
 }
 
+static int parse_node_id(const char *response, unsigned long long *node_id_out) {
+    const char *marker = "\"nodeId\":";
+    const char *start = strstr(response, marker);
+    if (start == NULL) {
+        return 0;
+    }
+    start += strlen(marker);
+    return sscanf(start, "%llu", node_id_out) == 1;
+}
+
 int main(void) {
     const char *socket_path = getenv("MUXLY_SOCKET");
-    char session_name[64];
-    const char *command = "sh -lc 'printf hello-from-c-binding\\n; sleep 1'";
     muxly_client *client;
+    unsigned long long node_id = 0;
+    char *append_response;
 
     if (socket_path == NULL || socket_path[0] == '\0') {
         socket_path = default_socket_path();
     }
-
-    snprintf(session_name, sizeof(session_name), "muxly-c-example-%ld", (long)getpid());
 
     printf("muxly version: %s\n", muxly_version());
     printf("socket path: %s\n", socket_path);
@@ -47,18 +55,60 @@ int main(void) {
         muxly_client_destroy(client);
         return 1;
     }
-    if (!print_owned("session create", muxly_client_session_create(client, session_name, command))) {
+
+    append_response = muxly_client_node_append(client, 1, "subdocument", "c abi scaffold");
+    if (append_response == NULL) {
+        fprintf(stderr, "node append failed\n");
         muxly_client_destroy(client);
         return 1;
     }
+    if (!parse_node_id(append_response, &node_id)) {
+        fprintf(stderr, "could not parse node id from append response: %s\n", append_response);
+        muxly_string_free(append_response);
+        muxly_client_destroy(client);
+        return 1;
+    }
+    printf("node append: %s\n", append_response);
+    muxly_string_free(append_response);
 
-    usleep(200 * 1000);
+    if (!print_owned("node update", muxly_client_node_update(client, node_id, NULL, "hello synthetic api"))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("node response", muxly_client_node_get(client, node_id))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("view set root", muxly_client_view_set_root(client, node_id))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("view elide", muxly_client_view_elide(client, node_id))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("view expand", muxly_client_view_expand(client, node_id))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("view clear root", muxly_client_view_clear_root(client))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("view reset", muxly_client_view_reset(client))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
 
     if (!print_owned("document response", muxly_client_document_get(client))) {
         muxly_client_destroy(client);
         return 1;
     }
     if (!print_owned("graph response", muxly_client_graph_get(client))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("node remove", muxly_client_node_remove(client, node_id))) {
         muxly_client_destroy(client);
         return 1;
     }
