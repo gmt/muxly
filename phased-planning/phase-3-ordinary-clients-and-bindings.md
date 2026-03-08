@@ -33,7 +33,8 @@ Strengthen the public-consumer story:
 - examples/demos communicate the value proposition of the framework, not just
   raw API syntax
 
-## Current branch status
+## Current status
 
-Mostly completed for the initial binding surface. Future work can add more
-binding examples and broader exported methods as needed.
+The initial binding surface is largely in place. Future work in this phase is
+mostly expansion: broader exported methods, more examples, and tighter
+consumer-facing polish.

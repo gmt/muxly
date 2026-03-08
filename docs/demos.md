@@ -7,7 +7,7 @@ They are not merely bonus material: with a system this cross-platform and
 behavior-heavy, runnable examples are part of the documentation contract and a
 key way to demonstrate the framework's value proposition.
 
-Planned first demos:
+Core demos:
 
 1. hello-muxly end-to-end
 2. mixed-source muxml with:
@@ -21,10 +21,10 @@ Reference example locations:
 - `examples/zig/basic_client.zig`
 - `examples/c/basic_client.c`
 - `examples/python/basic_client.py`
-- `tests/integration/tmux_adapter_test.py` as the current living-proof mixed-source
+- `tests/integration/tmux_adapter_test.py` as the current reference mixed-source
   / tmux mutation flow
 
-Expectation for future phases:
+As the project grows:
 
 - major feature tranches should leave behind at least one runnable example or
   demo path
@@ -46,7 +46,7 @@ printf 'tail-1\n' >/tmp/muxly-monitored.txt
 ./zig-out/bin/muxview
 ```
 
-Automated living-proof flow:
+Automated integration flow:
 
 ```sh
 zig build

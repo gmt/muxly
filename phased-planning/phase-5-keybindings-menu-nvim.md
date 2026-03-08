@@ -25,7 +25,7 @@ integration features originally envisioned.
 - Neovim attach/detach methods stop returning structured unsupported errors
 - docs and capability reporting distinguish scaffolded vs fully working support
 
-## Current branch status
+## Current status
 
 Scaffolded only. Structured unsupported-capability errors are present so future
 clients get stable behavior while these systems remain deferred.

@@ -5,7 +5,7 @@ serializable **muxml** document model.
 
 ## Status
 
-This repository is in active bootstrap. The first development slice focuses on:
+This repository has a working implementation centered on:
 
 - a `muxlyd` daemon
 - a public JSON-RPC control protocol
@@ -26,14 +26,14 @@ This repository is in active bootstrap. The first development slice focuses on:
 - **Append mode matters.**
   Terminal and log-like regions usually grow downward, so append-friendly
   operations and tail-following views are first-class.
-- **Phase 2 keeps semantics explicit.**
+- **The current cutline keeps semantics explicit.**
   Follow-tail is currently a stored node preference, shared view root/elision
   state lives in the daemon-backed document, and tmux interaction is still
   command-backed in this slice.
 - **The reference viewer is an ordinary client.**
   `muxview` should consume the same public surfaces as any third-party tool.
 
-## Planned binaries
+## Binaries
 
 - `muxlyd` — daemon
 - `muxly` — automation-first CLI
@@ -76,9 +76,14 @@ Then, in another shell:
 - `docs/neovim-integration.md`
 - `docs/demos.md`
 
-## Phased planning
+## Roadmap
 
-Repo-visible phased handoff plans live in `phased-planning/`.
+Milestones and remaining major work live in `phased-planning/`:
+
+- `done.md` summarizes completed phase 1 and 2 work
+- `phase-3-ordinary-clients-and-bindings.md` covers public-client and binding expansion
+- `phase-4-control-mode-and-state-recovery.md` covers the tmux backend upgrade
+- `phase-5-keybindings-menu-nvim.md` covers deferred UX and integration work
 
 ## Examples
 

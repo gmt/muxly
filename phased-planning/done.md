@@ -1,7 +1,7 @@
-# completed phase work
+# completed milestones
 
-This file archives work that is complete on the current branch so the active
-phase files can focus on unfinished execution targets and handoff notes.
+This file summarizes work that is already in place so the remaining phase files
+can stay focused on open work.
 
 ## phase 1 — foundation and protocol
 
@@ -75,10 +75,10 @@ Closure evidence:
 - `zig build && python3 tests/integration/tmux_adapter_test.py`
 - manual `muxview` verification of scoped-root and elision cues
 
-## handoff boundary
+## next major work
 
 Work that is still important but **not** part of completed phase 1/2 scope is
-handed off to later phase files, especially:
+tracked in later phase files, especially:
 
 - phase 4 — tmux control-mode/state recovery
 - phase 5 — keybindings, menu/modeline projection, Neovim integration

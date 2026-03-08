@@ -1,18 +1,16 @@
-# phased planning
+# roadmap
 
-This directory breaks the larger muxly roadmap into smaller execution tranches
-that are easier for humans and long-running agents to consume.
+This directory breaks the larger muxly roadmap into smaller execution tranches.
 
-`done.md` archives work from phases that are already closed on the current
-branch. Active phase files should prefer tracking only unfinished work and
-handoff notes.
+`done.md` summarizes milestones that are already complete. The remaining phase
+files track major work that is still open or still useful as a reference point.
 
 ## How to use these files
 
 - treat each phase file as a self-contained execution target
 - prefer completing one phase at a time
-- use acceptance criteria and test notes in each phase file as the handoff/check
-  list
+- use acceptance criteria and test notes in each phase file as the completion
+  checklist
 - update repo-visible docs and tests as you complete each phase
 
 ## Shared doctrine across all phases
@@ -27,19 +25,17 @@ Every phase should preserve the project-wide rules documented in
 - aggressive testing, including slow/emulator-heavy paths when useful
 - cross-platform realism over fake uniformity
 
-## Suggested sequence
+## Current layout
 
-0. `done.md` for closed work already completed on the branch
-1. `phase-1-foundation-and-protocol.md`
-2. `phase-2-tmux-sources-and-views.md`
-3. `phase-3-ordinary-clients-and-bindings.md`
-4. `phase-4-control-mode-and-state-recovery.md`
-5. `phase-5-keybindings-menu-nvim.md`
+- `done.md` for completed phase 1 and 2 work
+- `phase-3-ordinary-clients-and-bindings.md`
+- `phase-4-control-mode-and-state-recovery.md`
+- `phase-5-keybindings-menu-nvim.md`
 
 ## Current status snapshot
 
-Phases 1 and 2 are closed and summarized in `done.md`. Remaining large work is
-concentrated in:
+Phase 1 and 2 are summarized in `done.md`. Remaining large work is concentrated
+in:
 
 - richer tmux control-mode/state recovery
 - keybinding analysis engine
@@ -54,9 +50,9 @@ Future phases should continue to treat testing as first-class work:
 - unit tests for pure logic
 - integration tests for daemon/protocol/tmux behavior
 - cross-target compile checks
-- runnable examples/demos that future agents and users can use as living proofs
+- runnable examples/demos that users and contributors can use as living proofs
 
 ## Why this exists
 
-The previous single large roadmap was useful operationally, but smaller phase
-files are a better fit for incremental execution and future agent handoff.
+Smaller phase files are easier to keep accurate than one large catch-all
+roadmap.

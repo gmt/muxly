@@ -28,7 +28,7 @@ less polling and fewer blind spots.
 - reconnect/recovery tests exist
 - `docs/tmux-backend.md` reflects the richer architecture
 
-## Current branch status
+## Current status
 
 Not complete. Current implementation is intentionally command-backed and is the
 largest remaining technical gap inside the core platform.
