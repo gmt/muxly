@@ -274,6 +274,63 @@ Priorities:
 - document null/error behavior and string-freeing rules in the header, not only
   in Zig source
 
+Current repo reality that should drive this slice:
+
+- [src/lib/c_abi.zig](/home/greg/src/muxly/src/lib/c_abi.zig) exposes a useful
+  but selective handle-based surface
+- [include/muxly.h](/home/greg/src/muxly/include/muxly.h) does not yet explain
+  failure semantics or argument expectations in enough detail to stand on its
+  own
+- the shipped examples in
+  [examples/c/basic_client.c](/home/greg/src/muxly/examples/c/basic_client.c),
+  [examples/zig/basic_client.zig](/home/greg/src/muxly/examples/zig/basic_client.zig),
+  and [examples/python/basic_client.py](/home/greg/src/muxly/examples/python/basic_client.py)
+  still hard-code `/tmp/muxly.sock` and assume useful node ids already exist
+
+Start this slice in the following order:
+
+1. define the supported phase-3 C ABI surface in the header
+2. add only the missing exported helpers needed to make that surface credible
+3. update the shipped examples to use only that documented surface
+4. leave behind one documented proof path that exercises the examples against a
+   live daemon
+
+Concrete starting point:
+
+- write header comments in [include/muxly.h](/home/greg/src/muxly/include/muxly.h)
+  as if it were the only file a C caller will read
+- explicitly state for every exported function:
+  - whether null inputs are allowed
+  - whether null return means failure
+  - which strings must be freed with `muxly_string_free`
+  - whether the returned JSON is a complete JSON-RPC response payload or some
+    narrower convenience shape
+- decide which helpers are part of the intentional phase-3 surface before
+  adding more breadth
+
+Preferred supported-surface bias for Slice 3:
+
+- handle-based lifecycle plus handle-based request helpers should be the default
+  contract
+- keep stateless top-level helpers small and obviously convenience-oriented
+- add helpers that let examples create their own setup instead of depending on
+  pre-existing node ids
+- do not chase full CLI parity if the extra exports are only speculative
+
+Likely must-have additions for a credible example path:
+
+- enough node/view helpers that an example can create a node and then inspect or
+  focus it without assuming node id `2`
+- or enough attach/session helpers that an example can create the live/file
+  state it needs from scratch
+
+Good sub-tranche boundaries:
+
+- header contract and ownership comments
+- minimal C ABI breadth to match the chosen documented surface
+- example alignment across C, Zig, and Python
+- proof/docs wiring
+
 Target:
 
 - document the supported phase-3 C ABI surface in one place
@@ -285,6 +342,15 @@ Done when:
 - the exported surface is explicitly documented as the supported phase-3 surface
 - a C caller can understand lifecycle and ownership from the header alone
 - examples do not depend on undocumented socket-path or node-id assumptions
+
+Good stopping point for one agentic tranche:
+
+- one header/documentation pass made the supported C ABI surface clearer
+- one missing helper family was added only because an example or documented
+  consumer flow needed it
+- at least one shipped example became more self-sufficient and less assumption
+  heavy
+- the proof/docs path for that example was updated
 
 ### Slice 4 — example quality over quantity
 
