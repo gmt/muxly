@@ -17,7 +17,7 @@ usable backend slice is most mature on Unix-like systems.
 ## Design intent
 
 - keep protocol semantics transport-agnostic
-- keep ordinary clients independent of Unix-only assumptions where possible
+- keep external clients independent of Unix-only assumptions where possible
 - capability-gate host-specific features instead of baking them into the API
 - choose functional, testable platform paths over aesthetically uniform ones
 

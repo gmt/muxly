@@ -24,12 +24,12 @@ test "document bootstrap model supports append and xml serialization" {
     try document.setViewRoot(node_id);
     try document.toggleElided(node_id);
 
-    var json = std.ArrayList(u8).init(std.testing.allocator);
+    var json = std.array_list.Managed(u8).init(std.testing.allocator);
     defer json.deinit();
     try document.writeJson(json.writer());
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"viewRootNodeId\":2") != null);
 
-    var xml = std.ArrayList(u8).init(std.testing.allocator);
+    var xml = std.array_list.Managed(u8).init(std.testing.allocator);
     defer xml.deinit();
     try document.writeXml(xml.writer());
     try std.testing.expect(std.mem.indexOf(u8, xml.items, "<muxml") != null);

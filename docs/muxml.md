@@ -1,6 +1,10 @@
 # muxml model
 
-`muxml` is the canonical document model manipulated by muxly.
+`muxml` is the internal document model manipulated by muxly.
+
+Some consumers may interact with it directly, but many should be able to work
+through library/client APIs without caring about the exact serialized muxml
+shape.
 
 ## Properties
 

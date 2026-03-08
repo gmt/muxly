@@ -10,7 +10,7 @@ pub fn main() !void {
     var config = try config_mod.Config.load(allocator);
     defer config.deinit();
 
-    const stderr = std.io.getStdErr().writer();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
     try stderr.print("muxlyd listening on {s}\n", .{config.socket_path});
     try server.serve(allocator, config);
 }

@@ -33,9 +33,19 @@ pub const Client = struct {
         var stream = try unix_socket.connect(self.socket_path);
         defer stream.close();
 
-        try stream.writer().writeAll(request_json);
-        try stream.writer().writeByte('\n');
+        try stream.writeAll(request_json);
+        try stream.writeAll("\n");
 
-        return try stream.reader().readAllAlloc(self.allocator, 1 << 20);
+        var response = std.array_list.Managed(u8).init(self.allocator);
+        errdefer response.deinit();
+
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const bytes_read = try stream.read(&buffer);
+            if (bytes_read == 0) break;
+            try response.appendSlice(buffer[0..bytes_read]);
+        }
+
+        return try response.toOwnedSlice();
     }
 };

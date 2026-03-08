@@ -4,7 +4,7 @@ const source_mod = @import("source.zig");
 const types = @import("types.zig");
 
 fn writeJsonString(writer: anytype, value: []const u8) !void {
-    try std.json.stringify(value, .{}, writer);
+    try writer.print("{f}", .{std.json.fmt(value, .{})});
 }
 
 pub const Node = struct {
@@ -54,7 +54,7 @@ pub const Node = struct {
     }
 
     pub fn appendContent(self: *Node, allocator: std.mem.Allocator, chunk: []const u8) !void {
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer = std.array_list.Managed(u8).init(allocator);
         defer buffer.deinit();
         try buffer.appendSlice(self.content);
         try buffer.appendSlice(chunk);

@@ -23,7 +23,8 @@ Closure evidence:
 
 - `zig build`
 - `zig build test`
-- ordinary clients talk to the daemon over the public protocol
+- library helpers, CLI commands, and examples can drive the daemon through the
+  public server API
 - examples and library bindings have runnable baseline coverage
 
 ## phase 2 — tmux, sources, and views

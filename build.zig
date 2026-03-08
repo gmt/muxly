@@ -12,50 +12,71 @@ pub fn build(b: *std.Build) void {
 
     const daemon = b.addExecutable(.{
         .name = "muxlyd",
-        .root_source_file = b.path("src/daemon/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/daemon/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
     });
-    daemon.root_module.addImport("muxly", muxly_module);
     b.installArtifact(daemon);
 
     const cli = b.addExecutable(.{
         .name = "muxly",
-        .root_source_file = b.path("src/cli/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
     });
-    cli.root_module.addImport("muxly", muxly_module);
     b.installArtifact(cli);
 
     const viewer = b.addExecutable(.{
         .name = "muxview",
-        .root_source_file = b.path("src/viewer/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/viewer/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
     });
-    viewer.root_module.addImport("muxly", muxly_module);
     b.installArtifact(viewer);
 
-    const shared = b.addSharedLibrary(.{
+    const shared = b.addLibrary(.{
+        .linkage = .dynamic,
         .name = "muxly",
-        .root_source_file = b.path("src/lib/c_abi.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib/c_abi.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
         .version = .{ .major = 0, .minor = 1, .patch = 0 },
     });
-    shared.root_module.addImport("muxly", muxly_module);
     shared.linkLibC();
     b.installArtifact(shared);
     const install_header = b.addInstallHeaderFile(b.path("include/muxly.h"), "muxly.h");
     b.getInstallStep().dependOn(&install_header.step);
 
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("tests/unit/all_tests.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unit/all_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
     });
-    unit_tests.root_module.addImport("muxly", muxly_module);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

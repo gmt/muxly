@@ -13,13 +13,47 @@ files track major work that is still open or still useful as a reference point.
   checklist
 - update repo-visible docs and tests as you complete each phase
 
+## What makes a phase file useful
+
+Phase files should be written for execution, not just for orientation.
+
+Each active phase file should make the following obvious to a contributor or
+agentic harness:
+
+- what is already true in the repo right now
+- what is still missing
+- which slice should be done first
+- which files are likely to move
+- how to prove the slice is complete before claiming progress
+
+When a phase file stays at the "good vibes" level, it becomes easy to produce
+plausible-looking partial work without actually closing the named gap.
+
+## Preferred phase-file shape
+
+For active work, prefer keeping these sections up to date:
+
+- `Goal`
+- `In scope`
+- `Out of scope`
+- `Acceptance criteria`
+- `Repo baseline`
+- `Remaining gaps`
+- `Execution order`
+- `Per-slice proof`
+- `Exit condition`
+
+The point is not rigid formatting. The point is leaving behind a plan that an
+unfamiliar contributor can execute in the right order without reverse
+engineering project intent from scattered docs and code.
+
 ## Shared doctrine across all phases
 
 Every phase should preserve the project-wide rules documented in
 `docs/trine.md`, especially:
 
 - function over form
-- ordinary-client viewer discipline
+- the viewer uses the same public surfaces as other clients
 - append-oriented behavior as the common-case bias
 - TTYs as sources rather than serialized process state
 - aggressive testing, including slow/emulator-heavy paths when useful
@@ -28,7 +62,7 @@ Every phase should preserve the project-wide rules documented in
 ## Current layout
 
 - `done.md` for completed phase 1 and 2 work
-- `phase-3-ordinary-clients-and-bindings.md`
+- `phase-3-library-viewer-cli-and-bindings.md`
 - `phase-4-control-mode-and-state-recovery.md`
 - `phase-5-keybindings-menu-nvim.md`
 
@@ -51,6 +85,19 @@ Future phases should continue to treat testing as first-class work:
 - integration tests for daemon/protocol/tmux behavior
 - cross-target compile checks
 - runnable examples/demos that users and contributors can use as living proofs
+
+## Agentic harness doctrine
+
+When an agent works from these phase files, it should prefer the smallest
+slice that closes one named gap and leaves behind all of:
+
+- code or doc changes that close the named gap
+- updated proof instructions or automated coverage
+- repo-visible evidence in docs/examples/tests rather than private notes
+
+Do not mark a phase complete because the implementation "feels close". A phase
+should close only when the acceptance criteria and proof steps are true in the
+repository as checked-in artifacts.
 
 ## Why this exists
 

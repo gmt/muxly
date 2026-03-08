@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const muxly = @import("muxly");
 
 test "capabilities describe current phase-2 semantics truthfully" {
-    var buffer = std.ArrayList(u8).init(std.testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buffer.deinit();
 
     try (muxly.capabilities.Capabilities{}).writeJson(buffer.writer());

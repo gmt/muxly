@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 /*
- * Opaque ordinary-client handle. Create with muxly_client_create() and destroy
- * with muxly_client_destroy().
+ * Opaque client handle. Create with muxly_client_create() and destroy with
+ * muxly_client_destroy().
  */
 typedef struct muxly_client muxly_client;
 

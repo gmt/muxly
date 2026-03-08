@@ -165,7 +165,7 @@ pub const Document = struct {
         try writer.writeAll("{");
         try writer.print("\"id\":{d},", .{self.id});
         try writer.writeAll("\"title\":");
-        try std.json.stringify(self.title, .{}, writer);
+        try writer.print("{f}", .{std.json.fmt(self.title, .{})});
         try writer.print(",\"lifecycle\":\"{s}\",", .{@tagName(self.lifecycle)});
         try writer.print("\"rootNodeId\":{d},", .{self.root_node_id});
         if (self.view_root_node_id) |view_root_node_id| {

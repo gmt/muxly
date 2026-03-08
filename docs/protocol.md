@@ -1,6 +1,10 @@
 # muxly protocol
 
-The public control surface is JSON-RPC 2.0.
+The current daemon control protocol is JSON-RPC 2.0.
+
+Most consumers should prefer the library/client API layer when it is
+available. This document exists so the underlying server conversation format is
+explicit, testable, and debuggable.
 
 ## Currently implemented transport
 
@@ -99,9 +103,9 @@ Some later-phase methods are intentionally present only as **structured
 unsupported-capability stubs** so clients receive stable JSON-RPC errors instead
 of `method_not_found`.
 
-The same public protocol should be used by:
+This protocol currently sits beneath:
 
+- the Zig library/client API
+- the C ABI bridge
 - the CLI
 - the viewer
-- external clients
-- the C ABI bridge

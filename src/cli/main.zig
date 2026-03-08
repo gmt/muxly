@@ -206,13 +206,13 @@ pub fn main() !void {
         return printUsage();
     defer allocator.free(response);
 
-    try cli_format.writeResponse(std.io.getStdOut().writer(), response);
+    try cli_format.writeResponse(std.fs.File.stdout().deprecatedWriter(), response);
 }
 
 fn jsonStringAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     errdefer buffer.deinit();
-    try std.json.stringify(value, .{}, buffer.writer());
+    try buffer.writer().print("{f}", .{std.json.fmt(value, .{})});
     return try buffer.toOwnedSlice();
 }
 
@@ -496,7 +496,7 @@ fn requestPaneSendKeys(
 }
 
 fn printUsage() !void {
-    try std.io.getStdOut().writer().writeAll(
+    try std.fs.File.stdout().writeAll(
         \\muxly usage:
         \\  muxly [--socket PATH] ping
         \\  muxly [--socket PATH] initialize

@@ -17,7 +17,7 @@ pub const Store = struct {
         const intro_id = try document.appendNode(document.root_node_id, .scroll_region, "welcome", .{ .none = {} });
         try document.setNodeContent(
             intro_id,
-            "muxly bootstrap document\n- ordinary client viewer\n- append-friendly regions\n- mixed-source leaves\n",
+            "muxly bootstrap document\n- viewer uses public surfaces\n- append-friendly regions\n- mixed-source leaves\n",
         );
 
         return .{
@@ -37,7 +37,7 @@ pub const Store = struct {
                 .tty => |tty| {
                     if (tty.pane_id) |pane_id| {
                         const capture = tmux.capturePane(self.allocator, pane_id) catch {
-                            var fallback = std.ArrayList(u8).init(self.allocator);
+                            var fallback = std.array_list.Managed(u8).init(self.allocator);
                             defer fallback.deinit();
                             try fallback.writer().print("tty source unavailable for pane {s} in session {s}", .{
                                 pane_id,
@@ -49,7 +49,7 @@ pub const Store = struct {
                         defer self.allocator.free(capture);
                         try node.setContent(self.allocator, capture);
                     } else {
-                        var buffer = std.ArrayList(u8).init(self.allocator);
+                        var buffer = std.array_list.Managed(u8).init(self.allocator);
                         defer buffer.deinit();
                         try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
                         try node.setContent(self.allocator, buffer.items);
@@ -57,7 +57,7 @@ pub const Store = struct {
                 },
                 .file => |file| {
                     const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
-                        var fallback = std.ArrayList(u8).init(self.allocator);
+                        var fallback = std.array_list.Managed(u8).init(self.allocator);
                         defer fallback.deinit();
                         try fallback.writer().print("file source unavailable at {s}: {s}", .{
                             file.path,

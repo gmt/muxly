@@ -42,7 +42,7 @@ pub fn writeError(
     try writeId(writer, id);
     try writer.writeAll(",\"error\":{");
     try writer.print("\"code\":{d},\"message\":", .{@intFromEnum(code)});
-    try std.json.stringify(message, .{}, writer);
+    try writer.print("{f}", .{std.json.fmt(message, .{})});
     try writer.writeAll("}}");
 }
 
@@ -72,7 +72,7 @@ pub fn getBool(params: ?std.json.Value, field_name: []const u8) ?bool {
 
 fn writeId(writer: anytype, id: ?std.json.Value) !void {
     if (id) |value| {
-        try std.json.stringify(value, .{}, writer);
+        try writer.print("{f}", .{std.json.fmt(value, .{})});
     } else {
         try writer.writeAll("null");
     }

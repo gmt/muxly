@@ -116,7 +116,7 @@ fn writeBreadcrumb(
     start_node_id: u64,
     writer: anytype,
 ) !void {
-    var chain = std.ArrayList(u64).init(allocator);
+    var chain = std.array_list.Managed(u64).init(allocator);
     defer chain.deinit();
 
     var cursor: ?u64 = start_node_id;

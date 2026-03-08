@@ -50,7 +50,7 @@ test "viewer renders shared scope breadcrumbs and elision cues" {
     });
     defer parsed.deinit();
 
-    var output = std.ArrayList(u8).init(std.testing.allocator);
+    var output = std.array_list.Managed(u8).init(std.testing.allocator);
     defer output.deinit();
 
     try muxly.viewer_render.renderDocumentValue(std.testing.allocator, parsed.value, output.writer());

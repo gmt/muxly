@@ -17,7 +17,7 @@ pub fn createSession(
     session_name: []const u8,
     command: ?[]const u8,
 ) !PaneRef {
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     defer argv.deinit();
     try argv.appendSlice(&.{ "tmux", "new-session", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-s", session_name });
     if (command) |value| try argv.append(value);
@@ -33,7 +33,7 @@ pub fn createWindow(
     window_name: ?[]const u8,
     command: ?[]const u8,
 ) !PaneRef {
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     defer argv.deinit();
     try argv.appendSlice(&.{ "tmux", "new-window", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-t", target });
     if (window_name) |value| try argv.appendSlice(&.{ "-n", value });
@@ -50,7 +50,7 @@ pub fn splitPane(
     direction: []const u8,
     command: ?[]const u8,
 ) !PaneRef {
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     defer argv.deinit();
 
     try argv.appendSlice(&.{ "tmux", "split-window", "-d", "-P", "-F", "#{pane_id}\t#{window_id}\t#{session_name}", "-t", target });
@@ -124,7 +124,7 @@ pub fn focusPane(allocator: std.mem.Allocator, pane_id: []const u8) !void {
 }
 
 pub fn sendKeys(allocator: std.mem.Allocator, pane_id: []const u8, keys: []const u8, press_enter: bool) !void {
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     defer argv.deinit();
     try argv.appendSlice(&.{ "tmux", "send-keys", "-t", pane_id, keys });
     if (press_enter) try argv.append("Enter");

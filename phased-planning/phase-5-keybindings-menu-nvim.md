@@ -8,7 +8,8 @@ integration features originally envisioned.
 ## In scope
 
 - keybinding conflict analysis engine
-- protocol methods for keybinding inspection/validation/proposal
+- library/client APIs, backed by server methods, for keybinding
+  inspection/validation/proposal
 - modeline/menu schemas and capability-gated projection
 - KDE/macOS menu adapter work
 - Neovim adapter boundary and initial attach/detach behavior

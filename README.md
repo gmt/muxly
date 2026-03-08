@@ -9,7 +9,8 @@ This repository has a working implementation centered on:
 
 - a `muxlyd` daemon
 - a public JSON-RPC control protocol
-- an ordinary-client `muxview` reference viewer
+- a `muxview` reference viewer that uses the same public surfaces as other
+  clients
 - a shared library / C ABI surface
 - a muxml model that can mix:
   - TTY-backed live sources
@@ -30,7 +31,7 @@ This repository has a working implementation centered on:
   Follow-tail is currently a stored node preference, shared view root/elision
   state lives in the daemon-backed document, and tmux interaction is still
   command-backed in this slice.
-- **The reference viewer is an ordinary client.**
+- **The reference viewer uses public surfaces.**
   `muxview` should consume the same public surfaces as any third-party tool.
 
 ## Binaries
@@ -81,7 +82,8 @@ Then, in another shell:
 Milestones and remaining major work live in `phased-planning/`:
 
 - `done.md` summarizes completed phase 1 and 2 work
-- `phase-3-ordinary-clients-and-bindings.md` covers public-client and binding expansion
+- `phase-3-library-viewer-cli-and-bindings.md` covers library API, viewer, CLI,
+  and binding cleanup
 - `phase-4-control-mode-and-state-recovery.md` covers the tmux backend upgrade
 - `phase-5-keybindings-menu-nvim.md` covers deferred UX and integration work
 

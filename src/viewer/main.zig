@@ -18,10 +18,12 @@ pub fn main() !void {
     });
     defer parsed_response.deinit();
 
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+
     const result = parsed_response.value.object.get("result") orelse {
-        try std.io.getStdOut().writer().writeAll(response);
+        try stdout.writeAll(response);
         return;
     };
 
-    try muxly.viewer_render.renderDocumentValue(allocator, result, std.io.getStdOut().writer());
+    try muxly.viewer_render.renderDocumentValue(allocator, result, stdout);
 }

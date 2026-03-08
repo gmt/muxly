@@ -14,7 +14,8 @@ Core demos:
    - one TTY-backed region
    - one monitored text file
    - one static text file
-3. `muxview` consuming daemon state as an ordinary client
+3. `muxview` consuming daemon state through the same public surfaces as other
+   clients
 
 Reference example locations:
 

@@ -31,11 +31,22 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - append-friendly behavior and tail-following should be the common-case bias
 - arbitrary mid-tree mutation is allowed, but not the primary optimization goal
 
-### Ordinary-client rule
+### Public-surface rule
 
-- the reference viewer is a normal consumer of public surfaces
+- the reference viewer uses the same public surfaces as other clients
 - no secret friend APIs
 - no hidden shortcuts unavailable to other clients
+
+### Library-first contract
+
+- consumers should be able to think of muxly primarily as a library
+- the library API is responsible for conversations with the server
+- applications such as the CLI and viewer should build on that API layer rather
+  than reaching into daemon internals
+- muxml shape and wire-protocol details may remain implementation details for
+  many consumers
+- muxml shape and wire-protocol details may change later if the library-level
+  semantics stay coherent
 
 ### Testing is a product requirement
 
@@ -60,6 +71,8 @@ necessary to preserve responsiveness, clarity, and control fidelity.
   acceptable if they preserve user experience
 - low-latency, low-overhead behavior matters more than enforcing a single
   universal wire shape everywhere
+- when the library API is sufficient, consumers should not need to care about
+  the wire format
 
 ## Viewer interaction priorities
 

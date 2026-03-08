@@ -4,7 +4,7 @@ const c = @cImport({
 });
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     try stdout.print("muxly version => {s}\n", .{std.mem.span(c.muxly_version())});
 
     const client = c.muxly_client_create("/tmp/muxly.sock") orelse return error.ClientCreateFailed;

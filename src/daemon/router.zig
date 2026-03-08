@@ -23,7 +23,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "initialize") or std.mem.eql(u8, parsed.value.method, "capabilities.get")) {
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try store.capabilities.writeJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
@@ -34,14 +34,14 @@ pub fn handleRequest(
         std.mem.eql(u8, parsed.value.method, "view.get"))
     {
         try store.refreshSources();
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try store.document.writeJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "document.status")) {
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try store.document.writeStatusJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
@@ -52,28 +52,28 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
         const node = store.document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try node.writeJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "session.list")) {
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writeSessionList(store, result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "window.list")) {
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writeWindowList(store, result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.list")) {
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writePaneList(store, result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
@@ -81,14 +81,14 @@ pub fn handleRequest(
 
     if (std.mem.eql(u8, parsed.value.method, "document.serialize")) {
         try store.refreshSources();
-        var xml = std.ArrayList(u8).init(allocator);
+        var xml = std.array_list.Managed(u8).init(allocator);
         defer xml.deinit();
         try store.document.writeXml(xml.writer());
 
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().writeAll("{\"format\":\"xml\",\"document\":");
-        try std.json.stringify(xml.items, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(xml.items, .{})});
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
     }
@@ -183,12 +183,12 @@ pub fn handleRequest(
         const capture = store.captureTmuxPane(pane_id) catch
             return try buildError(allocator, parsed.value.id, .backend_unavailable, "unable to capture tmux pane");
         defer allocator.free(capture);
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().writeAll("{\"paneId\":");
-        try std.json.stringify(pane_id, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(pane_id, .{})});
         try result.writer().writeAll(",\"content\":");
-        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(capture, .{})});
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
     }
@@ -206,12 +206,12 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
         };
         defer allocator.free(capture);
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().writeAll("{\"paneId\":");
-        try std.json.stringify(pane_id, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(pane_id, .{})});
         try result.writer().writeAll(",\"content\":");
-        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(capture, .{})});
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
     }
@@ -344,7 +344,7 @@ pub fn handleRequest(
         const node = store.document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
 
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().print("{{\"nodeId\":{d},\"source\":", .{node.id});
         try muxly.muxml.writeSourceJson(node.source, result.writer());
@@ -361,10 +361,10 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .source_error, message);
         };
         defer allocator.free(capture);
-        var result = std.ArrayList(u8).init(allocator);
+        var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().print("{{\"nodeId\":{d},\"content\":", .{node_id});
-        try std.json.stringify(capture, .{}, result.writer());
+        try result.writer().print("{f}", .{std.json.fmt(capture, .{})});
         try result.writer().writeAll("}");
         return try buildResult(allocator, parsed.value.id, result.items);
     }
@@ -420,11 +420,11 @@ fn buildNodeAttached(
     node_id: u64,
     kind: []const u8,
 ) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
     try buffer.writer().writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     if (id) |value| {
-        try std.json.stringify(value, .{}, buffer.writer());
+        try buffer.writer().print("{f}", .{std.json.fmt(value, .{})});
     } else {
         try buffer.writer().writeAll("null");
     }
@@ -437,7 +437,7 @@ fn buildResult(
     id: ?std.json.Value,
     result_json: []const u8,
 ) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
     try protocol.writeSuccess(buffer.writer(), id, result_json);
     return try buffer.toOwnedSlice();
@@ -449,14 +449,14 @@ fn buildError(
     code: errors.RpcErrorCode,
     message: []const u8,
 ) ![]u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
     try protocol.writeError(buffer.writer(), id, code, message);
     return try buffer.toOwnedSlice();
 }
 
 fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
-    var seen = std.ArrayList([]const u8).init(store.allocator);
+    var seen = std.array_list.Managed([]const u8).init(store.allocator);
     defer seen.deinit();
     try writer.writeAll("[");
     var first = true;
@@ -475,7 +475,7 @@ fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
                 if (!first) try writer.writeAll(",");
                 first = false;
                 try writer.writeAll("{\"sessionName\":");
-                try std.json.stringify(tty.session_name, .{}, writer);
+                try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
                 try writer.writeAll("}");
             },
             else => {},
@@ -486,7 +486,7 @@ fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
 
 fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
     const WindowKey = struct { session: []const u8, window: []const u8 };
-    var seen = std.ArrayList(WindowKey).init(store.allocator);
+    var seen = std.array_list.Managed(WindowKey).init(store.allocator);
     defer seen.deinit();
     try writer.writeAll("[");
     var first = true;
@@ -506,9 +506,9 @@ fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
                     if (!first) try writer.writeAll(",");
                     first = false;
                     try writer.writeAll("{\"sessionName\":");
-                    try std.json.stringify(tty.session_name, .{}, writer);
+                    try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
                     try writer.writeAll(",\"windowId\":");
-                    try std.json.stringify(window_id, .{}, writer);
+                    try writer.print("{f}", .{std.json.fmt(window_id, .{})});
                     try writer.writeAll("}");
                 }
             },
@@ -530,13 +530,13 @@ fn writePaneList(store: *store_mod.Store, writer: anytype) !void {
                     try writer.writeAll("{\"nodeId\":");
                     try writer.print("{d}", .{node.id});
                     try writer.writeAll(",\"sessionName\":");
-                    try std.json.stringify(tty.session_name, .{}, writer);
+                    try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
                     if (tty.window_id) |window_id| {
                         try writer.writeAll(",\"windowId\":");
-                        try std.json.stringify(window_id, .{}, writer);
+                        try writer.print("{f}", .{std.json.fmt(window_id, .{})});
                     }
                     try writer.writeAll(",\"paneId\":");
-                    try std.json.stringify(pane_id, .{}, writer);
+                    try writer.print("{f}", .{std.json.fmt(pane_id, .{})});
                     try writer.writeAll("}");
                 }
             },

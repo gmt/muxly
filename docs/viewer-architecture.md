@@ -5,7 +5,7 @@ for muxly documents.
 
 ## Design rule
 
-`muxview` should be an **ordinary client**:
+`muxview` should use the same public API surface as other clients:
 
 - no secret daemon APIs
 - no privileged shortcuts
@@ -23,7 +23,7 @@ for muxly documents.
 The current viewer is intentionally modest, but it should still make the public
 state model legible:
 
-- it consumes the ordinary `view.get` surface, not a private daemon shortcut
+- it consumes the public `view.get` surface, not a private daemon shortcut
 - root/elision state is currently **shared document state**, not viewer-local
   state
 - follow-tail is currently a **stored node preference**, not a private capture
