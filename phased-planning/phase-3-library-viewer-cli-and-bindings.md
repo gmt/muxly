@@ -82,9 +82,10 @@ What still keeps this phase from feeling complete:
 
 - The phase file needs clearer targets so contributors can identify the next
   concrete phase-3 task.
-- The new library-first doctrine is only partially reflected in implementation:
-  the viewer already uses `muxly.api`, but the CLI still builds many requests
-  directly in [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig).
+- Slice 2 is now complete: the viewer and CLI use
+  [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig) as the default home
+  for server-backed operations. The next remaining work is to make the C ABI,
+  header, examples, and proof stack look equally intentional.
 - The C ABI is useful but selective. It is not yet obvious which exported
   methods define the supported phase-3 surface versus which gaps remain.
 - The header comments are minimal; ownership is mentioned, but ergonomics and
@@ -108,13 +109,13 @@ The right starting move for phase 3 is:
 4. use Slice 5 to harden the proof path touched by the earlier slice, not as a
    detached cleanup pass
 
-Why this order is correct in the current repo:
+Why this order was correct:
 
 - [README.md](/home/greg/src/muxly/README.md) and
   [docs/demos.md](/home/greg/src/muxly/docs/demos.md) are already decent, so
   Slice 1 should be a framing pass, not a long docs-only project
-- the largest remaining phase-3 implementation gap is still the split between
-  [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) and
+- the largest remaining phase-3 implementation gap at the time was the split
+  between [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) and
   [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig)
 - the C ABI and examples should follow the stabilized shared API surface rather
   than guess at it early
@@ -124,6 +125,9 @@ If an agent needs one sentence of direction, use this one:
 > Do a short Slice 1 pass to make the proof path and supported public surface
 > obvious, then move immediately into Slice 2 and treat it as the first real
 > code tranche of phase 3.
+
+That sequence has now been exercised successfully in this repo. Slice 2 is no
+longer the open question; Slice 3 is the next substantive tranche.
 
 ## Execution order
 
@@ -195,7 +199,7 @@ Priorities:
   conversation details downward
 - avoid introducing a second overlapping helper layer
 
-Start with the concrete gaps already visible in the repo:
+This slice started from the concrete gaps that were visible in the repo:
 
 - request families that still appear direct in
   [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) rather than as
@@ -230,6 +234,16 @@ Done when:
   library/client layer
 - remaining direct wire-level calls, if any, are small exceptions and are
   documented as such
+
+Current status:
+
+- complete
+- [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) now routes its
+  implemented server-backed operations through
+  [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig)
+- the old CLI-local request shim in
+  [src/cli/client.zig](/home/greg/src/muxly/src/cli/client.zig) was removed as
+  part of this consolidation
 
 Good stopping point for one agentic tranche:
 

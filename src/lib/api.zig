@@ -6,6 +6,10 @@ pub fn ping(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "ping", "{}");
 }
 
+pub fn initialize(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "initialize", "{}");
+}
+
 pub fn documentGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "document.get", "{}");
 }
@@ -291,10 +295,51 @@ pub fn sessionCreate(
     return try request(allocator, socket_path, "session.create", params_json);
 }
 
+pub fn sessionList(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "session.list", "{}");
+}
+
+pub fn windowList(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "window.list", "{}");
+}
+
+pub fn paneList(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "pane.list", "{}");
+}
+
 pub fn leafSourceGet(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
     const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
     defer allocator.free(params_json);
     return try request(allocator, socket_path, "leaf.source.get", params_json);
+}
+
+pub fn leafAttachFile(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    kind: []const u8,
+    path: []const u8,
+) ![]u8 {
+    const path_json = try std.json.Stringify.valueAlloc(allocator, path, .{});
+    defer allocator.free(path_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"kind\":\"{s}\",\"path\":{s}}}",
+        .{ kind, path_json },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "leaf.source.attach", params_json);
+}
+
+pub fn leafAttachTty(allocator: std.mem.Allocator, socket_path: []const u8, session_name: []const u8) ![]u8 {
+    const session_name_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
+    defer allocator.free(session_name_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"kind\":\"tty\",\"sessionName\":{s}}}",
+        .{session_name_json},
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "leaf.source.attach", params_json);
 }
 
 pub fn fileCapture(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
