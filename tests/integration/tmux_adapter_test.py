@@ -30,6 +30,30 @@ def wait_for_socket(path: str, timeout: float = 5.0) -> None:
     raise RuntimeError(f"socket did not appear: {path}")
 
 
+def cleanup_tmux_session(env: dict[str, str], session_name: str) -> None:
+    subprocess.run(
+        ["tmux", "kill-session", "-t", session_name],
+        cwd=REPO,
+        env=env,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def wait_for_pane_content(env: dict[str, str], pane_id: str, needle: str, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last_capture: dict | None = None
+    while time.time() < deadline:
+        last_capture = run_cli(env, "pane", "capture", pane_id)
+        if needle in last_capture["result"]["content"].replace("n\n", "\n"):
+            return last_capture
+        time.sleep(0.1)
+    raise AssertionError(
+        f"timed out waiting for pane {pane_id} to contain {needle!r}: {last_capture!r}"
+    )
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -39,7 +63,7 @@ def main() -> None:
     except FileNotFoundError:
         pass
 
-    subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], cwd=REPO, env=env, check=False)
+    cleanup_tmux_session(env, SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -150,7 +174,7 @@ def main() -> None:
         assert node["result"]["id"] == session["result"]["nodeId"]
         assert windows["result"]
 
-        capture = run_cli(env, "pane", "capture", pane_id)
+        capture = wait_for_pane_content(env, pane_id, "integration-tmux")
         assert "integration-tmux" in capture["result"]["content"].replace("n\n", "\n")
 
         scroll = run_cli(env, "pane", "scroll", pane_id, "-5", "-1")
@@ -231,7 +255,7 @@ def main() -> None:
 
         print("integration test passed")
     finally:
-        subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME], cwd=REPO, env=env, check=False)
+        cleanup_tmux_session(env, SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)

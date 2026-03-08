@@ -95,6 +95,15 @@ slice that closes one named gap and leaves behind all of:
 - updated proof instructions or automated coverage
 - repo-visible evidence in docs/examples/tests rather than private notes
 
+When a phase starts with a framing or discoverability slice, keep that slice
+short and use it to make the first substantive implementation tranche obvious.
+Do not spend multiple rounds polishing docs if the real blocker is still an
+implementation split elsewhere in the repo.
+
+When later slices depend on a stable shared surface, sequence them after that
+surface is clarified. Do not expand examples, bindings, or convenience layers
+against a contract that the preceding implementation slice is still defining.
+
 Do not mark a phase complete because the implementation "feels close". A phase
 should close only when the acceptance criteria and proof steps are true in the
 repository as checked-in artifacts.

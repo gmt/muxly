@@ -18,8 +18,78 @@ pub fn documentStatus(allocator: std.mem.Allocator, socket_path: []const u8) ![]
     return try request(allocator, socket_path, "document.status", "{}");
 }
 
+pub fn nodeAppend(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    parent_id: u64,
+    kind: []const u8,
+    title: []const u8,
+) ![]u8 {
+    const kind_json = try std.json.Stringify.valueAlloc(allocator, kind, .{});
+    defer allocator.free(kind_json);
+    const title_json = try std.json.Stringify.valueAlloc(allocator, title, .{});
+    defer allocator.free(title_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"parentId\":{d},\"kind\":{s},\"title\":{s}}}",
+        .{ parent_id, kind_json, title_json },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "node.append", params_json);
+}
+
+pub fn nodeUpdate(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    node_id: u64,
+    title: ?[]const u8,
+    content: ?[]const u8,
+) ![]u8 {
+    if (title) |value| {
+        const title_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(title_json);
+        const params_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"nodeId\":{d},\"title\":{s}}}",
+            .{ node_id, title_json },
+        );
+        defer allocator.free(params_json);
+        return try request(allocator, socket_path, "node.update", params_json);
+    }
+    if (content) |value| {
+        const content_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(content_json);
+        const params_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"nodeId\":{d},\"content\":{s}}}",
+            .{ node_id, content_json },
+        );
+        defer allocator.free(params_json);
+        return try request(allocator, socket_path, "node.update", params_json);
+    }
+    return error.InvalidArguments;
+}
+
+pub fn nodeRemove(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "node.remove", params_json);
+}
+
+pub fn documentFreeze(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "document.freeze", "{}");
+}
+
+pub fn documentSerialize(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "document.serialize", "{}");
+}
+
 pub fn viewGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "view.get", "{}");
+}
+
+pub fn viewClearRoot(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "view.clearRoot", "{}");
 }
 
 pub fn viewSetRoot(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
@@ -32,6 +102,12 @@ pub fn viewElide(allocator: std.mem.Allocator, socket_path: []const u8, node_id:
     const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
     defer allocator.free(params_json);
     return try request(allocator, socket_path, "view.elide", params_json);
+}
+
+pub fn viewExpand(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "view.expand", params_json);
 }
 
 pub fn paneCapture(allocator: std.mem.Allocator, socket_path: []const u8, pane_id: []const u8) ![]u8 {

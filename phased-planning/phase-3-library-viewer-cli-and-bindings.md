@@ -98,6 +98,33 @@ What still keeps this phase from feeling complete:
 - Discoverability is decent, but the docs could do a better job telling a
   contributor which demo flow proves the viewer/CLI/bindings path.
 
+## Agentic-harness starting point
+
+The right starting move for phase 3 is:
+
+1. do Slice 1 first, but keep it intentionally small
+2. treat Slice 2 as the first substantive implementation tranche
+3. defer Slice 3 and Slice 4 until Slice 2 clarifies the shared public surface
+4. use Slice 5 to harden the proof path touched by the earlier slice, not as a
+   detached cleanup pass
+
+Why this order is correct in the current repo:
+
+- [README.md](/home/greg/src/muxly/README.md) and
+  [docs/demos.md](/home/greg/src/muxly/docs/demos.md) are already decent, so
+  Slice 1 should be a framing pass, not a long docs-only project
+- the largest remaining phase-3 implementation gap is still the split between
+  [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) and
+  [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig)
+- the C ABI and examples should follow the stabilized shared API surface rather
+  than guess at it early
+
+If an agent needs one sentence of direction, use this one:
+
+> Do a short Slice 1 pass to make the proof path and supported public surface
+> obvious, then move immediately into Slice 2 and treat it as the first real
+> code tranche of phase 3.
+
 ## Execution order
 
 Work this phase in the following order. Do not jump to binding breadth before
@@ -107,6 +134,11 @@ the docs and proof path are coherent.
 
 Make the repo point to one clear library-first proof path for the viewer, CLI,
 and bindings.
+
+This slice is intentionally a short framing pass. Do not let it expand into a
+long docs-only effort. Its job is to make the first implementation tranche
+obvious and to leave behind one authoritative proof path that later slices can
+reuse.
 
 Likely touchpoints:
 
@@ -132,10 +164,21 @@ Done when:
 - docs clearly distinguish the baseline from the remaining work
 - phase 3 stops reading like a wish list and starts reading like a work queue
 
+Preferred output from this slice:
+
+- one repo-visible description of the authoritative viewer/CLI/bindings proof
+  path
+- one repo-visible statement that the library/client API is the preferred home
+  for server conversations
+- one repo-visible statement that Slice 2 is the next implementation target
+  after the framing pass
+
 ### Slice 2 — library/client API consolidation
 
 Move server request construction out of app-specific code when that logic
 belongs in the shared library/client layer.
+
+Treat this as the first real implementation tranche of phase 3.
 
 Likely touchpoints:
 
@@ -152,6 +195,29 @@ Priorities:
   conversation details downward
 - avoid introducing a second overlapping helper layer
 
+Start with the concrete gaps already visible in the repo:
+
+- request families that still appear direct in
+  [src/cli/main.zig](/home/greg/src/muxly/src/cli/main.zig) rather than as
+  named helpers in [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig),
+  especially:
+  - `initialize`
+  - `session.list`, `window.list`, `pane.list`
+  - `node.append`, `node.update`, `node.remove`
+  - `document.freeze`, `document.serialize`
+  - `leaf.source.attach`
+  - `view.clearRoot`, `view.expand`
+- duplicated JSON construction helpers in the CLI that are really expressing
+  shared protocol semantics rather than CLI-specific UX
+
+Work this slice by moving one coherent operation family at a time. Good
+sub-tranche boundaries include:
+
+- node mutation helpers
+- document/view helpers
+- tmux session/window/pane helpers
+- leaf-source attachment helpers
+
 Target:
 
 - the shared library/client layer is the default place for request construction
@@ -165,10 +231,20 @@ Done when:
 - remaining direct wire-level calls, if any, are small exceptions and are
   documented as such
 
+Good stopping point for one agentic tranche:
+
+- one operation family has moved out of the CLI into the shared API layer
+- the CLI now calls the shared helper for that family
+- docs/proof notes were updated if the public contract changed
+- the default proof stack still passes
+
 ### Slice 3 — C ABI contract cleanup
 
 Give `libmuxly` an explicit supported scope instead of letting it grow by
 accident.
+
+Do not start this slice until Slice 2 has clarified which shared helpers are
+actually the supported phase-3 surface.
 
 Likely touchpoints:
 
@@ -199,6 +275,10 @@ Done when:
 ### Slice 4 — example quality over quantity
 
 Upgrade the existing examples before adding more languages.
+
+Do not start this slice until Slice 2 and Slice 3 have made the supported
+consumer contract explicit enough that examples are not teaching a transient
+interface.
 
 Likely touchpoints:
 
@@ -233,6 +313,10 @@ Done when:
 ### Slice 5 — proof hardening
 
 Make the viewer/CLI/bindings path testable enough that regressions are obvious.
+
+Use this slice to strengthen proof around whatever Slice 2 through Slice 4
+changed most recently. Avoid doing proof hardening in isolation before the
+public surface is stable enough to prove.
 
 Likely touchpoints:
 

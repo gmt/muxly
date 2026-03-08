@@ -30,29 +30,29 @@ pub fn main() !void {
         try client.request("capabilities.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         blk: {
-            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
-            defer allocator.free(params_json);
-            break :blk try client.request("node.get", params_json);
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.nodeGet(allocator, socket_path, node_id);
         }
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "append"))
         blk: {
-            break :blk try requestNodeAppend(allocator, &client, args[cursor + 2], args[cursor + 3], args[cursor + 4]);
+            const parent_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.nodeAppend(allocator, socket_path, parent_id, args[cursor + 3], args[cursor + 4]);
         }
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "update"))
         blk: {
-            break :blk try requestNodeUpdate(
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.nodeUpdate(
                 allocator,
-                &client,
-                args[cursor + 2],
+                socket_path,
+                node_id,
                 if (std.mem.eql(u8, args[cursor + 3], "title")) args[cursor + 4] else null,
                 if (std.mem.eql(u8, args[cursor + 3], "content")) args[cursor + 4] else null,
             );
         }
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "remove"))
         blk: {
-            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
-            defer allocator.free(params_json);
-            break :blk try client.request("node.remove", params_json);
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.nodeRemove(allocator, socket_path, node_id);
         }
     else if (std.mem.eql(u8, args[cursor], "session") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
         try client.request("session.list", "{}")
@@ -143,13 +143,13 @@ pub fn main() !void {
             break :blk try requestEnabledByPaneId(allocator, &client, "pane.followTail", args[cursor + 2], args[cursor + 3]);
         }
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
-        try client.request("document.get", "{}")
+        try muxly.api.documentGet(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "status"))
-        try client.request("document.status", "{}")
+        try muxly.api.documentStatus(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze"))
-        try client.request("document.freeze", "{}")
+        try muxly.api.documentFreeze(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
-        try client.request("document.serialize", "{}")
+        try muxly.api.documentSerialize(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file"))
         blk: {
             const request_json = try buildAttachFileRequest(allocator, args[cursor + 2], args[cursor + 3]);
@@ -179,28 +179,25 @@ pub fn main() !void {
             break :blk try client.requestJson(request_json);
         }
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
-        try client.request("view.get", "{}")
+        try muxly.api.viewGet(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "reset"))
-        try client.request("view.reset", "{}")
+        try muxly.api.viewReset(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "clear-root"))
-        try client.request("view.clearRoot", "{}")
+        try muxly.api.viewClearRoot(allocator, socket_path)
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root"))
         blk: {
-            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
-            defer allocator.free(params_json);
-            break :blk try client.request("view.setRoot", params_json);
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.viewSetRoot(allocator, socket_path, node_id);
         }
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "elide"))
         blk: {
-            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
-            defer allocator.free(params_json);
-            break :blk try client.request("view.elide", params_json);
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.viewElide(allocator, socket_path, node_id);
         }
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "expand"))
         blk: {
-            const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{s}}}", .{args[cursor + 2]});
-            defer allocator.free(params_json);
-            break :blk try client.request("view.expand", params_json);
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.viewExpand(allocator, socket_path, node_id);
         }
     else
         return printUsage();
@@ -263,58 +260,6 @@ fn requestWithOptionalCommand(
     const params_json = try std.fmt.allocPrint(allocator, "{{\"sessionName\":{s}}}", .{name_json});
     defer allocator.free(params_json);
     return try client.request(method, params_json);
-}
-
-fn requestNodeAppend(
-    allocator: std.mem.Allocator,
-    client: *muxly.client.Client,
-    parent_id_text: []const u8,
-    kind: []const u8,
-    title: []const u8,
-) ![]u8 {
-    const kind_json = try jsonStringAlloc(allocator, kind);
-    defer allocator.free(kind_json);
-    const title_json = try jsonStringAlloc(allocator, title);
-    defer allocator.free(title_json);
-    const params_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"parentId\":{s},\"kind\":{s},\"title\":{s}}}",
-        .{ parent_id_text, kind_json, title_json },
-    );
-    defer allocator.free(params_json);
-    return try client.request("node.append", params_json);
-}
-
-fn requestNodeUpdate(
-    allocator: std.mem.Allocator,
-    client: *muxly.client.Client,
-    node_id_text: []const u8,
-    title: ?[]const u8,
-    content: ?[]const u8,
-) ![]u8 {
-    if (title) |value| {
-        const title_json = try jsonStringAlloc(allocator, value);
-        defer allocator.free(title_json);
-        const params_json = try std.fmt.allocPrint(
-            allocator,
-            "{{\"nodeId\":{s},\"title\":{s}}}",
-            .{ node_id_text, title_json },
-        );
-        defer allocator.free(params_json);
-        return try client.request("node.update", params_json);
-    }
-    if (content) |value| {
-        const content_json = try jsonStringAlloc(allocator, value);
-        defer allocator.free(content_json);
-        const params_json = try std.fmt.allocPrint(
-            allocator,
-            "{{\"nodeId\":{s},\"content\":{s}}}",
-            .{ node_id_text, content_json },
-        );
-        defer allocator.free(params_json);
-        return try client.request("node.update", params_json);
-    }
-    return error.InvalidArguments;
 }
 
 fn requestSplitPane(
