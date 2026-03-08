@@ -1,7 +1,7 @@
-# completed milestones
+# changelog
 
-This file summarizes work that is already in place so the remaining phase files
-can stay focused on open work.
+This file summarizes completed milestones so the remaining phase files can stay
+focused on open work.
 
 ## phase 1 — foundation and protocol
 
