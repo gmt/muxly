@@ -86,16 +86,11 @@ What still keeps this phase from feeling complete:
   [src/lib/api.zig](/home/greg/src/muxly/src/lib/api.zig) as the default home
   for server-backed operations. The next remaining work is to make the C ABI,
   header, examples, and proof stack look equally intentional.
-- The C ABI is useful but selective. It is not yet obvious which exported
-  methods define the supported phase-3 surface versus which gaps remain.
-- The header comments are minimal; ownership is mentioned, but ergonomics and
-  failure behavior are mostly learned from source.
-- The examples are real but basic:
-  - they hard-code `/tmp/muxly.sock`
-  - they assume useful node ids already exist
-  - they demonstrate individual calls more than end-to-end consumer value
-- Example validation is weakly coupled to the build. The integration test proves
-  a lot about the CLI/viewer path, but not much about the example/binding path.
+- Slice 3 is now complete: the phase-3 C ABI surface is documented in
+  [include/muxly.h](/home/greg/src/muxly/include/muxly.h) and summarized in
+  [README.md](/home/greg/src/muxly/README.md), the shipped examples use only
+  that documented surface, and the live-daemon proof path is checked in as
+  [scripts/run_binding_examples.py](/home/greg/src/muxly/scripts/run_binding_examples.py).
 - Discoverability is decent, but the docs could do a better job telling a
   contributor which demo flow proves the viewer/CLI/bindings path.
 
@@ -342,6 +337,16 @@ Done when:
 - the exported surface is explicitly documented as the supported phase-3 surface
 - a C caller can understand lifecycle and ownership from the header alone
 - examples do not depend on undocumented socket-path or node-id assumptions
+
+Current status:
+
+- complete
+- [include/muxly.h](/home/greg/src/muxly/include/muxly.h) now documents the
+  supported phase-3 C ABI contract directly
+- the shipped examples in `examples/c`, `examples/zig`, and `examples/python`
+  use the documented handle-based surface and create their own synthetic state
+- [scripts/run_binding_examples.py](/home/greg/src/muxly/scripts/run_binding_examples.py)
+  is the repo-local proof path for the binding examples
 
 Good stopping point for one agentic tranche:
 

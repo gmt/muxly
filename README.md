@@ -92,3 +92,20 @@ Milestones and remaining major work live in `phased-planning/`:
 - `examples/zig/basic_client.zig`
 - `examples/c/basic_client.c`
 - `examples/python/basic_client.py`
+
+## Phase 3 C ABI Surface
+
+The intentional phase-3 `libmuxly` surface is:
+
+- a handle-based client lifecycle in `muxly.h`
+- document/graph/status inspection helpers
+- synthetic node/view editing helpers
+- selected tmux helpers for capture and session/pane creation
+- shipped C / Zig / Python examples that use only that documented surface
+
+The default proof path for the shipped binding examples is:
+
+```sh
+zig build
+python3 scripts/run_binding_examples.py
+```

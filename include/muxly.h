@@ -83,7 +83,13 @@ char *muxly_client_view_elide(muxly_client *client, unsigned long long node_id);
 char *muxly_client_view_expand(muxly_client *client, unsigned long long node_id);
 char *muxly_client_view_reset(muxly_client *client);
 
-/* tmux helpers accept muxly pane ids or session names as NUL-terminated strings. */
+/*
+ * tmux helpers accept muxly pane ids, targets, or session names as
+ * NUL-terminated strings.
+ *
+ * `command` may be NULL for muxly_client_pane_split() and
+ * muxly_client_session_create().
+ */
 char *muxly_client_pane_capture(muxly_client *client, const char *pane_id);
 char *muxly_client_pane_split(muxly_client *client, const char *target, const char *direction, const char *command);
 char *muxly_client_session_create(muxly_client *client, const char *session_name, const char *command);
