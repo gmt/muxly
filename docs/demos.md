@@ -53,3 +53,27 @@ Automated integration flow:
 zig build
 python3 tests/integration/tmux_adapter_test.py
 ```
+
+Binding example flow:
+
+The shipped C / Zig / Python examples now all follow the same contract:
+
+- they read `MUXLY_SOCKET` when it is set
+- they fall back to `/tmp/muxly.sock` otherwise
+- they create a short-lived tmux session from scratch instead of assuming a
+  useful node id already exists
+
+One simple way to exercise them against a live daemon is:
+
+```sh
+zig build
+MUXLY_SOCKET=/tmp/muxly-bindings.sock ./zig-out/bin/muxlyd &
+MUXLY_SOCKET=/tmp/muxly-bindings.sock cc examples/c/basic_client.c \
+  -Izig-out/include -Lzig-out/lib -Wl,-rpath,"$PWD/zig-out/lib" -lmuxly \
+  -o /tmp/muxly-c-basic-client
+MUXLY_SOCKET=/tmp/muxly-bindings.sock /tmp/muxly-c-basic-client
+MUXLY_SOCKET=/tmp/muxly-bindings.sock zig run examples/zig/basic_client.zig \
+  -lc -Izig-out/include -Lzig-out/lib -lmuxly
+MUXLY_SOCKET=/tmp/muxly-bindings.sock python3 examples/python/basic_client.py
+pkill -f '/zig-out/bin/muxlyd'
+```

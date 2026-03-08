@@ -1,57 +1,65 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
 #include "muxly.h"
 
-int main(void) {
-    const char *version = muxly_version();
-    muxly_client *client = muxly_client_create("/tmp/muxly.sock");
-    char *response = muxly_client_ping(client);
-    char *document = muxly_client_document_get(client);
-    char *view_root = muxly_client_view_set_root(client, 2);
-    char *graph = muxly_client_graph_get(client);
-    char *node = muxly_client_node_get(client, 2);
+static const char *default_socket_path(void) {
+    return "/tmp/muxly.sock";
+}
 
-    printf("muxly version: %s\n", version);
+static int print_owned(const char *label, char *value) {
+    if (value == NULL) {
+        fprintf(stderr, "%s failed\n", label);
+        return 0;
+    }
+    printf("%s: %s\n", label, value);
+    muxly_string_free(value);
+    return 1;
+}
+
+int main(void) {
+    const char *socket_path = getenv("MUXLY_SOCKET");
+    char session_name[64];
+    const char *command = "sh -lc 'printf hello-from-c-binding\\n; sleep 1'";
+    muxly_client *client;
+
+    if (socket_path == NULL || socket_path[0] == '\0') {
+        socket_path = default_socket_path();
+    }
+
+    snprintf(session_name, sizeof(session_name), "muxly-c-example-%ld", (long)getpid());
+
+    printf("muxly version: %s\n", muxly_version());
+    printf("socket path: %s\n", socket_path);
+
+    client = muxly_client_create(socket_path);
     if (client == NULL) {
         fprintf(stderr, "client create failed\n");
         return 1;
     }
-    if (response != NULL) {
-        printf("ping response: %s\n", response);
-        muxly_string_free(response);
-    } else {
-        fprintf(stderr, "ping failed\n");
+
+    if (!print_owned("ping response", muxly_client_ping(client))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("document status", muxly_client_document_status(client))) {
+        muxly_client_destroy(client);
+        return 1;
+    }
+    if (!print_owned("session create", muxly_client_session_create(client, session_name, command))) {
+        muxly_client_destroy(client);
         return 1;
     }
 
-    if (document != NULL) {
-        printf("document response: %s\n", document);
-        muxly_string_free(document);
-    } else {
-        fprintf(stderr, "document get failed\n");
+    usleep(200 * 1000);
+
+    if (!print_owned("document response", muxly_client_document_get(client))) {
+        muxly_client_destroy(client);
         return 1;
     }
-
-    if (view_root != NULL) {
-        printf("view root response: %s\n", view_root);
-        muxly_string_free(view_root);
-    } else {
-        fprintf(stderr, "view set root failed\n");
-        return 1;
-    }
-
-    if (graph != NULL) {
-        printf("graph response: %s\n", graph);
-        muxly_string_free(graph);
-    } else {
-        fprintf(stderr, "graph get failed\n");
-        return 1;
-    }
-
-    if (node != NULL) {
-        printf("node response: %s\n", node);
-        muxly_string_free(node);
-    } else {
-        fprintf(stderr, "node get failed\n");
+    if (!print_owned("graph response", muxly_client_graph_get(client))) {
+        muxly_client_destroy(client);
         return 1;
     }
 

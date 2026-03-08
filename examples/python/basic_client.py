@@ -1,4 +1,6 @@
 import ctypes
+import os
+import time
 
 
 def main() -> None:
@@ -9,18 +11,23 @@ def main() -> None:
     lib.muxly_client_destroy.argtypes = [ctypes.c_void_p]
     lib.muxly_client_ping.argtypes = [ctypes.c_void_p]
     lib.muxly_client_ping.restype = ctypes.c_void_p
+    lib.muxly_client_document_status.argtypes = [ctypes.c_void_p]
+    lib.muxly_client_document_status.restype = ctypes.c_void_p
     lib.muxly_client_document_get.argtypes = [ctypes.c_void_p]
     lib.muxly_client_document_get.restype = ctypes.c_void_p
-    lib.muxly_client_node_get.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
-    lib.muxly_client_node_get.restype = ctypes.c_void_p
-    lib.muxly_client_view_set_root.argtypes = [ctypes.c_void_p, ctypes.c_ulonglong]
-    lib.muxly_client_view_set_root.restype = ctypes.c_void_p
+    lib.muxly_client_session_create.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+    lib.muxly_client_session_create.restype = ctypes.c_void_p
     lib.muxly_client_graph_get.argtypes = [ctypes.c_void_p]
     lib.muxly_client_graph_get.restype = ctypes.c_void_p
     lib.muxly_string_free.argtypes = [ctypes.c_void_p]
 
+    socket_path = os.environ.get("MUXLY_SOCKET", "/tmp/muxly.sock").encode()
+    session_name = f"muxly-python-example-{os.getpid()}".encode()
+    command = b"sh -lc 'printf hello-from-python-binding\\n; sleep 1'"
+
     print("muxly version:", lib.muxly_version().decode())
-    client = lib.muxly_client_create(b"/tmp/muxly.sock")
+    print("socket path:", socket_path.decode())
+    client = lib.muxly_client_create(socket_path)
     if not client:
         raise SystemExit("client create failed")
 
@@ -33,30 +40,32 @@ def main() -> None:
     finally:
         lib.muxly_string_free(ptr)
 
+    status_ptr = lib.muxly_client_document_status(client)
+    if not status_ptr:
+        raise SystemExit("document status failed")
+
+    try:
+        print("document status:", ctypes.cast(status_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(status_ptr)
+
+    session_ptr = lib.muxly_client_session_create(client, session_name, command)
+    if not session_ptr:
+        raise SystemExit("session create failed")
+    try:
+        print("session create response:", ctypes.cast(session_ptr, ctypes.c_char_p).value.decode())
+    finally:
+        lib.muxly_string_free(session_ptr)
+
+    time.sleep(0.2)
+
     document_ptr = lib.muxly_client_document_get(client)
     if not document_ptr:
         raise SystemExit("document get failed")
-
     try:
         print("document response:", ctypes.cast(document_ptr, ctypes.c_char_p).value.decode())
     finally:
         lib.muxly_string_free(document_ptr)
-
-    node_ptr = lib.muxly_client_node_get(client, 2)
-    if not node_ptr:
-        raise SystemExit("node get failed")
-    try:
-        print("node response:", ctypes.cast(node_ptr, ctypes.c_char_p).value.decode())
-    finally:
-        lib.muxly_string_free(node_ptr)
-
-    root_ptr = lib.muxly_client_view_set_root(client, 2)
-    if not root_ptr:
-        raise SystemExit("view set root failed")
-    try:
-        print("view set root response:", ctypes.cast(root_ptr, ctypes.c_char_p).value.decode())
-    finally:
-        lib.muxly_string_free(root_ptr)
 
     graph_ptr = lib.muxly_client_graph_get(client)
     if not graph_ptr:
