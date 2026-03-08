@@ -63,9 +63,52 @@ export fn muxly_client_node_get(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
     return ownedStringResult(client.allocator, muxly.api.nodeGet(client.allocator, client.socket_path, node_id));
 }
 
+export fn muxly_client_node_append(
+    handle: ?*ClientHandle,
+    parent_id: u64,
+    kind: [*:0]const u8,
+    title: [*:0]const u8,
+) ?[*:0]u8 {
+    const client = handle orelse return null;
+    return ownedStringResult(
+        client.allocator,
+        muxly.api.nodeAppend(
+            client.allocator,
+            client.socket_path,
+            parent_id,
+            std.mem.span(kind),
+            std.mem.span(title),
+        ),
+    );
+}
+
+export fn muxly_client_node_update(
+    handle: ?*ClientHandle,
+    node_id: u64,
+    title: ?[*:0]const u8,
+    content: ?[*:0]const u8,
+) ?[*:0]u8 {
+    const client = handle orelse return null;
+    const title_slice = if (title) |value| std.mem.span(value) else null;
+    const content_slice = if (content) |value| std.mem.span(value) else null;
+    return ownedStringResult(
+        client.allocator,
+        muxly.api.nodeUpdate(client.allocator, client.socket_path, node_id, title_slice, content_slice),
+    );
+}
+
+export fn muxly_client_node_remove(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
+    const client = handle orelse return null;
+    return ownedStringResult(client.allocator, muxly.api.nodeRemove(client.allocator, client.socket_path, node_id));
+}
+
 export fn muxly_client_leaf_source_get(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
     const client = handle orelse return null;
     return ownedStringResult(client.allocator, muxly.api.leafSourceGet(client.allocator, client.socket_path, node_id));
+}
+
+export fn muxly_client_view_clear_root(handle: ?*ClientHandle) ?[*:0]u8 {
+    return callHandleStringApi(handle, muxly.api.viewClearRoot);
 }
 
 export fn muxly_client_view_set_root(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
@@ -76,6 +119,15 @@ export fn muxly_client_view_set_root(handle: ?*ClientHandle, node_id: u64) ?[*:0
 export fn muxly_client_view_elide(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
     const client = handle orelse return null;
     return ownedStringResult(client.allocator, muxly.api.viewElide(client.allocator, client.socket_path, node_id));
+}
+
+export fn muxly_client_view_expand(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
+    const client = handle orelse return null;
+    return ownedStringResult(client.allocator, muxly.api.viewExpand(client.allocator, client.socket_path, node_id));
+}
+
+export fn muxly_client_view_reset(handle: ?*ClientHandle) ?[*:0]u8 {
+    return callHandleStringApi(handle, muxly.api.viewReset);
 }
 
 export fn muxly_client_pane_capture(handle: ?*ClientHandle, pane_id: [*:0]const u8) ?[*:0]u8 {

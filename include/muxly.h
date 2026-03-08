@@ -53,11 +53,35 @@ char *muxly_client_document_get(muxly_client *client);
 char *muxly_client_graph_get(muxly_client *client);
 char *muxly_client_document_status(muxly_client *client);
 
+/*
+ * Synthetic document-editing helpers.
+ *
+ * node ids are muxly node ids from earlier response payloads.
+ * muxly_client_node_append() requires non-null `kind` and `title`.
+ * muxly_client_node_update() requires at least one of `title` or `content`.
+ */
+char *muxly_client_node_append(
+    muxly_client *client,
+    unsigned long long parent_id,
+    const char *kind,
+    const char *title
+);
+char *muxly_client_node_update(
+    muxly_client *client,
+    unsigned long long node_id,
+    const char *title,
+    const char *content
+);
+char *muxly_client_node_remove(muxly_client *client, unsigned long long node_id);
+
 /* Node/view helpers use muxly node ids from earlier response payloads. */
 char *muxly_client_node_get(muxly_client *client, unsigned long long node_id);
 char *muxly_client_leaf_source_get(muxly_client *client, unsigned long long node_id);
+char *muxly_client_view_clear_root(muxly_client *client);
 char *muxly_client_view_set_root(muxly_client *client, unsigned long long node_id);
 char *muxly_client_view_elide(muxly_client *client, unsigned long long node_id);
+char *muxly_client_view_expand(muxly_client *client, unsigned long long node_id);
+char *muxly_client_view_reset(muxly_client *client);
 
 /* tmux helpers accept muxly pane ids or session names as NUL-terminated strings. */
 char *muxly_client_pane_capture(muxly_client *client, const char *pane_id);
