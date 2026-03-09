@@ -1,10 +1,15 @@
 import ctypes
 import json
 import os
+import pathlib
+
+
+REPO = pathlib.Path(__file__).resolve().parents[3]
+LIBMUXLY = REPO / "zig-out/lib/libmuxly.so"
 
 
 def main() -> None:
-    lib = ctypes.CDLL("./zig-out/lib/libmuxly.so")
+    lib = ctypes.CDLL(str(LIBMUXLY))
     lib.muxly_version.restype = ctypes.c_char_p
     lib.muxly_client_create.argtypes = [ctypes.c_char_p]
     lib.muxly_client_create.restype = ctypes.c_void_p

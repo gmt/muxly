@@ -35,6 +35,8 @@ def main() -> None:
 
     c_example = pathlib.Path("/tmp/muxly-c-basic-client")
 
+    run(env, "zig", "build", "example-deps")
+
     try:
         os.remove(SOCKET_PATH)
     except FileNotFoundError:
@@ -55,7 +57,7 @@ def main() -> None:
         run(
             env,
             "cc",
-            "examples/c/basic_client.c",
+            "examples/tom/c/basic_client.c",
             "-Izig-out/include",
             "-Lzig-out/lib",
             f"-Wl,-rpath,{library_dir}",
@@ -68,13 +70,13 @@ def main() -> None:
             env,
             "zig",
             "run",
-            "examples/zig/basic_client.zig",
+            "examples/tom/zig/basic_client.zig",
             "-lc",
             "-Izig-out/include",
             "-Lzig-out/lib",
             "-lmuxly",
         )
-        run(env, "python3", "examples/python/basic_client.py")
+        run(env, "python3", "examples/tom/python/basic_client.py")
 
         print("binding examples passed")
     finally:

@@ -25,6 +25,16 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - arbitrary process/editor/shell runtime state remains the responsibility of
   that program unless a cooperative adapter exists
 
+### Terminology clarity
+
+- the daemon maintains a **TOM**: a Terminal Object Model
+- TOM refers to muxly's live, server-side, DOM-like object graph
+- muxml is the serializable representation and interchange shape, not the same
+  thing as the live TOM
+- older discussion may loosely call the TOM a "DOM" or "pseudo-DOM"
+- when those terms refer to muxly's own server object rather than an exogenous
+  concept, prefer **TOM** instead for clarity and consistency
+
 ### Append-oriented by default
 
 - terminal and log-like regions usually grow downward

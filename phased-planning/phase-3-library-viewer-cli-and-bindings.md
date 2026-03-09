@@ -69,9 +69,9 @@ Phase 3 starts from a working baseline:
   [src/lib/c_abi.zig](/home/greg/src/muxly/src/lib/c_abi.zig), with matching
   declarations in [include/muxly.h](/home/greg/src/muxly/include/muxly.h).
 - Example consumers exist in C, Zig, and Python under
-  [examples/c/basic_client.c](/home/greg/src/muxly/examples/c/basic_client.c),
-  [examples/zig/basic_client.zig](/home/greg/src/muxly/examples/zig/basic_client.zig),
-  and [examples/python/basic_client.py](/home/greg/src/muxly/examples/python/basic_client.py).
+  [basic_client.c](/home/greg/src/muxly/examples/tom/c/basic_client.c),
+  [basic_client.zig](/home/greg/src/muxly/examples/tom/zig/basic_client.zig),
+  and [basic_client.py](/home/greg/src/muxly/examples/tom/python/basic_client.py).
 - Docs treat runnable examples as part of the contract in
   [docs/demos.md](/home/greg/src/muxly/docs/demos.md) and
   [README.md](/home/greg/src/muxly/README.md).
@@ -277,9 +277,9 @@ Current repo reality that should drive this slice:
   failure semantics or argument expectations in enough detail to stand on its
   own
 - the shipped examples in
-  [examples/c/basic_client.c](/home/greg/src/muxly/examples/c/basic_client.c),
-  [examples/zig/basic_client.zig](/home/greg/src/muxly/examples/zig/basic_client.zig),
-  and [examples/python/basic_client.py](/home/greg/src/muxly/examples/python/basic_client.py)
+  [basic_client.c](/home/greg/src/muxly/examples/tom/c/basic_client.c),
+  [basic_client.zig](/home/greg/src/muxly/examples/tom/zig/basic_client.zig),
+  and [basic_client.py](/home/greg/src/muxly/examples/tom/python/basic_client.py)
   still hard-code `/tmp/muxly.sock` and assume useful node ids already exist
 
 Start this slice in the following order:
@@ -343,8 +343,9 @@ Current status:
 - complete
 - [include/muxly.h](/home/greg/src/muxly/include/muxly.h) now documents the
   supported phase-3 C ABI contract directly
-- the shipped examples in `examples/c`, `examples/zig`, and `examples/python`
-  use the documented handle-based surface and create their own synthetic state
+- the shipped examples in `examples/tom/c`, `examples/tom/zig`, and
+  `examples/tom/python` use the documented handle-based surface and create
+  their own synthetic state
 - [scripts/run_binding_examples.py](/home/greg/src/muxly/scripts/run_binding_examples.py)
   is the repo-local proof path for the binding examples
 
@@ -367,9 +368,9 @@ interface.
 
 Likely touchpoints:
 
-- [examples/c/basic_client.c](/home/greg/src/muxly/examples/c/basic_client.c)
-- [examples/zig/basic_client.zig](/home/greg/src/muxly/examples/zig/basic_client.zig)
-- [examples/python/basic_client.py](/home/greg/src/muxly/examples/python/basic_client.py)
+- [basic_client.c](/home/greg/src/muxly/examples/tom/c/basic_client.c)
+- [basic_client.zig](/home/greg/src/muxly/examples/tom/zig/basic_client.zig)
+- [basic_client.py](/home/greg/src/muxly/examples/tom/python/basic_client.py)
 - [docs/demos.md](/home/greg/src/muxly/docs/demos.md)
 
 Priorities:

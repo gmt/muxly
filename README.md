@@ -1,7 +1,7 @@
 # muxly
 
-`muxly` is a Zig-first tmux-powered terminal window manager built around a
-serializable **muxml** document model.
+`muxly` is a Zig-first tmux-powered terminal window manager built around a live
+**TOM** (Terminal Object Model) with a serializable **muxml** representation.
 
 ## Status
 
@@ -19,9 +19,9 @@ This repository has a working implementation centered on:
 
 ## Core ideas
 
-- **muxml is the primary object model.**
+- **The daemon maintains a TOM.**
   tmux sessions, windows, and panes are backend projections into a richer
-  document tree.
+  terminal object model that can be serialized as muxml.
 - **TTYs are sources, not serialized program state.**
   muxly serializes derived document/view state, not arbitrary process internals.
 - **Append mode matters.**
@@ -89,9 +89,15 @@ Milestones and remaining major work live in `phased-planning/`:
 
 ## Examples
 
-- `examples/zig/basic_client.zig`
-- `examples/c/basic_client.c`
-- `examples/python/basic_client.py`
+- `examples/README.md` — example taxonomy and intended structure
+- `examples/tom/zig/` — Zig "hello TOM" playbook
+- `examples/tom/c/` — C "hello TOM" playbook
+- `examples/tom/python/` — Python "hello TOM" playbook
+
+The playbook wrappers use dedicated example sockets by default so they can be
+run locally without colliding with a long-lived `muxlyd` on `/tmp/muxly.sock`.
+They also target `zig build example-deps` so the examples only build the daemon,
+CLI, shared library, and header they actually need.
 
 ## Phase 3 C ABI Surface
 
@@ -106,6 +112,6 @@ The intentional phase-3 `libmuxly` surface is:
 The default proof path for the shipped binding examples is:
 
 ```sh
-zig build
+zig build example-deps
 python3 scripts/run_binding_examples.py
 ```

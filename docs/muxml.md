@@ -1,14 +1,18 @@
 # muxml model
 
-`muxml` is the internal document model manipulated by muxly.
+`muxml` is the serializable document form manipulated by muxly.
 
 Some consumers may interact with it directly, but many should be able to work
 through library/client APIs without caring about the exact serialized muxml
 shape.
 
+Within the daemon, muxly maintains a live **TOM**: a Terminal Object Model.
+`muxml` is the serializable representation of that live state, not the same
+thing as the live TOM itself.
+
 ## Properties
 
-- tree-shaped and DOM-like
+- tree-shaped
 - serializable and persistable when useful
 - live/mutable while attached to active sources
 - append-oriented in the common case
@@ -33,7 +37,7 @@ A live TTY is **not** the serialized artifact.
 Instead:
 
 - a TTY is a **source**
-- muxml content may stream in from that source
+- TOM state may stream in from that source
 - muxly may serialize the **derived document/view state**
 - program-specific runtime state remains the responsibility of the program
 

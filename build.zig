@@ -21,7 +21,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    b.installArtifact(daemon);
+    const install_daemon = b.addInstallArtifact(daemon, .{});
+    b.getInstallStep().dependOn(&install_daemon.step);
 
     const cli = b.addExecutable(.{
         .name = "muxly",
@@ -34,7 +35,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    b.installArtifact(cli);
+    const install_cli = b.addInstallArtifact(cli, .{});
+    b.getInstallStep().dependOn(&install_cli.step);
 
     const viewer = b.addExecutable(.{
         .name = "muxview",
@@ -47,7 +49,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    b.installArtifact(viewer);
+    const install_viewer = b.addInstallArtifact(viewer, .{});
+    b.getInstallStep().dependOn(&install_viewer.step);
 
     const shared = b.addLibrary(.{
         .linkage = .dynamic,
@@ -63,7 +66,8 @@ pub fn build(b: *std.Build) void {
         .version = .{ .major = 0, .minor = 1, .patch = 0 },
     });
     shared.linkLibC();
-    b.installArtifact(shared);
+    const install_shared = b.addInstallArtifact(shared, .{});
+    b.getInstallStep().dependOn(&install_shared.step);
     const install_header = b.addInstallHeaderFile(b.path("include/muxly.h"), "muxly.h");
     b.getInstallStep().dependOn(&install_header.step);
 
@@ -81,6 +85,15 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    const example_deps_step = b.step(
+        "example-deps",
+        "Build and install the daemon, CLI, shared library, and header needed by example playbooks",
+    );
+    example_deps_step.dependOn(&install_daemon.step);
+    example_deps_step.dependOn(&install_cli.step);
+    example_deps_step.dependOn(&install_shared.step);
+    example_deps_step.dependOn(&install_header.step);
 
     const daemon_step = b.step("muxlyd", "Build muxly daemon");
     daemon_step.dependOn(&daemon.step);

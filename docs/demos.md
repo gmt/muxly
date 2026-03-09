@@ -19,9 +19,10 @@ Core demos:
 
 Reference example locations:
 
-- `examples/zig/basic_client.zig`
-- `examples/c/basic_client.c`
-- `examples/python/basic_client.py`
+- `examples/README.md`
+- `examples/tom/zig/`
+- `examples/tom/c/`
+- `examples/tom/python/`
 - `tests/integration/tmux_adapter_test.py` as the current reference mixed-source
   / tmux mutation flow
 
@@ -54,18 +55,21 @@ zig build
 python3 tests/integration/tmux_adapter_test.py
 ```
 
-Binding example flow:
+Hello TOM example flow:
 
-The shipped C / Zig / Python examples now all follow the same contract:
+The shipped C / Zig / Python "hello TOM" examples now all follow the same
+contract:
 
 - they read `MUXLY_SOCKET` when it is set
-- they fall back to `/tmp/muxly.sock` otherwise
+- the playbook wrappers default to dedicated per-example sockets otherwise
 - they create synthetic document/view state from scratch instead of assuming a
   useful pre-existing node id
+- each example directory has a `README.md` plus `run.sh` playbook for
+  self-contained local debugging
 
 One simple way to exercise them against a live daemon is:
 
 ```sh
-zig build
+zig build example-deps
 python3 scripts/run_binding_examples.py
 ```
