@@ -1,8 +1,7 @@
 const std = @import("std");
-const muxly = @import("muxly");
-const tmux_commands = muxly.daemon.tmux.commands;
-const tmux_events = muxly.daemon.tmux.events;
-const tmux_parser = muxly.daemon.tmux.parser;
+const tmux_commands = @import("commands.zig");
+const tmux_events = @import("events.zig");
+const tmux_parser = @import("parser.zig");
 
 pub const PaneRef = struct {
     pane_id: []u8,

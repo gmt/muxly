@@ -256,12 +256,12 @@ Done when:
 
 Current status:
 
+- first-pass complete
 - `3a`: first-pass complete
 - `3b`: first-pass complete
 - `3c`: first-pass complete
 - `3d`: first-pass complete
-- `3e`: substantially advanced but not yet closed as a dedicated proof/docs
-  pass
+- `3e`: first-pass complete
 
 What is now true in the repo:
 
@@ -275,6 +275,8 @@ What is now true in the repo:
   `session -> window -> pane` TOM subtrees
 - `session.list`, `window.list`, and `pane.list` are snapshot-backed
 - projected tmux containers are pruned when pane close empties them
+- unit proof now explicitly shows that external tmux state can be snapshotted
+  and rebuilt into a projected `session -> window -> pane` TOM subtree
 - the main tmux integration test and the nested live-TTY example both exercise
   the projected shape successfully
 

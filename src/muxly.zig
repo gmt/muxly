@@ -15,6 +15,7 @@ pub const client = @import("lib/client.zig");
 pub const api = @import("lib/api.zig");
 pub const daemon = struct {
     pub const tmux = struct {
+        pub const client = @import("daemon/tmux/client.zig");
         pub const commands = @import("daemon/tmux/commands.zig");
         pub const control_mode = @import("daemon/tmux/control_mode.zig");
         pub const events = @import("daemon/tmux/events.zig");

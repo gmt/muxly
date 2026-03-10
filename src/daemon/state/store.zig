@@ -5,7 +5,7 @@ const document_mod = muxly.document;
 const ids = muxly.ids;
 const source_mod = muxly.source;
 const types = muxly.types;
-const tmux = @import("../tmux/client.zig");
+const tmux = muxly.daemon.tmux.client;
 const tmux_events = muxly.daemon.tmux.events;
 const tmux_reconcile = muxly.daemon.tmux.reconcile;
 

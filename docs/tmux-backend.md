@@ -70,6 +70,8 @@ layout ontology become muxly's constitution by accident.
 
 The current repo-local proof path for tmux-backed behavior is:
 
+- `zig build test` for parser/control-mode coverage and an explicit
+  snapshot-to-projection rebuild proof from external tmux state
 - `python3 tests/integration/tmux_adapter_test.py` for the main daemon/CLI/view
   flow
 - `./examples/tty/basic-nesting/run.sh` for one small nested live-TTY demo
