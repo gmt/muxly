@@ -136,6 +136,27 @@ pub const Store = struct {
         return session_node_id;
     }
 
+    pub fn rebuildTmuxSessionProjectionForPane(
+        self: *Store,
+        parent_id: ids.NodeId,
+        pane_id: []const u8,
+    ) !ids.NodeId {
+        try self.refreshTmuxPaneSnapshots();
+
+        const snapshot = self.findTmuxPaneSnapshot(pane_id) orelse return error.UnknownPane;
+        var session_snapshots = std.array_list.Managed(tmux_events.PaneSnapshot).init(self.allocator);
+        defer session_snapshots.deinit();
+
+        for (self.tmux_pane_snapshots.items) |item| {
+            if (std.mem.eql(u8, item.session_id, snapshot.session_id)) {
+                try session_snapshots.append(item);
+            }
+        }
+
+        _ = try self.rebuildTmuxSessionProjection(parent_id, session_snapshots.items);
+        return self.findNodeIdByPaneId(pane_id) orelse return error.UnknownNode;
+    }
+
     pub fn createTmuxWindow(
         self: *Store,
         target: []const u8,
@@ -259,6 +280,13 @@ pub const Store = struct {
                 },
                 else => {},
             }
+        }
+        return null;
+    }
+
+    fn findTmuxPaneSnapshot(self: *Store, pane_id: []const u8) ?tmux_events.PaneSnapshot {
+        for (self.tmux_pane_snapshots.items) |snapshot| {
+            if (std.mem.eql(u8, snapshot.pane_id, pane_id)) return snapshot;
         }
         return null;
     }
