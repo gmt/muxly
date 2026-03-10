@@ -56,6 +56,12 @@ zig build
 python3 tests/integration/tmux_adapter_test.py
 ```
 
+This is the current authoritative tmux-backend proof path while the backend
+remains command-backed.
+
+The next substantive phase-4 implementation tranche is control-mode attachment
+and parser isolation, not a larger docs pass and not reconnect logic first.
+
 Hello TOM example flow:
 
 The shipped C / Zig / Python "hello TOM" examples now all follow the same
