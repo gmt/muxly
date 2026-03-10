@@ -65,6 +65,7 @@ Every phase should preserve the project-wide rules documented in
 - `changelog.md` for completed phase work and closed slice checkpoints
 - `phase-4-control-mode-and-state-recovery.md`
 - `phase-5-keybindings-menu-nvim.md`
+- `phase-6-terminal-capture-and-persistence.md`
 
 ## Current status snapshot
 
@@ -76,6 +77,7 @@ concentrated in:
 - menu/modeline projection
 - deeper viewer UX
 - Neovim integration
+- terminal capture / scrollback / durable artifact semantics
 
 One additional future seam should now be treated as explicit roadmap material,
 not as an accidental implementation detail:
