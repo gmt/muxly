@@ -110,6 +110,15 @@ The intentional phase-3 `libmuxly` surface is:
 - selected tmux helpers for capture and session/pane creation
 - shipped C / Zig / Python examples that use only that documented surface
 
+Current daemon-lifecycle posture:
+
+- `libmuxly` is currently a client library for an external `muxlyd`
+- library calls expect a daemon to already be listening on the chosen socket
+- the example/playbook wrappers may auto-launch `muxlyd`, but the library does
+  not currently do so on its own
+- a more transparent downstream-consumer experience likely wants an explicit
+  daemon discovery/autostart policy rather than leaving that behavior implicit
+
 The default proof path for the shipped binding examples is:
 
 ```sh

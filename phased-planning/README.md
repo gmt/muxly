@@ -77,6 +77,17 @@ concentrated in:
 - deeper viewer UX
 - Neovim integration
 
+One additional future seam should now be treated as explicit roadmap material,
+not as an accidental implementation detail:
+
+- daemon discovery/autostart policy for transparent library-consumer UX
+
+Right now `libmuxly` is a client surface over an external `muxlyd`, while the
+example/playbook layer may start the daemon on demand. If muxly eventually
+wants a truly transparent downstream library experience, that daemon-lifecycle
+policy should be designed intentionally in a later phase rather than emerging
+implicitly from wrappers.
+
 ## Testing expectation
 
 Future phases should continue to treat testing as first-class work:
