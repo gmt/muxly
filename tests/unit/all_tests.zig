@@ -7,6 +7,7 @@ comptime {
     _ = @import("view_test.zig");
     _ = @import("viewer_render_test.zig");
     _ = @import("keymap_test.zig");
+    _ = @import("tmux_control_mode_test.zig");
 }
 
 test "document bootstrap model supports append and xml serialization" {
