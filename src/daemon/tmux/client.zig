@@ -1,4 +1,8 @@
 const std = @import("std");
+const muxly = @import("muxly");
+const tmux_commands = muxly.daemon.tmux.commands;
+const tmux_events = muxly.daemon.tmux.events;
+const tmux_parser = muxly.daemon.tmux.parser;
 
 pub const PaneRef = struct {
     pane_id: []u8,
@@ -135,6 +139,29 @@ pub fn sendKeys(allocator: std.mem.Allocator, pane_id: []const u8, keys: []const
 pub fn closePane(allocator: std.mem.Allocator, pane_id: []const u8) !void {
     const result = try run(allocator, &.{ "tmux", "kill-pane", "-t", pane_id });
     defer freeRunResult(allocator, result);
+}
+
+pub fn listPaneSnapshots(allocator: std.mem.Allocator) ![]tmux_events.PaneSnapshot {
+    const result = run(allocator, &.{ "tmux", "list-panes", "-a", "-F", tmux_commands.pane_snapshot_format }) catch |err| switch (err) {
+        error.TmuxCommandFailed, error.FileNotFound => return try allocator.alloc(tmux_events.PaneSnapshot, 0),
+        else => return err,
+    };
+    defer freeRunResult(allocator, result);
+
+    var snapshots = std.array_list.Managed(tmux_events.PaneSnapshot).init(allocator);
+    errdefer {
+        for (snapshots.items) |*snapshot| snapshot.deinit(allocator);
+        snapshots.deinit();
+    }
+
+    var lines = std.mem.splitScalar(u8, trimTrailingNewline(result.stdout), '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try tmux_parser.parsePaneSnapshotLine(line);
+        try snapshots.append(try parsed.clone(allocator));
+    }
+
+    return try snapshots.toOwnedSlice();
 }
 
 fn run(allocator: std.mem.Allocator, argv: []const []const u8) !std.process.Child.RunResult {

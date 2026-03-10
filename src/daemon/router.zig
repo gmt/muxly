@@ -59,6 +59,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "session.list")) {
+        try store.refreshTmuxPaneSnapshots();
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writeSessionList(store, result.writer());
@@ -66,6 +67,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "window.list")) {
+        try store.refreshTmuxPaneSnapshots();
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writeWindowList(store, result.writer());
@@ -73,6 +75,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.list")) {
+        try store.refreshTmuxPaneSnapshots();
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try writePaneList(store, result.writer());
@@ -466,26 +469,23 @@ fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
     defer seen.deinit();
     try writer.writeAll("[");
     var first = true;
-    for (store.document.nodes.items) |node| {
-        switch (node.source) {
-            .tty => |tty| {
-                var duplicate = false;
-                for (seen.items) |existing| {
-                    if (std.mem.eql(u8, existing, tty.session_name)) {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (duplicate) continue;
-                try seen.append(tty.session_name);
-                if (!first) try writer.writeAll(",");
-                first = false;
-                try writer.writeAll("{\"sessionName\":");
-                try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
-                try writer.writeAll("}");
-            },
-            else => {},
+    for (store.tmux_pane_snapshots.items) |snapshot| {
+        var duplicate = false;
+        for (seen.items) |existing| {
+            if (std.mem.eql(u8, existing, snapshot.session_id)) {
+                duplicate = true;
+                break;
+            }
         }
+        if (duplicate) continue;
+        try seen.append(snapshot.session_id);
+        if (!first) try writer.writeAll(",");
+        first = false;
+        try writer.writeAll("{\"sessionName\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_name, .{})});
+        try writer.writeAll(",\"sessionId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_id, .{})});
+        try writer.writeAll("}");
     }
     try writer.writeAll("]");
 }
@@ -496,30 +496,27 @@ fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
     defer seen.deinit();
     try writer.writeAll("[");
     var first = true;
-    for (store.document.nodes.items) |node| {
-        switch (node.source) {
-            .tty => |tty| {
-                if (tty.window_id) |window_id| {
-                    var duplicate = false;
-                    for (seen.items) |existing| {
-                        if (std.mem.eql(u8, existing.session, tty.session_name) and std.mem.eql(u8, existing.window, window_id)) {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    if (duplicate) continue;
-                    try seen.append(.{ .session = tty.session_name, .window = window_id });
-                    if (!first) try writer.writeAll(",");
-                    first = false;
-                    try writer.writeAll("{\"sessionName\":");
-                    try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
-                    try writer.writeAll(",\"windowId\":");
-                    try writer.print("{f}", .{std.json.fmt(window_id, .{})});
-                    try writer.writeAll("}");
-                }
-            },
-            else => {},
+    for (store.tmux_pane_snapshots.items) |snapshot| {
+        var duplicate = false;
+        for (seen.items) |existing| {
+            if (std.mem.eql(u8, existing.session, snapshot.session_id) and std.mem.eql(u8, existing.window, snapshot.window_id)) {
+                duplicate = true;
+                break;
+            }
         }
+        if (duplicate) continue;
+        try seen.append(.{ .session = snapshot.session_id, .window = snapshot.window_id });
+        if (!first) try writer.writeAll(",");
+        first = false;
+        try writer.writeAll("{\"sessionName\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_name, .{})});
+        try writer.writeAll(",\"sessionId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_id, .{})});
+        try writer.writeAll(",\"windowId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.window_id, .{})});
+        try writer.writeAll(",\"windowName\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.window_name, .{})});
+        try writer.writeAll("}");
     }
     try writer.writeAll("]");
 }
@@ -527,27 +524,29 @@ fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
 fn writePaneList(store: *store_mod.Store, writer: anytype) !void {
     try writer.writeAll("[");
     var first = true;
-    for (store.document.nodes.items) |node| {
-        switch (node.source) {
-            .tty => |tty| {
-                if (tty.pane_id) |pane_id| {
-                    if (!first) try writer.writeAll(",");
-                    first = false;
-                    try writer.writeAll("{\"nodeId\":");
-                    try writer.print("{d}", .{node.id});
-                    try writer.writeAll(",\"sessionName\":");
-                    try writer.print("{f}", .{std.json.fmt(tty.session_name, .{})});
-                    if (tty.window_id) |window_id| {
-                        try writer.writeAll(",\"windowId\":");
-                        try writer.print("{f}", .{std.json.fmt(window_id, .{})});
-                    }
-                    try writer.writeAll(",\"paneId\":");
-                    try writer.print("{f}", .{std.json.fmt(pane_id, .{})});
-                    try writer.writeAll("}");
-                }
-            },
-            else => {},
+    for (store.tmux_pane_snapshots.items) |snapshot| {
+        if (!first) try writer.writeAll(",");
+        first = false;
+        try writer.writeAll("{");
+        if (store.findNodeIdByPaneId(snapshot.pane_id)) |node_id| {
+            try writer.writeAll("\"nodeId\":");
+            try writer.print("{d}", .{node_id});
+            try writer.writeAll(",");
         }
+        try writer.writeAll("\"sessionName\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_name, .{})});
+        try writer.writeAll(",\"sessionId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.session_id, .{})});
+        try writer.writeAll(",\"windowId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.window_id, .{})});
+        try writer.writeAll(",\"windowName\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.window_name, .{})});
+        try writer.writeAll(",\"paneId\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.pane_id, .{})});
+        try writer.writeAll(",\"paneTitle\":");
+        try writer.print("{f}", .{std.json.fmt(snapshot.pane_title, .{})});
+        try writer.print(",\"paneActive\":{}", .{snapshot.pane_active});
+        try writer.writeAll("}");
     }
     try writer.writeAll("]");
 }

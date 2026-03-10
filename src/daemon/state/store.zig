@@ -13,6 +13,7 @@ pub const Store = struct {
     allocator: std.mem.Allocator,
     capabilities: capabilities_mod.Capabilities = .{},
     document: document_mod.Document,
+    tmux_pane_snapshots: std.ArrayListUnmanaged(tmux_events.PaneSnapshot) = .{},
 
     pub fn init(allocator: std.mem.Allocator) !Store {
         var document = try document_mod.Document.init(allocator, 1, "muxly");
@@ -29,6 +30,7 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
+        self.clearTmuxPaneSnapshots();
         self.document.deinit();
     }
 
@@ -72,6 +74,17 @@ pub const Store = struct {
                     try node.setContent(self.allocator, content);
                 },
             }
+        }
+    }
+
+    pub fn refreshTmuxPaneSnapshots(self: *Store) !void {
+        self.clearTmuxPaneSnapshots();
+        const snapshots = try tmux.listPaneSnapshots(self.allocator);
+        defer self.allocator.free(snapshots);
+
+        try self.tmux_pane_snapshots.ensureTotalCapacity(self.allocator, snapshots.len);
+        for (snapshots) |snapshot| {
+            self.tmux_pane_snapshots.appendAssumeCapacity(snapshot);
         }
     }
 
@@ -236,7 +249,7 @@ pub const Store = struct {
         return node_id;
     }
 
-    fn findNodeIdByPaneId(self: *Store, pane_id: []const u8) ?ids.NodeId {
+    pub fn findNodeIdByPaneId(self: *Store, pane_id: []const u8) ?ids.NodeId {
         for (self.document.nodes.items) |node| {
             switch (node.source) {
                 .tty => |tty| {
@@ -248,6 +261,12 @@ pub const Store = struct {
             }
         }
         return null;
+    }
+
+    fn clearTmuxPaneSnapshots(self: *Store) void {
+        for (self.tmux_pane_snapshots.items) |*snapshot| snapshot.deinit(self.allocator);
+        self.tmux_pane_snapshots.deinit(self.allocator);
+        self.tmux_pane_snapshots = .{};
     }
 };
 

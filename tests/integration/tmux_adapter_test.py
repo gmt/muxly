@@ -163,7 +163,8 @@ def main() -> None:
         assert session["result"]["nodeId"] > 0
 
         sessions = run_cli(env, "session", "list")
-        assert any(item["sessionName"] == SESSION_NAME for item in sessions["result"])
+        session_entry = next(item for item in sessions["result"] if item["sessionName"] == SESSION_NAME)
+        assert session_entry["sessionId"].startswith("$")
 
         document = run_cli(env, "document", "get")["result"]
         tty_nodes = [node for node in document["nodes"] if node["kind"] == "tty_leaf"]
@@ -171,8 +172,16 @@ def main() -> None:
         pane_id = tty_nodes[-1]["source"]["paneId"]
         windows = run_cli(env, "window", "list")
         panes = run_cli(env, "pane", "list")
+        window_entry = next(item for item in windows["result"] if item["sessionName"] == SESSION_NAME)
+        pane_entry = next(item for item in panes["result"] if item["paneId"] == pane_id)
+        assert window_entry["sessionId"] == session_entry["sessionId"]
+        assert window_entry["windowId"].startswith("@")
+        assert "windowName" in window_entry
+        assert pane_entry["sessionId"] == session_entry["sessionId"]
+        assert pane_entry["windowId"] == window_entry["windowId"]
+        assert "paneTitle" in pane_entry
+        assert isinstance(pane_entry["paneActive"], bool)
         node = run_cli(env, "node", "get", str(session["result"]["nodeId"]))
-        assert any(item["paneId"] == pane_id for item in panes["result"])
         assert node["result"]["id"] == session["result"]["nodeId"]
         assert windows["result"]
 

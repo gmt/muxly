@@ -19,6 +19,27 @@ pub const PaneSnapshot = struct {
     pane_id: []const u8,
     pane_title: []const u8,
     pane_active: bool,
+
+    pub fn clone(self: PaneSnapshot, allocator: std.mem.Allocator) !PaneSnapshot {
+        return .{
+            .session_name = try allocator.dupe(u8, self.session_name),
+            .session_id = try allocator.dupe(u8, self.session_id),
+            .window_id = try allocator.dupe(u8, self.window_id),
+            .window_name = try allocator.dupe(u8, self.window_name),
+            .pane_id = try allocator.dupe(u8, self.pane_id),
+            .pane_title = try allocator.dupe(u8, self.pane_title),
+            .pane_active = self.pane_active,
+        };
+    }
+
+    pub fn deinit(self: *PaneSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_name);
+        allocator.free(self.session_id);
+        allocator.free(self.window_id);
+        allocator.free(self.window_name);
+        allocator.free(self.pane_id);
+        allocator.free(self.pane_title);
+    }
 };
 
 pub const Event = union(enum) {
