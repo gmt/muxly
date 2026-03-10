@@ -1,0 +1,14 @@
+muxview :: shard 7
+scope :: theorem-stage
+
++--------------------------------------+
+| goal: forall n, shimmer(n) -> ...    |
+| trying lemma mirror_tail             |
+| subgoal depth: 7                     |
+|                                      |
+| hypotheses                           |
+|   h1: mirror(seed)                   |
+|   h2: shimmer(seed + 1)              |
+|                                      |
+| counterexample suspected at depth 9  |
++--------------------------------------+

@@ -97,6 +97,7 @@ Milestones and remaining major work live in `phased-planning/`:
 ## Examples
 
 - `examples/README.md` — example taxonomy and intended structure
+- `examples/artifacts/` — durable text/surface artifact witnesses for Phase 6
 - `examples/tom/zig/` — Zig "hello TOM" playbook
 - `examples/tom/c/` — C "hello TOM" playbook
 - `examples/tom/python/` — Python "hello TOM" playbook

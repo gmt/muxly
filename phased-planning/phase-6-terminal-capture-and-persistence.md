@@ -140,6 +140,14 @@ Current status:
 Add small checked-in examples/proof paths for the chosen durable forms so the
 contract is not purely theoretical.
 
+Current status:
+
+- first-pass complete
+- the repo now includes small checked-in witness artifacts for both durable
+  families under [`examples/artifacts/`](/home/greg/src/muxly/examples/artifacts)
+- these are contract examples rather than daemon-emitted fixtures, but they
+  make the text-versus-surface distinction concrete and reviewable
+
 ## Per-slice proof
 
 - Slice 1:
@@ -161,4 +169,5 @@ Current phase status:
 - Slice 1: first-pass complete
 - Slice 2: first-pass complete
 - Slice 3: first-pass complete
-- Slice 4: open
+- Slice 4: first-pass complete
+- Phase 6 overall: first-pass contract complete, implementation still open

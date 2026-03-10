@@ -1,0 +1,10 @@
+$ cargo test -- --nocapture
+running 3 tests
+test projection::retains_parent_on_split ... ok
+test projection::rebuilds_from_snapshot ... ok
+test control_mode::reattach_after_exit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ echo deployment complete
+deployment complete
