@@ -81,9 +81,7 @@ Then, in another shell:
 
 Milestones and remaining major work live in `phased-planning/`:
 
-- `changelog.md` summarizes completed phase 1 and 2 work
-- `phase-3-library-viewer-cli-and-bindings.md` covers library API, viewer, CLI,
-  and binding cleanup
+- `changelog.md` summarizes completed phase 1, 2, and 3 work
 - `phase-4-control-mode-and-state-recovery.md` covers the tmux backend upgrade
 - `phase-5-keybindings-menu-nvim.md` covers deferred UX and integration work
 

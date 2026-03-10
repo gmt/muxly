@@ -2,8 +2,9 @@
 
 This directory breaks the larger muxly roadmap into smaller execution tranches.
 
-`changelog.md` summarizes milestones that are already complete. The remaining phase
-files track major work that is still open or still useful as a reference point.
+`changelog.md` summarizes milestones that are already complete. The remaining
+phase files track major work that is still open or still useful as a reference
+point.
 
 ## How to use these files
 
@@ -61,15 +62,14 @@ Every phase should preserve the project-wide rules documented in
 
 ## Current layout
 
-- `changelog.md` for completed phase 1 and 2 work
-- `phase-3-library-viewer-cli-and-bindings.md`
+- `changelog.md` for completed phase 1, 2, and 3 work
 - `phase-4-control-mode-and-state-recovery.md`
 - `phase-5-keybindings-menu-nvim.md`
 
 ## Current status snapshot
 
-Phase 1 and 2 are summarized in `changelog.md`. Remaining large work is concentrated
-in:
+Phase 1, 2, and 3 are summarized in `changelog.md`. Remaining large work is
+concentrated in:
 
 - richer tmux control-mode/state recovery
 - keybinding analysis engine

@@ -76,9 +76,46 @@ Closure evidence:
 - `zig build && python3 tests/integration/tmux_adapter_test.py`
 - manual `muxview` verification of scoped-root and elision cues
 
+## phase 3 — library API, viewer, CLI, and bindings
+
+Completed work:
+
+- library-first client consolidation:
+  - `src/lib/api.zig` became the default home for implemented server-backed
+    operation families
+  - `muxly` CLI request construction moved out of app-specific shims
+  - the old CLI-local request shim was removed
+- intentional `libmuxly` surface:
+  - handle-based client lifecycle documented in `include/muxly.h`
+  - explicit ownership and null-on-failure notes for string-returning helpers
+  - synthetic node/view editing helpers exposed through the C ABI
+- example quality upgrades:
+  - shipped C / Zig / Python "hello TOM" examples aligned on the same story
+  - examples reorganized under `examples/tom/`
+  - dedicated example sockets and playbook wrappers avoid colliding with a
+    long-lived local daemon
+  - `zig build example-deps` narrows the example prerequisite build to the
+    daemon, CLI, shared library, and header
+- docs/proof cleanup:
+  - `README.md` and `docs/demos.md` point at authoritative example/proof paths
+  - `scripts/run_binding_examples.py` is the checked-in live-daemon proof path
+  - `muxview` remains a public-surface consumer rather than a privileged path
+- terminology cleanup:
+  - muxly's live server-side object graph is now described as the TOM
+    (Terminal Object Model)
+  - `muxml` is framed as the serializable representation of the TOM
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
+- `zig build example-deps`
+- `python3 scripts/run_binding_examples.py`
+- `python3 tests/integration/tmux_adapter_test.py`
+
 ## next major work
 
-Work that is still important but **not** part of completed phase 1/2 scope is
+Work that is still important but **not** part of completed phase 1/2/3 scope is
 tracked in later phase files, especially:
 
 - phase 4 — tmux control-mode/state recovery
