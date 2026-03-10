@@ -88,6 +88,47 @@ test "tmux snapshot reconcile builds and updates one session subtree determinist
     try std.testing.expectEqualStrings("left-renamed", preserved_pane.title);
 }
 
+test "tmux snapshot reconcile rejects empty snapshots" {
+    var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    try std.testing.expectError(
+        error.EmptySnapshot,
+        reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &.{}),
+    );
+}
+
+test "tmux snapshot reconcile rejects mixed-session snapshots" {
+    var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const mixed = [_]events.PaneSnapshot{
+        .{
+            .session_name = "demo-session-a",
+            .session_id = "$0",
+            .window_id = "@1",
+            .window_name = "editor",
+            .pane_id = "%1",
+            .pane_title = "left",
+            .pane_active = true,
+        },
+        .{
+            .session_name = "demo-session-b",
+            .session_id = "$1",
+            .window_id = "@2",
+            .window_name = "logs",
+            .pane_id = "%2",
+            .pane_title = "right",
+            .pane_active = false,
+        },
+    };
+
+    try std.testing.expectError(
+        error.MixedSessionSnapshot,
+        reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &mixed),
+    );
+}
+
 fn findPaneNodeId(document: *muxly.document.Document, pane_id: []const u8) ?muxly.ids.NodeId {
     for (document.nodes.items) |node| {
         if (node.kind != .tty_leaf) continue;

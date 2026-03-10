@@ -269,6 +269,23 @@ def main() -> None:
         nested_capture = wait_for_pane_content(env, nested_view_pane_id, "theorem-demo")
         assert "theorem-demo" in nested_capture["result"]["content"].replace("n\n", "\n")
 
+        nested_split = run_cli(
+            env,
+            "pane",
+            "split",
+            nested_view_pane_id,
+            "right",
+            "sh -lc 'printf nested-split\\\\n; sleep 5'",
+        )
+        nested_split_node = run_cli(env, "node", "get", str(nested_split["result"]["nodeId"]))
+        nested_split_window_node = run_cli(env, "node", "get", str(nested_split_node["result"]["parentId"]))
+        nested_split_session_node = run_cli(env, "node", "get", str(nested_split_window_node["result"]["parentId"]))
+        assert nested_split_session_node["result"]["id"] == nested_session_node["result"]["id"]
+        assert nested_split_session_node["result"]["parentId"] == viewer_scope_id
+        nested_split_pane_id = nested_split_node["result"]["source"]["paneId"]
+        nested_split_capture = wait_for_pane_content(env, nested_split_pane_id, "nested-split")
+        assert "nested-split" in nested_split_capture["result"]["content"].replace("n\n", "\n")
+
         root = run_cli(env, "view", "set-root", str(viewer_scope_id))
         assert root["result"]["ok"] is True
         elide = run_cli(env, "view", "elide", str(viewer_child_id))
@@ -286,6 +303,12 @@ def main() -> None:
         assert "back-out :: muxly view clear-root | muxly view reset" in viewer_output
         assert "… elided by shared view state …" in viewer_output
         assert "theorem-demo" in viewer_output
+
+        nested_split_close = run_cli(env, "pane", "close", nested_split_pane_id)
+        assert nested_split_close["result"]["ok"] is True
+        document = wait_for_node_absent(env, nested_split["result"]["nodeId"])["result"]
+        nested_node_ids = {node["id"] for node in document["nodes"]}
+        assert nested_split["result"]["nodeId"] not in nested_node_ids
 
         nested_close = run_cli(env, "pane", "close", nested_view_pane_id)
         assert nested_close["result"]["ok"] is True
