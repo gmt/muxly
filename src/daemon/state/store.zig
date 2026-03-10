@@ -76,6 +76,9 @@ pub const Store = struct {
 
         if (self.tmux_projection_state == .clean) return;
         try self.refreshTmuxPaneSnapshots();
+        if (self.control_connection == null and self.tmux_projection_state == .invalidated_by_control_disconnect) {
+            try self.ensureControlConnectionForKnownTmuxState();
+        }
         try self.reconcileKnownTmuxProjections();
         try self.refreshSources();
         if (self.control_connection != null) {

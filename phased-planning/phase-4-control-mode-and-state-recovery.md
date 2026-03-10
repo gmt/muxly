@@ -292,11 +292,13 @@ Good sub-tranche boundaries:
 
 Current status:
 
-- first tranche underway
+- first-pass complete
 - a lazy control-mode attachment now drains state-changing tmux notifications
   into snapshot-backed rebuild for already-projected tmux session subtrees
 - control-mode exit now degrades explicitly to request-time snapshot rebuild
-  for known projections until reconnect is available
+  for known projections until reconnect succeeds
+- focused control-mode proof now shows reattachment to surviving tmux state
+  after the attached session exits
 - integration proof now covers external pane/window/session drift against that
   invalidation-and-rebuild path
 - this is still invalidation plus rebuild, not yet fine-grained incremental

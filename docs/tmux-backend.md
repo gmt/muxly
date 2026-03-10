@@ -28,8 +28,10 @@ notification path for invalidation and snapshot-backed rebuild.
   notifications and trigger snapshot-backed projection rebuild for known tmux
   session subtrees on the next server pump
 - if the control-mode attachment exits unexpectedly, the backend now degrades to
-  request-time snapshot rebuild for known tmux projections until a richer
-  reconnect path lands
+  request-time snapshot rebuild for known tmux projections until a control-mode
+  reattach succeeds
+- focused control-mode proof now covers reattaching to surviving tmux state
+  after the originally attached session exits
 
 ## Planned evolution
 
@@ -79,8 +81,9 @@ layout ontology become muxly's constitution by accident.
 
 The current repo-local proof path for tmux-backed behavior is:
 
-- `zig build test` for parser/control-mode coverage and an explicit
-  snapshot-to-projection rebuild proof from external tmux state
+- `zig build test` for parser/control-mode coverage, explicit
+  snapshot-to-projection rebuild proof from external tmux state, and
+  control-mode reattach proof
 - `python3 tests/integration/tmux_adapter_test.py` for the main daemon/CLI/view
   flow
 - `./examples/tty/basic-nesting/run.sh` for one small nested live-TTY demo
@@ -88,6 +91,6 @@ The current repo-local proof path for tmux-backed behavior is:
 ## Next implementation tranche
 
 The next substantive tranche is no longer "make control mode exist at all."
-That groundwork now exists. The remaining work is to move from snapshot-backed
-rebuild and projected tmux subtrees toward live event application, drift
-handling, and reconnect.
+That groundwork now exists, along with early invalidation/rebuild/reconnect
+behavior. The remaining work is to move from that coarse path toward more
+incremental live event application and stronger default-backend credibility.
