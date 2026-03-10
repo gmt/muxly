@@ -79,6 +79,11 @@ The first useful move is to write down:
 2. the transitions that create them
 3. the minimum examples that prove the distinctions are worth having
 
+First-pass Slice 1 contract:
+
+- [`docs/terminal-artifacts.md`](/home/greg/src/muxly/docs/terminal-artifacts.md)
+  now defines the initial artifact families and transition posture
+
 ## Execution order
 
 ### Slice 1 — terminology and artifact contract
@@ -86,6 +91,17 @@ The first useful move is to write down:
 Name the durable artifact families clearly and define when a live TTY-backed
 node stays live, becomes recoverable-but-detached, or becomes a durable
 captured artifact.
+
+Current status:
+
+- first-pass complete
+- the first-pass contract distinguishes:
+  - live tty source
+  - detached but recoverable tty source
+  - captured text artifact
+  - captured surface artifact
+- the contract also says explicitly that tmux scrollback is useful backend
+  evidence but not the final durable policy on its own
 
 ### Slice 2 — append/history vs surface/raw distinction
 
@@ -118,3 +134,10 @@ contract is not purely theoretical.
 
 This phase closes when muxly has an explicit durable terminal-artifact story
 that does not accidentally reduce to "whatever tmux scrollback happened to be."
+
+Current phase status:
+
+- Slice 1: first-pass complete
+- Slice 2: open
+- Slice 3: open
+- Slice 4: open

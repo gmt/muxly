@@ -24,6 +24,13 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - muxly serializes derived muxml/document/view state
 - arbitrary process/editor/shell runtime state remains the responsibility of
   that program unless a cooperative adapter exists
+- when a terminal-backed node stops being purely live, muxly should distinguish
+  between:
+  - detached but recoverable sources
+  - captured text/history artifacts
+  - captured surface artifacts
+- terminal persistence should not collapse by accident into "whatever tmux
+  scrollback happened to be"
 
 ### Terminology clarity
 

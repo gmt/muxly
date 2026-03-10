@@ -24,6 +24,10 @@ This repository has a working implementation centered on:
   terminal object model that can be serialized as muxml.
 - **TTYs are sources, not serialized program state.**
   muxly serializes derived document/view state, not arbitrary process internals.
+  The durable artifact contract for dead/frozen terminal-backed nodes is
+  intentionally separate: muxly should distinguish recoverable live sources,
+  captured text/history artifacts, and captured surface artifacts instead of
+  treating tmux scrollback as the whole policy.
 - **Append mode matters.**
   Terminal and log-like regions usually grow downward, so append-friendly
   operations and tail-following views are first-class.
@@ -72,6 +76,7 @@ Then, in another shell:
 - `docs/trine.md`
 - `docs/platform-matrix.md`
 - `docs/muxml.md`
+- `docs/terminal-artifacts.md`
 - `docs/protocol.md`
 - `docs/tmux-backend.md`
 - `docs/viewer-architecture.md`
@@ -86,6 +91,8 @@ Milestones and remaining major work live in `phased-planning/`:
 - `changelog.md` summarizes completed phase 1, 2, and 3 work
 - `phase-4-control-mode-and-state-recovery.md` covers the tmux backend upgrade
 - `phase-5-keybindings-menu-nvim.md` covers deferred UX and integration work
+- `phase-6-terminal-capture-and-persistence.md` covers durable terminal
+  artifact semantics
 
 ## Examples
 

@@ -23,6 +23,8 @@ Useful working vocabulary for muxml objects:
 
 - **live** — attached to an active backend/runtime and expected to change
 - **read-only** — inspectable but not directly editable
+- **detached** — not currently attached to a live backend pump, but still
+  treated as recoverable source-backed state rather than as a final artifact
 - **frozen** — detached from active mutation and treated as a captured form
 - **serializable** — exportable into a durable or transferable representation
 - **rehydratable** — potentially restorable into a live form, subject to source
@@ -40,6 +42,17 @@ Instead:
 - TOM state may stream in from that source
 - muxly may serialize the **derived document/view state**
 - program-specific runtime state remains the responsibility of the program
+
+Durable terminal-backed artifacts should also be distinguished explicitly:
+
+- **detached but recoverable tty source** — still part of a live/recoverable
+  source story
+- **captured text artifact** — append/history-oriented durable payload
+- **captured surface artifact** — fullscreen/raw/surface-oriented durable
+  payload
+
+That contract is defined in
+[`docs/terminal-artifacts.md`](/home/greg/src/muxly/docs/terminal-artifacts.md).
 
 ## Planned leaf source kinds
 
