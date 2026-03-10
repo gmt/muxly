@@ -124,6 +124,17 @@ Current status:
 Choose whether the durable forms are represented by new node kinds, source
 transitions, lifecycle states, or some hybrid.
 
+Current status:
+
+- first-pass complete
+- the current chosen posture is a conservative hybrid:
+  - preserve node identity and tree position across live/detached/captured
+    transitions
+  - prefer `lifecycle` plus `source` transitions before adding a large new
+    node-kind taxonomy
+  - keep room for richer capture metadata or dedicated artifact kinds later if
+    the simple posture becomes too cramped
+
 ### Slice 4 — proof artifacts
 
 Add small checked-in examples/proof paths for the chosen durable forms so the
@@ -149,5 +160,5 @@ Current phase status:
 
 - Slice 1: first-pass complete
 - Slice 2: first-pass complete
-- Slice 3: open
+- Slice 3: first-pass complete
 - Slice 4: open

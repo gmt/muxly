@@ -54,6 +54,15 @@ Durable terminal-backed artifacts should also be distinguished explicitly:
 That contract is defined in
 [`docs/terminal-artifacts.md`](/home/greg/src/muxly/docs/terminal-artifacts.md).
 
+The current first-pass representation posture is:
+
+- live or detached recoverable terminal-backed nodes remain `tty_leaf` nodes
+  with tty source metadata
+- captured terminal artifacts should preserve logical node identity while
+  transitioning out of live tty-source semantics
+- `lifecycle` plus `source` transitions should do as much of that work as
+  possible before muxly grows a larger dedicated capture taxonomy
+
 ## Planned leaf source kinds
 
 - TTY / terminal session

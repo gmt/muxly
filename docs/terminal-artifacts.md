@@ -100,15 +100,45 @@ policy:
 
 ## Representation posture
 
-This contract does not yet force one exact TOM/muxml encoding. Later phases may
-represent these families using:
+The first-pass TOM/muxml posture should be conservative:
+
+- preserve node identity and tree position when a terminal-backed node changes
+  from live to detached or captured
+- prefer representing the distinction through `lifecycle` plus `source`
+  transitions before introducing a large new node-kind taxonomy
+- allow later phases to add richer capture metadata or dedicated artifact kinds
+  only if the source/lifecycle approach becomes too cramped
+
+In practical terms, the first-pass representation target is:
+
+- **live tty source**
+  - stays a `tty_leaf`
+  - keeps `source = tty`
+  - uses `lifecycle = live`
+- **detached but recoverable tty source**
+  - stays a `tty_leaf`
+  - keeps `source = tty`
+  - uses `lifecycle = detached`
+- **captured text artifact**
+  - keeps the same logical node identity
+  - uses `lifecycle = frozen`
+  - stops pretending to be a live tty source
+  - carries a durable text payload in TOM/muxml content
+- **captured surface artifact**
+  - keeps the same logical node identity
+  - uses `lifecycle = frozen`
+  - stops pretending to be a live tty source
+  - carries a durable surface-oriented payload plus any future metadata needed
+    to describe the captured screen honestly
+
+This leaves room for later implementation choices:
 
 - new node kinds
 - source-kind transitions
 - lifecycle-state transitions
 - or a hybrid of those approaches
 
-The important first-pass rule is simpler:
+The important first-pass rule is still simpler:
 
 - muxly must name the difference between recoverable live sources, captured
   text/history artifacts, and captured surface artifacts before persistence
