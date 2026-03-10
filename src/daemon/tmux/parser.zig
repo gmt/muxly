@@ -51,12 +51,26 @@ fn parseNotification(value: []const u8) events.Notification {
 pub fn parsePaneSnapshotLine(line: []const u8) !events.PaneSnapshot {
     var parts = std.mem.splitScalar(u8, line, '\t');
     const session_name = parts.next() orelse return error.InvalidPaneSnapshot;
+    const session_id = parts.next() orelse return error.InvalidPaneSnapshot;
     const window_id = parts.next() orelse return error.InvalidPaneSnapshot;
+    const window_name = parts.next() orelse return error.InvalidPaneSnapshot;
     const pane_id = parts.next() orelse return error.InvalidPaneSnapshot;
+    const pane_title = parts.next() orelse return error.InvalidPaneSnapshot;
+    const pane_active = parts.next() orelse return error.InvalidPaneSnapshot;
 
     return .{
         .session_name = session_name,
+        .session_id = session_id,
         .window_id = window_id,
+        .window_name = window_name,
         .pane_id = pane_id,
+        .pane_title = pane_title,
+        .pane_active = try parseBoolFlag(pane_active),
     };
+}
+
+fn parseBoolFlag(value: []const u8) !bool {
+    if (std.mem.eql(u8, value, "0")) return false;
+    if (std.mem.eql(u8, value, "1")) return true;
+    return error.InvalidBoolFlag;
 }

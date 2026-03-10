@@ -17,14 +17,18 @@ test "tmux control-mode parser handles boundaries notifications and output" {
     try std.testing.expectEqualStrings("session-changed", notification.notification.name);
     try std.testing.expectEqualStrings("$0 muxly-control-probe", notification.notification.payload);
 
-    const output = try parser.parseLine("muxly-control-probe\t@0\t%0");
+    const output = try parser.parseLine("muxly-control-probe\t$0\t@0\ttmux\t%0\tproof-pane\t1");
     try std.testing.expect(output == .output);
-    try std.testing.expectEqualStrings("muxly-control-probe\t@0\t%0", output.output);
+    try std.testing.expectEqualStrings("muxly-control-probe\t$0\t@0\ttmux\t%0\tproof-pane\t1", output.output);
 
-    const pane_snapshot = try parser.parsePaneSnapshotLine("muxly-control-probe\t@0\t%0");
+    const pane_snapshot = try parser.parsePaneSnapshotLine("muxly-control-probe\t$0\t@0\ttmux\t%0\tproof-pane\t1");
     try std.testing.expectEqualStrings("muxly-control-probe", pane_snapshot.session_name);
+    try std.testing.expectEqualStrings("$0", pane_snapshot.session_id);
     try std.testing.expectEqualStrings("@0", pane_snapshot.window_id);
+    try std.testing.expectEqualStrings("tmux", pane_snapshot.window_name);
     try std.testing.expectEqualStrings("%0", pane_snapshot.pane_id);
+    try std.testing.expectEqualStrings("proof-pane", pane_snapshot.pane_title);
+    try std.testing.expect(pane_snapshot.pane_active);
 
     const exit = try parser.parseLine("%exit");
     try std.testing.expect(exit == .exit);
@@ -62,6 +66,8 @@ test "tmux control-mode connection can collect a command block" {
     const first_line = block.output_lines.items[0];
     const pane_snapshot = try parser.parsePaneSnapshotLine(first_line);
     try std.testing.expectEqualStrings(session_name, pane_snapshot.session_name);
+    try std.testing.expect(pane_snapshot.window_id.len != 0);
+    try std.testing.expect(pane_snapshot.pane_id.len != 0);
 }
 
 fn cleanupSession(session_name: []const u8) void {

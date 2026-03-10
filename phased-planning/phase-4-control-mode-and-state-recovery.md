@@ -189,6 +189,39 @@ Good sub-tranche boundaries:
 - reconcile one snapshot into document state
 - replace manual attach/rebuild hacks with snapshot-driven reconstruction
 
+Recommended execution order inside Slice 3:
+
+- `3a` — mapping contract
+  Decide what tmux `session`, `window`, and `pane` become in the TOM, which
+  fields are preserved as metadata, and which identities should remain stable
+  across rebuild.
+  First acceptance bar:
+  one written backend-to-TOM mapping exists, and one concrete snapshot/example
+  can be judged against it.
+- `3b` — snapshot model
+  Expand the normalized snapshot types introduced in Slice 2 so they carry the
+  data reconciliation actually needs, without mutating TOM state yet.
+  First acceptance bar:
+  one normalized snapshot shape exists with enough fields to describe one
+  session with one window and multiple panes.
+- `3c` — rebuild and reconcile
+  Teach the store to rebuild one tmux-backed subtree from snapshot truth
+  instead of relying on command-era attachment shortcuts.
+  First acceptance bar:
+  one snapshot can deterministically rebuild one tmux-backed subtree in memory.
+- `3d` — list and query alignment
+  Make `session.list`, `window.list`, and `pane.list` reflect the richer
+  snapshot-driven model where that falls out naturally.
+  First acceptance bar:
+  at least one list family is derived from snapshot-backed state rather than an
+  ad hoc one-shot command result.
+- `3e` — proof and example touch-up
+  Update integration proof and affected live-TTY demos so snapshot rebuild is
+  demonstrated as checked-in behavior rather than as a private implementation
+  claim.
+  First acceptance bar:
+  one checked-in proof path demonstrates rebuild from snapshot truth.
+
 Target:
 
 - muxly can rebuild relevant TTY-backed state from tmux truth

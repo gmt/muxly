@@ -19,6 +19,7 @@ pub const daemon = struct {
         pub const control_mode = @import("daemon/tmux/control_mode.zig");
         pub const events = @import("daemon/tmux/events.zig");
         pub const parser = @import("daemon/tmux/parser.zig");
+        pub const reconcile = @import("daemon/tmux/reconcile.zig");
     };
 };
 pub const platform = struct {

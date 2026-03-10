@@ -13,8 +13,12 @@ pub const Notification = struct {
 
 pub const PaneSnapshot = struct {
     session_name: []const u8,
+    session_id: []const u8,
     window_id: []const u8,
+    window_name: []const u8,
     pane_id: []const u8,
+    pane_title: []const u8,
+    pane_active: bool,
 };
 
 pub const Event = union(enum) {
