@@ -17,6 +17,16 @@ test "tmux control-mode parser handles boundaries notifications and output" {
     try std.testing.expectEqualStrings("session-changed", notification.notification.name);
     try std.testing.expectEqualStrings("$0 muxly-control-probe", notification.notification.payload);
 
+    const pane_output = try parser.parseLine("%output %0 basen");
+    try std.testing.expect(pane_output == .pane_output);
+    try std.testing.expectEqualStrings("%0", pane_output.pane_output.pane_id);
+    try std.testing.expectEqualStrings("basen", pane_output.pane_output.payload);
+
+    const extended_output = try parser.parseLine("%extended-output %1 42 extn");
+    try std.testing.expect(extended_output == .pane_output);
+    try std.testing.expectEqualStrings("%1", extended_output.pane_output.pane_id);
+    try std.testing.expectEqualStrings("extn", extended_output.pane_output.payload);
+
     const output = try parser.parseLine("muxly-control-probe\t$0\t@0\ttmux\t%0\tproof-pane\t1");
     try std.testing.expect(output == .output);
     try std.testing.expectEqualStrings("muxly-control-probe\t$0\t@0\ttmux\t%0\tproof-pane\t1", output.output);

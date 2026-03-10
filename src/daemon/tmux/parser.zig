@@ -15,6 +15,12 @@ pub fn parseLine(line: []const u8) !events.Event {
     if (std.mem.startsWith(u8, line, "%error ")) {
         return .{ .command_error = try parseBoundary(line["%error ".len..]) };
     }
+    if (std.mem.startsWith(u8, line, "%output ")) {
+        return .{ .pane_output = try parsePaneOutput(line["%output ".len..]) };
+    }
+    if (std.mem.startsWith(u8, line, "%extended-output ")) {
+        return .{ .pane_output = try parsePaneOutputExtended(line["%extended-output ".len..]) };
+    }
     if (line[0] == '%') {
         return .{ .notification = parseNotification(line[1..]) };
     }
@@ -45,6 +51,27 @@ fn parseNotification(value: []const u8) events.Notification {
     return .{
         .name = value,
         .payload = "",
+    };
+}
+
+fn parsePaneOutput(value: []const u8) !events.PaneOutput {
+    if (std.mem.indexOfScalar(u8, value, ' ')) |space_index| {
+        return .{
+            .pane_id = value[0..space_index],
+            .payload = value[space_index + 1 ..],
+        };
+    }
+    return error.InvalidPaneOutput;
+}
+
+fn parsePaneOutputExtended(value: []const u8) !events.PaneOutput {
+    var parts = std.mem.splitScalar(u8, value, ' ');
+    const pane_id = parts.next() orelse return error.InvalidPaneOutput;
+    _ = parts.next() orelse return error.InvalidPaneOutput;
+    const payload = parts.rest();
+    return .{
+        .pane_id = pane_id,
+        .payload = payload,
     };
 }
 

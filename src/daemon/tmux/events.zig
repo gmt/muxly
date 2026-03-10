@@ -11,6 +11,11 @@ pub const Notification = struct {
     payload: []const u8,
 };
 
+pub const PaneOutput = struct {
+    pane_id: []const u8,
+    payload: []const u8,
+};
+
 pub const PaneSnapshot = struct {
     session_name: []const u8,
     session_id: []const u8,
@@ -47,6 +52,7 @@ pub const Event = union(enum) {
     end: CommandBoundary,
     command_error: CommandBoundary,
     notification: Notification,
+    pane_output: PaneOutput,
     output: []const u8,
     exit,
 };

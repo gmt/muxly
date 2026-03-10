@@ -88,6 +88,7 @@ pub const ControlConnection = struct {
                     if (!block_started) continue;
                     try block.output_lines.append(try self.allocator.dupe(u8, output_line));
                 },
+                .pane_output => {},
                 .end => |boundary| {
                     if (!block_started) continue;
                     if (boundary.command_number != block.boundary.command_number) continue;
