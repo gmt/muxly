@@ -93,17 +93,22 @@ pub const Store = struct {
     }
 
     pub fn attachTty(self: *Store, session_name: []const u8) !ids.NodeId {
-        return try self.attachPaneRef(.{
+        return try self.attachPaneRef(self.document.root_node_id, .{
             .pane_id = try self.allocator.dupe(u8, ""),
             .window_id = try self.allocator.dupe(u8, ""),
             .session_name = try self.allocator.dupe(u8, session_name),
         });
     }
 
-    pub fn createTmuxSession(self: *Store, session_name: []const u8, command: ?[]const u8) !ids.NodeId {
+    pub fn createTmuxSession(
+        self: *Store,
+        parent_id: ids.NodeId,
+        session_name: []const u8,
+        command: ?[]const u8,
+    ) !ids.NodeId {
         var pane_ref = try tmux.createSession(self.allocator, session_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(pane_ref);
+        return try self.attachPaneRef(parent_id, pane_ref);
     }
 
     pub fn createTmuxWindow(
@@ -114,13 +119,13 @@ pub const Store = struct {
     ) !ids.NodeId {
         var pane_ref = try tmux.createWindow(self.allocator, target, window_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(pane_ref);
+        return try self.attachPaneRef(self.document.root_node_id, pane_ref);
     }
 
     pub fn splitTmuxPane(self: *Store, target: []const u8, direction: []const u8, command: ?[]const u8) !ids.NodeId {
         var pane_ref = try tmux.splitPane(self.allocator, target, direction, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(pane_ref);
+        return try self.attachPaneRef(self.document.root_node_id, pane_ref);
     }
 
     pub fn captureTmuxPane(self: *Store, pane_id: []const u8) ![]u8 {
@@ -204,9 +209,9 @@ pub const Store = struct {
         try self.document.setElided(node_id, false);
     }
 
-    fn attachPaneRef(self: *Store, pane_ref: tmux.PaneRef) !ids.NodeId {
+    fn attachPaneRef(self: *Store, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
         const node_id = try self.document.appendNode(
-            self.document.root_node_id,
+            parent_id,
             .tty_leaf,
             pane_ref.session_name,
             .{ .tty = .{

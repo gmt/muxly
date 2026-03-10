@@ -275,11 +275,35 @@ pub fn sessionCreate(
     session_name: []const u8,
     command: ?[]const u8,
 ) ![]u8 {
+    return try sessionCreateAt(allocator, socket_path, null, session_name, command);
+}
+
+pub fn sessionCreateAt(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    parent_id: ?u64,
+    session_name: []const u8,
+    command: ?[]const u8,
+) ![]u8 {
     const session_name_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
     defer allocator.free(session_name_json);
 
-    const params_json = if (command) |value| blk: {
-        const command_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    const params_json = if (parent_id) |value|
+        if (command) |command_value| blk: {
+            const command_json = try std.json.Stringify.valueAlloc(allocator, command_value, .{});
+            defer allocator.free(command_json);
+            break :blk try std.fmt.allocPrint(
+                allocator,
+                "{{\"parentId\":{d},\"sessionName\":{s},\"command\":{s}}}",
+                .{ value, session_name_json, command_json },
+            );
+        } else try std.fmt.allocPrint(
+            allocator,
+            "{{\"parentId\":{d},\"sessionName\":{s}}}",
+            .{ value, session_name_json },
+        )
+    else if (command) |command_value| blk: {
+        const command_json = try std.json.Stringify.valueAlloc(allocator, command_value, .{});
         defer allocator.free(command_json);
         break :blk try std.fmt.allocPrint(
             allocator,

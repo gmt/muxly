@@ -23,6 +23,7 @@ Reference example locations:
 - `examples/tom/zig/`
 - `examples/tom/c/`
 - `examples/tom/python/`
+- `examples/tty/basic-nesting/`
 - `tests/integration/tmux_adapter_test.py` as the current reference mixed-source
   / tmux mutation flow
 

@@ -93,6 +93,7 @@ Milestones and remaining major work live in `phased-planning/`:
 - `examples/tom/zig/` — Zig "hello TOM" playbook
 - `examples/tom/c/` — C "hello TOM" playbook
 - `examples/tom/python/` — Python "hello TOM" playbook
+- `examples/tty/basic-nesting/` — nested live-TTY theorem-stage demo
 
 The playbook wrappers use dedicated example sockets by default so they can be
 run locally without colliding with a long-lived `muxlyd` on `/tmp/muxly.sock`.

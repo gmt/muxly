@@ -82,6 +82,8 @@ explicit, testable, and debuggable.
   remove descendants first when editing synthetic muxml structure
 - `view.reset` clears shared root/elision transforms stored in the daemon's
   current document state without mutating source attachments or node content
+- `session.create` accepts an optional `parentId`; when omitted it attaches the
+  new TTY leaf at the document root
 - `pane.followTail` / `file.followTail` currently persist a node-level
   follow-tail preference only; they do **not** yet change capture-window or
   scrollback behavior on their own

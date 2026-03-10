@@ -7,6 +7,9 @@ Examples are grouped by what they are trying to prove, not only by language.
 - `tom/`
   Language-specific "hello TOM" examples that exercise the daemon's Terminal
   Object Model through the public `libmuxly` surface.
+- `tty/`
+  Live terminal-backed examples that emphasize nested scopes, tmux connectivity,
+  and visually active regions.
 
 ## Current families
 
@@ -16,6 +19,8 @@ Examples are grouped by what they are trying to prove, not only by language.
   Zig binding playbook for the same "hello TOM" flow.
 - `tom/python/`
   Python `ctypes` binding playbook for the same "hello TOM" flow.
+- `tty/basic-nesting/`
+  A minimal nested live-TTY playbook with theorem-prover-style chatter.
 
 All current hello-TOM playbooks target `zig build example-deps` rather than a
 full repo build, so example setup stays focused on the daemon, CLI, shared

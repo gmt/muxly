@@ -9,6 +9,7 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SOCKET_PATH = "/tmp/muxly-integration.sock"
 SESSION_NAME = "muxly-integration-demo"
+NESTED_SESSION_NAME = "muxly-integration-nested-demo"
 
 
 def run_cli(env: dict[str, str], *args: str) -> dict:
@@ -64,6 +65,7 @@ def main() -> None:
         pass
 
     cleanup_tmux_session(env, SESSION_NAME)
+    cleanup_tmux_session(env, NESTED_SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -230,6 +232,19 @@ def main() -> None:
         viewer_child_id = viewer_child["result"]["nodeId"]
         viewer_child_update = run_cli(env, "node", "update", str(viewer_child_id), "content", "viewer payload")
         assert viewer_child_update["result"]["ok"] is True
+        nested_view = run_cli(
+            env,
+            "session",
+            "create-under",
+            str(viewer_scope_id),
+            NESTED_SESSION_NAME,
+            "sh -lc 'printf theorem-demo\\\\n; sleep 5'",
+        )
+        nested_view_node = run_cli(env, "node", "get", str(nested_view["result"]["nodeId"]))
+        assert nested_view_node["result"]["parentId"] == viewer_scope_id
+        nested_view_pane_id = nested_view_node["result"]["source"]["paneId"]
+        nested_capture = wait_for_pane_content(env, nested_view_pane_id, "theorem-demo")
+        assert "theorem-demo" in nested_capture["result"]["content"].replace("n\n", "\n")
 
         root = run_cli(env, "view", "set-root", str(viewer_scope_id))
         assert root["result"]["ok"] is True
@@ -247,6 +262,7 @@ def main() -> None:
         assert "path :: muxly / viewer-scope" in viewer_output
         assert "back-out :: muxly view clear-root | muxly view reset" in viewer_output
         assert "… elided by shared view state …" in viewer_output
+        assert "theorem-demo" in viewer_output
 
         reset = run_cli(env, "view", "reset")
         assert reset["result"]["ok"] is True
@@ -256,6 +272,7 @@ def main() -> None:
         print("integration test passed")
     finally:
         cleanup_tmux_session(env, SESSION_NAME)
+        cleanup_tmux_session(env, NESTED_SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)

@@ -81,6 +81,17 @@ pub fn main() !void {
                 if (cursor + 3 < args.len) args[cursor + 3] else null,
             );
         }
+    else if (std.mem.eql(u8, args[cursor], "session") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "create-under"))
+        blk: {
+            const parent_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.sessionCreateAt(
+                allocator,
+                socket_path,
+                parent_id,
+                args[cursor + 3],
+                if (cursor + 4 < args.len) args[cursor + 4] else null,
+            );
+        }
     else if (std.mem.eql(u8, args[cursor], "window") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "create"))
         blk: {
             break :blk try muxly.api.windowCreate(
@@ -224,6 +235,7 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] capture <pane-id>
         \\  muxly [--socket PATH] session create <session-name> [command]
+        \\  muxly [--socket PATH] session create-under <parent-id> <session-name> [command]
         \\  muxly [--socket PATH] window create <target-session> [window-name] [command]
         \\  muxly [--socket PATH] pane split <target-pane> <direction> [command]
         \\  muxly [--socket PATH] pane capture <pane-id>

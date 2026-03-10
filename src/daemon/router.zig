@@ -140,10 +140,16 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "session.create")) {
+        const parent_id: u64 = if (protocol.getInteger(parsed.value.params, "parentId")) |value| blk: {
+            if (value < 0) {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "parentId must be non-negative");
+            }
+            break :blk @intCast(value);
+        } else store.document.root_node_id;
         const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
         const command = protocol.getString(parsed.value.params, "command");
-        const node_id = store.createTmuxSession(session_name, command) catch |err| {
+        const node_id = store.createTmuxSession(parent_id, session_name, command) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to create tmux session: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .backend_unavailable, message);
