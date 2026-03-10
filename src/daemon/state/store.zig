@@ -472,16 +472,46 @@ fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) !
     defer buffer.deinit();
 
     var index: usize = 0;
-    while (index < payload.len) : (index += 1) {
+    while (index < payload.len) {
         const char = payload[index];
-        if (char == 'n') {
-            try buffer.append('\n');
-            continue;
+        if (char == '\\' and index + 1 < payload.len) {
+            const next = payload[index + 1];
+            if (next == 'n') {
+                try buffer.append('\n');
+                index += 2;
+                continue;
+            }
+            if (next == 'r') {
+                try buffer.append('\r');
+                index += 2;
+                continue;
+            }
+            if (next == 't') {
+                try buffer.append('\t');
+                index += 2;
+                continue;
+            }
+            if (next == '\\') {
+                try buffer.append('\\');
+                index += 2;
+                continue;
+            }
+            if (index + 3 < payload.len and isOctalDigit(next) and isOctalDigit(payload[index + 2]) and isOctalDigit(payload[index + 3])) {
+                const byte = try std.fmt.parseInt(u8, payload[index + 1 .. index + 4], 8);
+                try buffer.append(byte);
+                index += 4;
+                continue;
+            }
         }
         try buffer.append(char);
+        index += 1;
     }
 
     return try buffer.toOwnedSlice();
+}
+
+fn isOctalDigit(char: u8) bool {
+    return char >= '0' and char <= '7';
 }
 
 fn readPathAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
