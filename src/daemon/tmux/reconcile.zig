@@ -67,6 +67,27 @@ pub fn findSessionProjectionNode(
     };
 }
 
+pub fn removeSessionProjection(
+    document: *document_mod.Document,
+    session_id: []const u8,
+) !bool {
+    const session_node_id = findSessionProjectionNode(document, session_id) orelse return false;
+    try removeSubtree(document, session_node_id);
+    return true;
+}
+
+pub fn findSessionIdForPaneNode(
+    document: *document_mod.Document,
+    pane_node_id: ids.NodeId,
+) ?[]const u8 {
+    var cursor = pane_node_id;
+    while (true) {
+        const node = document.findNode(cursor) orelse return null;
+        if (markerSuffix(node.content, session_marker_prefix)) |session_id| return session_id;
+        cursor = node.parent_id orelse return null;
+    }
+}
+
 fn ensureSessionNode(
     document: *document_mod.Document,
     parent_id: ids.NodeId,

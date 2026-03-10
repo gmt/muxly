@@ -55,6 +55,18 @@ def wait_for_pane_content(env: dict[str, str], pane_id: str, needle: str, timeou
     )
 
 
+def wait_for_node_absent(env: dict[str, str], node_id: int, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last_document: dict | None = None
+    while time.time() < deadline:
+        last_document = run_cli(env, "document", "get")
+        node_ids = {node["id"] for node in last_document["result"]["nodes"]}
+        if node_id not in node_ids:
+            return last_document
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for node {node_id} to disappear: {last_document!r}")
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -231,7 +243,7 @@ def main() -> None:
 
         close = run_cli(env, "pane", "close", split_pane_id)
         assert close["result"]["ok"] is True
-        document = run_cli(env, "document", "get")["result"]
+        document = wait_for_node_absent(env, split["result"]["nodeId"])["result"]
         node_ids = {node["id"] for node in document["nodes"]}
         assert split["result"]["nodeId"] not in node_ids
 
@@ -274,6 +286,13 @@ def main() -> None:
         assert "back-out :: muxly view clear-root | muxly view reset" in viewer_output
         assert "… elided by shared view state …" in viewer_output
         assert "theorem-demo" in viewer_output
+
+        nested_close = run_cli(env, "pane", "close", nested_view_pane_id)
+        assert nested_close["result"]["ok"] is True
+        document = wait_for_node_absent(env, nested_view["result"]["nodeId"])["result"]
+        nested_node_ids = {node["id"] for node in document["nodes"]}
+        assert nested_view["result"]["nodeId"] not in nested_node_ids
+        assert nested_session_node["result"]["id"] not in nested_node_ids
 
         reset = run_cli(env, "view", "reset")
         assert reset["result"]["ok"] is True

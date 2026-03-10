@@ -199,9 +199,34 @@ pub const Store = struct {
     }
 
     pub fn closeTmuxPane(self: *Store, pane_id: []const u8) !void {
+        const node_id = self.findNodeIdByPaneId(pane_id);
+        const session_id = blk: {
+            const known_node_id = node_id orelse break :blk null;
+            break :blk tmux_reconcile.findSessionIdForPaneNode(&self.document, known_node_id);
+        };
+
         try tmux.closePane(self.allocator, pane_id);
-        if (self.findNodeIdByPaneId(pane_id)) |node_id| {
-            _ = self.document.removeNode(node_id) catch {};
+        if (node_id) |known_node_id| {
+            _ = self.document.removeNode(known_node_id) catch {};
+        }
+        if (session_id) |known_session_id| {
+            try self.refreshTmuxPaneSnapshots();
+
+            var remaining_pane_id: ?[]const u8 = null;
+            for (self.tmux_pane_snapshots.items) |snapshot| {
+                if (std.mem.eql(u8, snapshot.session_id, known_session_id)) {
+                    remaining_pane_id = snapshot.pane_id;
+                    break;
+                }
+            }
+
+            if (remaining_pane_id) |surviving_pane_id| {
+                const surviving_pane_id_copy = try self.allocator.dupe(u8, surviving_pane_id);
+                defer self.allocator.free(surviving_pane_id_copy);
+                _ = try self.rebuildTmuxSessionProjectionForPane(self.document.root_node_id, surviving_pane_id_copy);
+            } else {
+                _ = try tmux_reconcile.removeSessionProjection(&self.document, known_session_id);
+            }
         }
         try self.refreshSources();
     }
