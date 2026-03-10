@@ -6,6 +6,8 @@ const ids = muxly.ids;
 const source_mod = muxly.source;
 const types = muxly.types;
 const tmux = @import("../tmux/client.zig");
+const tmux_events = muxly.daemon.tmux.events;
+const tmux_reconcile = muxly.daemon.tmux.reconcile;
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
@@ -109,6 +111,16 @@ pub const Store = struct {
         var pane_ref = try tmux.createSession(self.allocator, session_name, command);
         defer pane_ref.deinit(self.allocator);
         return try self.attachPaneRef(parent_id, pane_ref);
+    }
+
+    pub fn rebuildTmuxSessionProjection(
+        self: *Store,
+        parent_id: ids.NodeId,
+        snapshots: []const tmux_events.PaneSnapshot,
+    ) !ids.NodeId {
+        const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(&self.document, parent_id, snapshots);
+        try self.refreshSources();
+        return session_node_id;
     }
 
     pub fn createTmuxWindow(
