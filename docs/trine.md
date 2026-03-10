@@ -35,6 +35,57 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - when those terms refer to muxly's own server object rather than an exogenous
   concept, prefer **TOM** instead for clarity and consistency
 
+### Projection over mutation
+
+- the TOM is the persistent abstract structure, not a live framebuffer
+- a `muxview` should attach to one TOM node and produce a layout projection for
+  a concrete `(rows, cols)` viewport
+- attaching a view should not casually mutate the TOM just because one viewer
+  happened to be larger or smaller than another
+- visible geometry belongs to the projection: after layout, each visible node
+  should have a deterministic absolute `(x, y, width, height)` quad inside that
+  view
+- paint should operate on a flattened list of visible regions rather than
+  walking hierarchy ad hoc during every draw
+
+### Structure and source are different axes
+
+- layout structure and source/render behavior should remain orthogonal where
+  possible
+- branch/container nodes describe composition:
+  - slot-like single-child containers
+  - stacked/split containers with an axis
+  - grids
+  - overlapping tab-like containers
+- leaf/source nodes describe content behavior:
+  - plain byte/line streams
+  - ANSI-aware streams
+  - live TTY-backed leaves
+  - file-backed leaves
+- muxly should avoid forcing source kind and layout kind into one combined
+  ontology when a cleaner cross-product will do
+
+### Terminal box model, not browser cargo cult
+
+- muxly should borrow only the box-model ideas that pay rent in terminal space
+- useful early concepts include:
+  - bounded regions
+  - direction/stacking
+  - gap and padding
+  - constrained width/height intent
+  - explicit clipping, scrolling, and follow-tail policy
+- full browser-era baggage such as a giant CSS cascade, selector cleverness, or
+  margin-heavy layout negotiation should not be imported by default
+
+### tmux is a backend, not the constitution
+
+- tmux should be used where it helps, especially as a live TTY source backend
+- tmux layout ontology should not become muxly ontology by accident
+- muxly may project tmux sessions, windows, panes, and later layout metadata
+  into the TOM, but tmux does not get to define the TOM's long-term meaning
+- if tmux cannot satisfy the intended muxly model cleanly, the backend should
+  bend or be replaced before the core model is contorted around it
+
 ### Append-oriented by default
 
 - terminal and log-like regions usually grow downward

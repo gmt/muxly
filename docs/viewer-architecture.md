@@ -18,6 +18,30 @@ for muxly documents.
 - support follow-tail inspection
 - host interaction-heavy UI ideas that do not need to be centralized
 
+## Projection model direction
+
+The current `muxview` implementation is still a modest screen-at-a-time
+reference viewer, but the architectural direction should stay clear:
+
+- a `muxview` attaches to one TOM node at a concrete `(rows, cols)` size
+- that attachment should produce a layout projection rather than mutating the
+  persistent TOM for every viewer-local size change
+- the projection step assigns deterministic absolute quads to visible regions
+- rendering should flatten that projection into a paint list rather than depend
+  on recursive hierarchy walking at paint time
+
+This keeps three concerns distinct:
+
+- TOM structure and policies
+- one concrete view/layout projection
+- the paint/composition pass for the current terminal frame
+
+Leaf content and viewport geometry also need to remain distinct. A live TTY,
+ANSI stream, or file-backed region may have content larger than its currently
+visible quad. Follow-tail, clipping, scrollback, and resize behavior should be
+treated as per-class policy decisions, not as proof that the TOM itself is a
+literal framebuffer.
+
 ## Current phase-2 cutline
 
 The current viewer is intentionally modest, but it should still make the public
