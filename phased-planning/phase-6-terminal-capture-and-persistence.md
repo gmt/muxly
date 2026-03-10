@@ -109,6 +109,16 @@ Decide how muxly distinguishes append-ish text/history cases from
 fullscreen/raw/alternate-screen surface cases and what each should serialize
 into.
 
+Current status:
+
+- first-pass complete
+- the contract now names concrete example classes for both families:
+  - shell/log/transcript cases bias toward captured text artifacts
+  - fullscreen/raw/alternate-screen cases bias toward captured surface
+    artifacts
+- alternate-screen behavior is now called out explicitly as a surface-biased
+  durable case even when tmux history exists
+
 ### Slice 3 — muxml/TOM representation
 
 Choose whether the durable forms are represented by new node kinds, source
@@ -138,6 +148,6 @@ that does not accidentally reduce to "whatever tmux scrollback happened to be."
 Current phase status:
 
 - Slice 1: first-pass complete
-- Slice 2: open
+- Slice 2: first-pass complete
 - Slice 3: open
 - Slice 4: open

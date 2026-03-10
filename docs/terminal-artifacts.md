@@ -54,6 +54,39 @@ terminal behavior as different durable cases:
 - muxly may preserve both history and surface metadata for one node later, but
   it should not pretend they are the same thing
 
+## Example classification
+
+Concrete examples should be classified by what durable representation tells the
+truth most honestly:
+
+- **captured text artifact**
+  - shell transcript
+  - tailing log output
+  - compiler/test runner output
+  - line-oriented REPL or chat transcript
+- **captured surface artifact**
+  - fullscreen editor in alternate screen
+  - process monitor / dashboard TUI
+  - ncurses file manager
+  - terminal game or animation
+
+Some cases may eventually preserve both forms, but the primary durable
+representation should still be chosen intentionally instead of leaving one
+backend-specific capture mode to impersonate both.
+
+## First-pass classification heuristics
+
+Until muxly grows richer terminal-aware classification, this should remain a
+good first-pass bias:
+
+- if the value of the terminal interaction is mainly in the append-only or
+  history-like transcript, prefer **captured text artifact**
+- if the value is mainly in the currently visible arranged surface, prefer
+  **captured surface artifact**
+- alternate-screen behavior should bias toward **captured surface artifact**
+- plain tmux history availability alone should not force a surface-oriented
+  program into the text-artifact bucket
+
 ## tmux scrollback posture
 
 tmux scrollback/history is useful backend evidence, but it is not the whole
