@@ -53,6 +53,11 @@ pub const Store = struct {
             connection.drainEvents(0, self, struct {
                 fn handle(store: *Store, event: tmux_events.Event) !void {
                     switch (event) {
+                        .pane_output => |pane_output| {
+                            store.appendTmuxPaneOutput(pane_output.pane_id, pane_output.payload) catch {
+                                store.invalidateTmuxProjection(.invalidated_by_notification);
+                            };
+                        },
                         .notification => |notification| {
                             if (isStateInvalidatingNotification(notification.name)) {
                                 store.invalidateTmuxProjection(.invalidated_by_notification);
@@ -451,7 +456,33 @@ pub const Store = struct {
         self.tmux_pane_snapshots.deinit(self.allocator);
         self.tmux_pane_snapshots = .{};
     }
+
+    fn appendTmuxPaneOutput(self: *Store, pane_id: []const u8, payload: []const u8) !void {
+        const node_id = self.findNodeIdByPaneId(pane_id) orelse return error.UnknownPane;
+        const node = self.document.findNode(node_id) orelse return error.UnknownNode;
+        if (!node.follow_tail) return;
+        const normalized = try normalizeTmuxOutputChunk(self.allocator, payload);
+        defer self.allocator.free(normalized);
+        try self.document.appendTextToNode(node_id, normalized);
+    }
 };
+
+fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    defer buffer.deinit();
+
+    var index: usize = 0;
+    while (index < payload.len) : (index += 1) {
+        const char = payload[index];
+        if (char == 'n') {
+            try buffer.append('\n');
+            continue;
+        }
+        try buffer.append(char);
+    }
+
+    return try buffer.toOwnedSlice();
+}
 
 fn readPathAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
     if (std.fs.path.isAbsolute(path)) {

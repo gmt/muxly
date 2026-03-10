@@ -295,6 +295,9 @@ Current status:
 - first-pass complete
 - a lazy control-mode attachment now drains state-changing tmux notifications
   into snapshot-backed rebuild for already-projected tmux session subtrees
+- structured `%output` / `%extended-output` events now support best-effort live
+  append into known follow-tail pane leaves, with rebuild still acting as the
+  correctness backstop
 - control-mode exit now degrades explicitly to request-time snapshot rebuild
   for known projections until reconnect succeeds
 - focused control-mode proof now shows reattachment to surviving tmux state

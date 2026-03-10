@@ -27,6 +27,9 @@ notification path for invalidation and snapshot-backed rebuild.
 - a lazy control-mode attachment can now notice state-changing tmux
   notifications and trigger snapshot-backed projection rebuild for known tmux
   session subtrees on the next server pump
+- structured `%output` / `%extended-output` notifications are now parsed, and
+  known follow-tail pane leaves can append best-effort live output directly
+  before the snapshot-rebuild fallback path catches up
 - if the control-mode attachment exits unexpectedly, the backend now degrades to
   request-time snapshot rebuild for known tmux projections until a control-mode
   reattach succeeds
@@ -42,6 +45,8 @@ Later iterations should move toward a richer control-mode-backed adapter with:
 - normalized pane/window/session state snapshots
 - lower-latency change observation than ad hoc command refreshes
 - incremental event application on top of the current snapshot/reconcile path
+- better confidence rules for when best-effort live append should be trusted
+  versus discarded in favor of rebuild
 
 Until the richer path is the default, this backend should still be described
 plainly as **command-backed with early control-mode invalidation** rather than

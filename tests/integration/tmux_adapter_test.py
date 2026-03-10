@@ -99,6 +99,17 @@ def wait_for_window_name(env: dict[str, str], window_id: str, expected_name: str
     )
 
 
+def wait_for_node_content(env: dict[str, str], node_id: int, needle: str, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last_node: dict | None = None
+    while time.time() < deadline:
+        last_node = run_cli(env, "node", "get", str(node_id))
+        if needle in last_node["result"]["content"]:
+            return last_node
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for node {node_id} to contain {needle!r}: {last_node!r}")
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -277,7 +288,7 @@ def main() -> None:
 
         send_keys = run_cli(env, "pane", "send-keys", pane_id, "echo from-send-keys", "--enter")
         assert send_keys["result"]["ok"] is True
-        time.sleep(0.2)
+        wait_for_node_content(env, session["result"]["nodeId"], "from-send-keys")
         capture = run_cli(env, "pane", "capture", pane_id)
         assert "from-send-keys" in capture["result"]["content"]
 
