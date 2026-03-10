@@ -59,8 +59,15 @@ python3 tests/integration/tmux_adapter_test.py
 This is the current authoritative tmux-backend proof path while the backend
 remains command-backed.
 
-The next substantive phase-4 implementation tranche is control-mode attachment
-and parser isolation, not a larger docs pass and not reconnect logic first.
+That flow now also exercises the current projected tmux shape:
+
+- tmux session -> TOM `subdocument`
+- tmux window -> nested `subdocument`
+- tmux pane -> nested `tty_leaf`
+
+The next substantive phase-4 tranche is no longer "make control mode exist."
+That groundwork is in place. The remaining backend work is live event
+application, drift handling, and reconnect.
 
 Hello TOM example flow:
 

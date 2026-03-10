@@ -7,9 +7,21 @@ The current muxly tmux integration is intentionally thin and command-backed.
 - session creation via `tmux new-session`
 - pane splitting via `tmux split-window`
 - pane capture via `tmux capture-pane`
-- tty-backed muxml leaves refreshed from pane output
+- tty-backed content refreshed from pane output
 - public mutations/capture flow exposed through JSON-RPC/CLI/library helpers
 - follow-tail stored as document/view metadata rather than a control-mode cursor
+- tmux mutations now project into TOM subtrees instead of only attaching loose
+  tty leaves:
+  - session `subdocument`
+  - window `subdocument`
+  - pane `tty_leaf`
+- `session.list`, `window.list`, and `pane.list` are now backed by normalized
+  tmux pane snapshots rather than by scraping whatever tty leaves happen to be
+  present in the document
+- `session.create`, `window.create`, and `pane.split` now return the projected
+  pane node inside that session/window subtree
+- `pane.close` prunes empty projected tmux containers instead of leaving empty
+  shells behind
 
 ## Planned evolution
 
@@ -19,6 +31,7 @@ Later iterations should move toward a richer control-mode-backed adapter with:
 - refresh/reconnect handling
 - normalized pane/window/session state snapshots
 - lower-latency change observation than ad hoc command refreshes
+- incremental event application on top of the current snapshot/reconcile path
 
 Until that happens, this backend should be described plainly as
 **command-backed** rather than implying an event-driven tmux mirror.
@@ -63,6 +76,7 @@ The current repo-local proof path for tmux-backed behavior is:
 
 ## Next implementation tranche
 
-Phase 4 should start by making a real control-mode attachment and parser layer
-exist as a distinct backend slice before attempting reconnect or richer viewer
-claims.
+The next substantive tranche is no longer "make control mode exist at all."
+That groundwork now exists. The remaining work is to move from snapshot-backed
+rebuild and projected tmux subtrees toward live event application, drift
+handling, and reconnect.

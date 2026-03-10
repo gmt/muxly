@@ -51,12 +51,23 @@ Phase 4 starts from a working but intentionally thin tmux integration:
 - [src/daemon/state/store.zig](/home/greg/src/muxly/src/daemon/state/store.zig)
   refreshes TTY-backed leaves by recapturing pane content on demand rather than
   by processing a live tmux event stream.
+- [src/daemon/tmux/control_mode.zig](/home/greg/src/muxly/src/daemon/tmux/control_mode.zig),
+  [src/daemon/tmux/parser.zig](/home/greg/src/muxly/src/daemon/tmux/parser.zig),
+  and adjacent tmux modules now provide a real control-mode attachment path,
+  typed command blocks, and normalized parser coverage.
 - [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md) correctly
   describes the current backend as command-backed and intentionally modest.
 - [tests/integration/tmux_adapter_test.py](/home/greg/src/muxly/tests/integration/tmux_adapter_test.py)
   already proves a fair amount of tmux-backed behavior:
   session creation, pane split/capture/resize/focus/send-keys/close, file
   sources, and scoped viewer rendering.
+- tmux session/window/pane projection is now real in the repo:
+  - a session projects to a `subdocument`
+  - a window projects to a nested `subdocument`
+  - a pane projects to a nested `tty_leaf`
+  - tmux mutation flows return the projected pane node rather than a loose leaf
+- `session.list`, `window.list`, and `pane.list` now read from normalized tmux
+  pane snapshots rather than from document-accidental tty leaves.
 - [examples/tty/basic-nesting/](/home/greg/src/muxly/examples/tty/basic-nesting)
   now gives the repo one small nested live-TTY demo, but it still renders a
   snapshot through the current screen-at-a-time `muxview`.
@@ -65,11 +76,13 @@ Phase 4 starts from a working but intentionally thin tmux integration:
 
 What still keeps this phase from feeling complete:
 
-- there is no long-lived tmux control-mode attachment or event stream
-- tmux state truth is still rebuilt indirectly from one-shot command results
+- there is still no live event application into the TOM from control-mode
+- tmux state truth is still rebuilt from command-era snapshot refreshes rather
+  than from a durable event stream
 - recovery after daemon restart, tmux drift, or reconnect is not a first-class
   path
-- session/window/pane listings are still limited by the command-backed shape
+- projection identity still uses a temporary marker-content trick on projected
+  tmux containers
 - the current proof stack exercises tmux-backed behavior, but it does not yet
   prove durable control-mode recovery
 
@@ -163,6 +176,12 @@ Done when:
 - normalized event/snapshot structures exist and are not just ad hoc strings
 - unit or focused integration proof exists for the parser path
 
+Current status:
+
+- first-pass complete
+- control-mode attachment, parser isolation, typed command blocks, and focused
+  proof all exist in the repository
+
 ### Slice 3 — snapshot rebuild and TOM reconciliation
 
 Use normalized tmux snapshots to rebuild muxly state intentionally instead of
@@ -234,6 +253,30 @@ Done when:
 - daemon restart or explicit rebuild can recover tmux-backed document state
 - nested/live TTY examples and integration proof no longer depend on
   hand-maintained attachment assumptions
+
+Current status:
+
+- `3a`: first-pass complete
+- `3b`: first-pass complete
+- `3c`: first-pass complete
+- `3d`: first-pass complete
+- `3e`: substantially advanced but not yet closed as a dedicated proof/docs
+  pass
+
+What is now true in the repo:
+
+- the backend-to-TOM contract is written down in
+  [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md)
+- normalized pane snapshots carry enough session/window/pane metadata to drive
+  reconciliation
+- store/local helpers can rebuild one tmux session projection from snapshot
+  truth
+- tmux mutation flows now return projected pane nodes inside
+  `session -> window -> pane` TOM subtrees
+- `session.list`, `window.list`, and `pane.list` are snapshot-backed
+- projected tmux containers are pruned when pane close empties them
+- the main tmux integration test and the nested live-TTY example both exercise
+  the projected shape successfully
 
 ### Slice 4 — live event application, drift handling, and reconnect
 

@@ -17,3 +17,11 @@ yet as a full continuously updating nested-terminal UI.
 - `basic-nesting/`
   A small nested live-TTY example that scopes `muxview` to a synthetic parent
   and shows a theorem-prover-style generator running underneath it.
+
+Current tmux-backed TTY examples now use the projected tmux shape rather than a
+single loose tty leaf:
+
+- synthetic parent
+- tmux session `subdocument`
+- tmux window `subdocument`
+- projected pane `tty_leaf`
