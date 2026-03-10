@@ -2,9 +2,9 @@
 
 This directory breaks the larger muxly roadmap into smaller execution tranches.
 
-`changelog.md` summarizes milestones that are already complete. The remaining
-phase files track major work that is still open or still useful as a reference
-point.
+`changelog.md` summarizes milestones and completed slices that are already
+closed. The remaining phase files track major work that is still open or still
+useful as a reference point.
 
 ## How to use these files
 
@@ -62,7 +62,7 @@ Every phase should preserve the project-wide rules documented in
 
 ## Current layout
 
-- `changelog.md` for completed phase 1, 2, and 3 work
+- `changelog.md` for completed phase work and closed slice checkpoints
 - `phase-4-control-mode-and-state-recovery.md`
 - `phase-5-keybindings-menu-nvim.md`
 

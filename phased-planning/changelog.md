@@ -113,9 +113,44 @@ Closure evidence:
 - `python3 scripts/run_binding_examples.py`
 - `python3 tests/integration/tmux_adapter_test.py`
 
+## phase 4 slice 3 — snapshot rebuild and TOM reconciliation
+
+Completed work:
+
+- explicit backend-to-TOM projection contract for tmux-backed state:
+  - tmux session -> TOM `subdocument`
+  - tmux window -> nested `subdocument`
+  - tmux pane -> nested `tty_leaf`
+- normalized tmux pane snapshots now carry enough session/window/pane metadata
+  to drive reconciliation
+- snapshot-to-TOM reconciliation helpers for rebuilding one tmux session
+  subtree intentionally from tmux truth
+- store seams for explicit tmux session projection rebuild and rebuild-by-pane
+- tmux mutation flows now return projected pane nodes rather than loose
+  attached leaves
+- `session.list`, `window.list`, and `pane.list` now read from normalized
+  snapshot state
+- projected tmux containers are pruned when pane close empties them
+- explicit rebuild proof from external tmux state:
+  - unit proof rebuilds a projected `session -> window -> pane` subtree from
+    snapshots
+  - integration proof covers projected-parent retention under `create-under`
+    plus later tmux mutations
+- stale tmux test cruft removed:
+  - deleted placeholder `daemon_protocol_test.zig`
+  - deleted orphaned `tests/fixtures/sample_document.json`
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
+- `python3 tests/integration/tmux_adapter_test.py`
+- `./examples/tty/basic-nesting/run.sh`
+
 ## next major work
 
-Work that is still important but **not** part of completed phase 1/2/3 scope is
+Work that is still important but **not** part of completed phase 1/2/3 work or
+completed phase-4 slice work is
 tracked in later phase files, especially:
 
 - phase 4 — tmux control-mode/state recovery

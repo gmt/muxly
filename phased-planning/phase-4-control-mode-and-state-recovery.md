@@ -262,23 +262,8 @@ Current status:
 - `3c`: first-pass complete
 - `3d`: first-pass complete
 - `3e`: first-pass complete
-
-What is now true in the repo:
-
-- the backend-to-TOM contract is written down in
-  [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md)
-- normalized pane snapshots carry enough session/window/pane metadata to drive
-  reconciliation
-- store/local helpers can rebuild one tmux session projection from snapshot
-  truth
-- tmux mutation flows now return projected pane nodes inside
-  `session -> window -> pane` TOM subtrees
-- `session.list`, `window.list`, and `pane.list` are snapshot-backed
-- projected tmux containers are pruned when pane close empties them
-- unit proof now explicitly shows that external tmux state can be snapshotted
-  and rebuilt into a projected `session -> window -> pane` TOM subtree
-- the main tmux integration test and the nested live-TTY example both exercise
-  the projected shape successfully
+- the closed first-pass Slice 3 work is summarized in
+  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)
 
 ### Slice 4 — live event application, drift handling, and reconnect
 
