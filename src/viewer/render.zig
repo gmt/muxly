@@ -71,7 +71,7 @@ fn renderNodeTree(
         if (follow_tail.bool) "follow" else "manual",
     });
 
-    if (content.string.len != 0 and depth <= 1) {
+    if (content.string.len != 0 and shouldRenderContent(kind.string, children.array.items.len)) {
         var line_it = std.mem.splitScalar(u8, content.string, '\n');
         while (line_it.next()) |line| {
             if (line.len == 0) continue;
@@ -162,4 +162,9 @@ fn describeSource(source: std.json.Value) ![]const u8 {
     }
 
     return kind.string;
+}
+
+fn shouldRenderContent(kind: []const u8, child_count: usize) bool {
+    if (std.mem.eql(u8, kind, "scroll_region")) return true;
+    return child_count == 0;
 }

@@ -54,6 +54,19 @@ pub fn reconcileSessionSnapshots(
     return session_node_id;
 }
 
+pub fn findSessionProjectionNode(
+    document: *document_mod.Document,
+    session_id: []const u8,
+) ?ids.NodeId {
+    return findProjectedChild(document, document.root_node_id, .subdocument, session_marker_prefix, session_id) orelse blk: {
+        for (document.nodes.items) |node| {
+            if (node.kind != .subdocument) continue;
+            if (markerMatches(node.content, session_marker_prefix, session_id)) break :blk node.id;
+        }
+        break :blk null;
+    };
+}
+
 fn ensureSessionNode(
     document: *document_mod.Document,
     parent_id: ids.NodeId,

@@ -123,7 +123,7 @@ pub const Store = struct {
     ) !ids.NodeId {
         var pane_ref = try tmux.createSession(self.allocator, session_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(parent_id, pane_ref);
+        return try self.rebuildTmuxSessionProjectionForPane(parent_id, pane_ref.pane_id);
     }
 
     pub fn rebuildTmuxSessionProjection(
@@ -138,7 +138,7 @@ pub const Store = struct {
 
     pub fn rebuildTmuxSessionProjectionForPane(
         self: *Store,
-        parent_id: ids.NodeId,
+        preferred_parent_id: ids.NodeId,
         pane_id: []const u8,
     ) !ids.NodeId {
         try self.refreshTmuxPaneSnapshots();
@@ -153,6 +153,7 @@ pub const Store = struct {
             }
         }
 
+        const parent_id = self.findProjectionParentForSession(snapshot.session_id) orelse preferred_parent_id;
         _ = try self.rebuildTmuxSessionProjection(parent_id, session_snapshots.items);
         return self.findNodeIdByPaneId(pane_id) orelse return error.UnknownNode;
     }
@@ -165,13 +166,13 @@ pub const Store = struct {
     ) !ids.NodeId {
         var pane_ref = try tmux.createWindow(self.allocator, target, window_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(self.document.root_node_id, pane_ref);
+        return try self.rebuildTmuxSessionProjectionForPane(self.document.root_node_id, pane_ref.pane_id);
     }
 
     pub fn splitTmuxPane(self: *Store, target: []const u8, direction: []const u8, command: ?[]const u8) !ids.NodeId {
         var pane_ref = try tmux.splitPane(self.allocator, target, direction, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.attachPaneRef(self.document.root_node_id, pane_ref);
+        return try self.rebuildTmuxSessionProjectionForPane(self.document.root_node_id, pane_ref.pane_id);
     }
 
     pub fn captureTmuxPane(self: *Store, pane_id: []const u8) ![]u8 {
@@ -289,6 +290,12 @@ pub const Store = struct {
             if (std.mem.eql(u8, snapshot.pane_id, pane_id)) return snapshot;
         }
         return null;
+    }
+
+    fn findProjectionParentForSession(self: *Store, session_id: []const u8) ?ids.NodeId {
+        const session_node_id = tmux_reconcile.findSessionProjectionNode(&self.document, session_id) orelse return null;
+        const session_node = self.document.findNode(session_node_id) orelse return null;
+        return session_node.parent_id;
     }
 
     fn clearTmuxPaneSnapshots(self: *Store) void {

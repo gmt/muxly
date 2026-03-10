@@ -250,7 +250,9 @@ def main() -> None:
             "sh -lc 'printf theorem-demo\\\\n; sleep 5'",
         )
         nested_view_node = run_cli(env, "node", "get", str(nested_view["result"]["nodeId"]))
-        assert nested_view_node["result"]["parentId"] == viewer_scope_id
+        nested_window_node = run_cli(env, "node", "get", str(nested_view_node["result"]["parentId"]))
+        nested_session_node = run_cli(env, "node", "get", str(nested_window_node["result"]["parentId"]))
+        assert nested_session_node["result"]["parentId"] == viewer_scope_id
         nested_view_pane_id = nested_view_node["result"]["source"]["paneId"]
         nested_capture = wait_for_pane_content(env, nested_view_pane_id, "theorem-demo")
         assert "theorem-demo" in nested_capture["result"]["content"].replace("n\n", "\n")
