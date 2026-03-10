@@ -18,6 +18,11 @@ pub fn handleRequest(
         return try buildError(allocator, parsed.value.id, .invalid_request, "jsonrpc must be 2.0");
     }
 
+    store.pumpTmuxBackend() catch |err| switch (err) {
+        error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
+        else => return err,
+    };
+
     if (std.mem.eql(u8, parsed.value.method, "ping")) {
         return try buildResult(allocator, parsed.value.id, "{\"pong\":true}");
     }

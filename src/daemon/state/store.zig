@@ -6,6 +6,7 @@ const ids = muxly.ids;
 const source_mod = muxly.source;
 const types = muxly.types;
 const tmux = muxly.daemon.tmux.client;
+const control_mode = muxly.daemon.tmux.control_mode;
 const tmux_events = muxly.daemon.tmux.events;
 const tmux_reconcile = muxly.daemon.tmux.reconcile;
 
@@ -14,6 +15,8 @@ pub const Store = struct {
     capabilities: capabilities_mod.Capabilities = .{},
     document: document_mod.Document,
     tmux_pane_snapshots: std.ArrayListUnmanaged(tmux_events.PaneSnapshot) = .{},
+    control_connection: ?control_mode.ControlConnection = null,
+    tmux_projection_dirty: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !Store {
         var document = try document_mod.Document.init(allocator, 1, "muxly");
@@ -30,8 +33,46 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
+        if (self.control_connection) |*connection| {
+            connection.deinit();
+            self.control_connection = null;
+        }
         self.clearTmuxPaneSnapshots();
         self.document.deinit();
+    }
+
+    pub fn pumpTmuxBackend(self: *Store) !void {
+        try self.ensureControlConnectionForKnownTmuxState();
+        if (self.control_connection) |*connection| {
+            connection.drainEvents(0, self, struct {
+                fn handle(store: *Store, event: tmux_events.Event) !void {
+                    switch (event) {
+                        .notification => |notification| {
+                            if (isStateInvalidatingNotification(notification.name)) {
+                                store.tmux_projection_dirty = true;
+                            }
+                        },
+                        .exit => {
+                            store.tmux_projection_dirty = true;
+                            return error.ControlModeExited;
+                        },
+                        else => {},
+                    }
+                }
+            }.handle) catch |err| switch (err) {
+                error.ControlModeExited => {
+                    connection.deinit();
+                    self.control_connection = null;
+                },
+                else => return err,
+            };
+        }
+
+        if (!self.tmux_projection_dirty) return;
+        try self.refreshTmuxPaneSnapshots();
+        try self.reconcileKnownTmuxProjections();
+        try self.refreshSources();
+        self.tmux_projection_dirty = false;
     }
 
     pub fn refreshSources(self: *Store) !void {
@@ -123,7 +164,9 @@ pub const Store = struct {
     ) !ids.NodeId {
         var pane_ref = try tmux.createSession(self.allocator, session_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.rebuildTmuxSessionProjectionForPane(parent_id, pane_ref.pane_id);
+        const node_id = try self.rebuildTmuxSessionProjectionForPane(parent_id, pane_ref.pane_id);
+        try self.ensureControlConnection(session_name);
+        return node_id;
     }
 
     pub fn rebuildTmuxSessionProjection(
@@ -132,6 +175,7 @@ pub const Store = struct {
         snapshots: []const tmux_events.PaneSnapshot,
     ) !ids.NodeId {
         const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(&self.document, parent_id, snapshots);
+        self.tmux_projection_dirty = false;
         try self.refreshSources();
         return session_node_id;
     }
@@ -155,6 +199,7 @@ pub const Store = struct {
 
         const parent_id = self.findProjectionParentForSession(snapshot.session_id) orelse preferred_parent_id;
         _ = try self.rebuildTmuxSessionProjection(parent_id, session_snapshots.items);
+        try self.ensureControlConnection(snapshot.session_name);
         return self.findNodeIdByPaneId(pane_id) orelse return error.UnknownNode;
     }
 
@@ -321,6 +366,63 @@ pub const Store = struct {
         const session_node_id = tmux_reconcile.findSessionProjectionNode(&self.document, session_id) orelse return null;
         const session_node = self.document.findNode(session_node_id) orelse return null;
         return session_node.parent_id;
+    }
+
+    fn reconcileKnownTmuxProjections(self: *Store) !void {
+        const projections = try tmux_reconcile.listSessionProjections(&self.document, self.allocator);
+        defer {
+            for (projections) |*projection| projection.deinit(self.allocator);
+            self.allocator.free(projections);
+        }
+
+        for (projections) |projection| {
+            var snapshots = std.array_list.Managed(tmux_events.PaneSnapshot).init(self.allocator);
+            defer snapshots.deinit();
+
+            for (self.tmux_pane_snapshots.items) |snapshot| {
+                if (std.mem.eql(u8, snapshot.session_id, projection.session_id)) {
+                    try snapshots.append(snapshot);
+                }
+            }
+
+            if (snapshots.items.len == 0) {
+                _ = try tmux_reconcile.removeSessionProjection(&self.document, projection.session_id);
+                continue;
+            }
+
+            _ = try tmux_reconcile.reconcileSessionSnapshots(&self.document, projection.parent_id, snapshots.items);
+        }
+    }
+
+    fn ensureControlConnectionForKnownTmuxState(self: *Store) !void {
+        if (self.control_connection != null) return;
+        if (self.tmux_pane_snapshots.items.len == 0) {
+            try self.refreshTmuxPaneSnapshots();
+        }
+        if (self.tmux_pane_snapshots.items.len == 0) return;
+        try self.ensureControlConnection(self.tmux_pane_snapshots.items[0].session_name);
+    }
+
+    fn ensureControlConnection(self: *Store, session_name: []const u8) !void {
+        if (self.control_connection != null) return;
+        self.control_connection = control_mode.ControlConnection.initAttach(self.allocator, session_name) catch |err| switch (err) {
+            error.FileNotFound, error.ControlModeUnavailable => null,
+            else => return err,
+        };
+    }
+
+    fn isStateInvalidatingNotification(name: []const u8) bool {
+        return std.mem.eql(u8, name, "sessions-changed") or
+            std.mem.eql(u8, name, "session-changed") or
+            std.mem.eql(u8, name, "session-renamed") or
+            std.mem.eql(u8, name, "window-add") or
+            std.mem.eql(u8, name, "window-close") or
+            std.mem.eql(u8, name, "window-renamed") or
+            std.mem.eql(u8, name, "windows-changed") or
+            std.mem.eql(u8, name, "layout-change") or
+            std.mem.eql(u8, name, "pane-mode-changed") or
+            std.mem.eql(u8, name, "unlinked-window-add") or
+            std.mem.eql(u8, name, "unlinked-window-close");
     }
 
     fn clearTmuxPaneSnapshots(self: *Store) void {

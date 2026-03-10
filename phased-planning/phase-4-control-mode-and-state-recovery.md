@@ -290,6 +290,14 @@ Good sub-tranche boundaries:
 - drift detection / invalidation policy
 - reconnect path that reattaches and rebuilds state
 
+Current status:
+
+- first tranche underway
+- a lazy control-mode attachment now drains state-changing tmux notifications
+  into snapshot-backed rebuild for already-projected tmux session subtrees
+- this is still invalidation plus rebuild, not yet fine-grained incremental
+  pane/window/session mutation handling
+
 Target:
 
 - event-driven changes are reflected in document state without manual refresh

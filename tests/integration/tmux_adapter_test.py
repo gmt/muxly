@@ -67,6 +67,23 @@ def wait_for_node_absent(env: dict[str, str], node_id: int, timeout: float = 3.0
     raise AssertionError(f"timed out waiting for node {node_id} to disappear: {last_document!r}")
 
 
+def wait_for_pane_node(env: dict[str, str], pane_id: str, timeout: float = 3.0) -> tuple[dict, dict]:
+    deadline = time.time() + timeout
+    last_document: dict | None = None
+    while time.time() < deadline:
+        last_document = run_cli(env, "document", "get")
+        document = last_document["result"]
+        matches = [
+            node
+            for node in document["nodes"]
+            if node["kind"] == "tty_leaf" and node["source"].get("paneId") == pane_id
+        ]
+        if matches:
+            return last_document, matches[0]
+        time.sleep(0.1)
+    raise AssertionError(f"timed out waiting for pane node {pane_id!r}: {last_document!r}")
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -199,6 +216,35 @@ def main() -> None:
 
         capture = wait_for_pane_content(env, pane_id, "integration-tmux")
         assert "integration-tmux" in capture["result"]["content"].replace("n\n", "\n")
+
+        external_split_pane_id = subprocess.check_output(
+            [
+                "tmux",
+                "split-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-t",
+                pane_id,
+                "-h",
+                "sh -lc 'printf external-split-event\\\\n; sleep 5'",
+            ],
+            cwd=REPO,
+            env=env,
+            text=True,
+        ).strip()
+        external_panes = run_cli(env, "pane", "list")["result"]
+        external_pane_entry = next(item for item in external_panes if item["paneId"] == external_split_pane_id)
+        assert external_pane_entry["sessionId"] == session_entry["sessionId"]
+        document, external_tty_node = wait_for_pane_node(env, external_split_pane_id)
+        external_split_capture = wait_for_pane_content(env, external_split_pane_id, "external-split-event")
+        assert "external-split-event" in external_split_capture["result"]["content"].replace("n\n", "\n")
+        external_split_close = run_cli(env, "pane", "close", external_split_pane_id)
+        assert external_split_close["result"]["ok"] is True
+        document = wait_for_node_absent(env, external_tty_node["id"])["result"]
+        node_ids = {node["id"] for node in document["nodes"]}
+        assert external_tty_node["id"] not in node_ids
 
         scroll = run_cli(env, "pane", "scroll", pane_id, "-5", "-1")
         assert "integration-tmux" in scroll["result"]["content"].replace("n\n", "\n")

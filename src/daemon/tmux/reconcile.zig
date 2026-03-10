@@ -9,6 +9,16 @@ const events = @import("events.zig");
 const session_marker_prefix = "tmux-session:";
 const window_marker_prefix = "tmux-window:";
 
+pub const SessionProjectionRef = struct {
+    node_id: ids.NodeId,
+    parent_id: ids.NodeId,
+    session_id: []u8,
+
+    pub fn deinit(self: *SessionProjectionRef, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+    }
+};
+
 pub fn reconcileSessionSnapshots(
     document: *document_mod.Document,
     parent_id: ids.NodeId,
@@ -74,6 +84,30 @@ pub fn removeSessionProjection(
     const session_node_id = findSessionProjectionNode(document, session_id) orelse return false;
     try removeSubtree(document, session_node_id);
     return true;
+}
+
+pub fn listSessionProjections(
+    document: *document_mod.Document,
+    allocator: std.mem.Allocator,
+) ![]SessionProjectionRef {
+    var projections = std.array_list.Managed(SessionProjectionRef).init(allocator);
+    errdefer {
+        for (projections.items) |*projection| projection.deinit(allocator);
+        projections.deinit();
+    }
+
+    for (document.nodes.items) |node| {
+        if (node.kind != .subdocument) continue;
+        const session_id = markerSuffix(node.content, session_marker_prefix) orelse continue;
+        const parent_id = node.parent_id orelse continue;
+        try projections.append(.{
+            .node_id = node.id,
+            .parent_id = parent_id,
+            .session_id = try allocator.dupe(u8, session_id),
+        });
+    }
+
+    return try projections.toOwnedSlice();
 }
 
 pub fn findSessionIdForPaneNode(

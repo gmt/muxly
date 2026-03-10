@@ -1,6 +1,8 @@
 # tmux backend
 
-The current muxly tmux integration is intentionally thin and command-backed.
+The current muxly tmux integration is intentionally thin and still
+command-backed for mutations/capture, but it now has the first control-mode
+notification path for invalidation and snapshot-backed rebuild.
 
 ## Current state
 
@@ -22,6 +24,9 @@ The current muxly tmux integration is intentionally thin and command-backed.
   pane node inside that session/window subtree
 - `pane.close` prunes empty projected tmux containers instead of leaving empty
   shells behind
+- a lazy control-mode attachment can now notice state-changing tmux
+  notifications and trigger snapshot-backed projection rebuild for known tmux
+  session subtrees on the next server pump
 
 ## Planned evolution
 
@@ -33,8 +38,9 @@ Later iterations should move toward a richer control-mode-backed adapter with:
 - lower-latency change observation than ad hoc command refreshes
 - incremental event application on top of the current snapshot/reconcile path
 
-Until that happens, this backend should be described plainly as
-**command-backed** rather than implying an event-driven tmux mirror.
+Until the richer path is the default, this backend should still be described
+plainly as **command-backed with early control-mode invalidation** rather than
+as a fully event-driven tmux mirror.
 
 This document exists to make the current cutline explicit rather than
 overstating backend sophistication.

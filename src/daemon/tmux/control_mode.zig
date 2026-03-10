@@ -11,7 +11,16 @@ pub const ControlConnection = struct {
 
     pub fn init(allocator: std.mem.Allocator, session_name: []const u8) !ControlConnection {
         var argv = [_][]const u8{ "tmux", "-C", "new-session", "-A", "-D", "-s", session_name };
-        var child = std.process.Child.init(&argv, allocator);
+        return try initWithArgv(allocator, &argv);
+    }
+
+    pub fn initAttach(allocator: std.mem.Allocator, session_name: []const u8) !ControlConnection {
+        var argv = [_][]const u8{ "tmux", "-C", "attach-session", "-t", session_name };
+        return try initWithArgv(allocator, &argv);
+    }
+
+    fn initWithArgv(allocator: std.mem.Allocator, argv: []const []const u8) !ControlConnection {
+        var child = std.process.Child.init(argv, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
@@ -95,6 +104,17 @@ pub const ControlConnection = struct {
                 .notification => {},
                 .exit => return error.ControlModeExited,
             }
+        }
+    }
+
+    pub fn drainEvents(self: *ControlConnection, initial_timeout_ms: i32, context: anytype, handler: anytype) !void {
+        var timeout_ms = initial_timeout_ms;
+        while (try stdoutReadable(self.stdout_file, timeout_ms)) {
+            const maybe_line = try readLineAlloc(self.allocator, self.stdout_file, 1 << 20);
+            if (maybe_line == null) return;
+            defer self.allocator.free(maybe_line.?);
+            try handler(context, try parser.parseLine(maybe_line.?));
+            timeout_ms = 10;
         }
     }
 };
