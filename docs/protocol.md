@@ -90,7 +90,7 @@ explicit, testable, and debuggable.
 - `capabilities.get` explicitly reports:
   - `followTailSemantics: "stored-node-preference"`
   - `viewStateScope: "shared-document"`
-  - `tmuxBackendMode: "command-backed"`
+  - `tmuxBackendMode: "hybrid-control-invalidation"`
 - TTY-backed leaves serialize **derived muxml/view state**, not underlying
   process runtime state
 

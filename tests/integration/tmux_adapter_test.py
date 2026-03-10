@@ -130,7 +130,7 @@ def main() -> None:
         capabilities = run_cli(env, "capabilities", "get")["result"]
         assert capabilities["followTailSemantics"] == "stored-node-preference"
         assert capabilities["viewStateScope"] == "shared-document"
-        assert capabilities["tmuxBackendMode"] == "command-backed"
+        assert capabilities["tmuxBackendMode"] == "hybrid-control-invalidation"
         assert capabilities["supportsUnixSocket"] is True
         assert capabilities["supportsNamedPipes"] is False
         assert capabilities["implementedTransports"] == ["unix-domain-socket"]

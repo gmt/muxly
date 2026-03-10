@@ -351,6 +351,17 @@ Done when:
   reconnect behavior
 - repo docs and examples describe the new backend plainly
 
+Current status:
+
+- first-pass complete
+- capability and viewer surfaces now report the backend as
+  `hybrid-control-invalidation` instead of `command-backed`
+- `zig build test` now covers parser/control-mode attachment, snapshot rebuild,
+  and control-mode reattach
+- the main integration proof covers external pane/window/session drift against
+  the invalidation-and-rebuild path
+- backend docs and demos now describe the hybrid cutline plainly
+
 ## Per-slice proof
 
 Use the strongest proof that matches the slice:
@@ -387,3 +398,13 @@ Phase 4 closes when:
   accurately
 
 Until then, this phase should remain open even if the backend "feels close."
+
+Current phase status:
+
+- Slice 1: first-pass complete
+- Slice 2: first-pass complete
+- Slice 3: first-pass complete and summarized in
+  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)
+- Slice 4: first-pass complete
+- Slice 5: first-pass complete
+- Phase 4 overall: still open for deeper event-driven/default-backend work

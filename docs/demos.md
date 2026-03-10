@@ -57,7 +57,7 @@ python3 tests/integration/tmux_adapter_test.py
 ```
 
 This is the current authoritative tmux-backend proof path while the backend
-remains command-backed.
+remains a command-backed/control-invalidating hybrid.
 
 That flow now also exercises the current projected tmux shape:
 

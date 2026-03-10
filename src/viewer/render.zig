@@ -22,7 +22,7 @@ pub fn renderDocumentValue(
     try writer.print("muxview :: {s}\n", .{title.string});
     try writer.writeAll("view-state :: shared-document\n");
     try writer.writeAll("follow-tail :: stored-node-preference\n");
-    try writer.writeAll("tmux-backend :: command-backed\n");
+    try writer.writeAll("tmux-backend :: hybrid-control-invalidation\n");
     const start_node_id: u64 = if (view_root_node_id == .integer)
         @intCast(view_root_node_id.integer)
     else

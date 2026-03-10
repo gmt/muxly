@@ -29,9 +29,10 @@ This repository has a working implementation centered on:
   operations and tail-following views are first-class.
 - **The current cutline keeps semantics explicit.**
   Follow-tail is currently a stored node preference, shared view root/elision
-  state lives in the daemon-backed document, and tmux interaction is still
-  command-backed at the transport layer even though tmux session/window/pane
-  projection and snapshot-backed list queries are now real inside the daemon.
+  state lives in the daemon-backed document, and tmux interaction is currently
+  a hybrid of command-backed mutation/capture plus control-mode invalidation
+  even though tmux session/window/pane projection and snapshot-backed list
+  queries are now real inside the daemon.
 - **The reference viewer uses public surfaces.**
   `muxview` should consume the same public surfaces as any third-party tool.
 

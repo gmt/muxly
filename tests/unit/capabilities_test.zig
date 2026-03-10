@@ -10,7 +10,7 @@ test "capabilities describe current phase-2 semantics truthfully" {
 
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"followTailSemantics\":\"stored-node-preference\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewStateScope\":\"shared-document\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"tmuxBackendMode\":\"command-backed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"tmuxBackendMode\":\"hybrid-control-invalidation\"") != null);
 
     if (builtin.os.tag == .windows) {
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsUnixSocket\":false") != null);
