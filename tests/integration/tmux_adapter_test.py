@@ -10,6 +10,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SOCKET_PATH = "/tmp/muxly-integration.sock"
 SESSION_NAME = "muxly-integration-demo"
 NESTED_SESSION_NAME = "muxly-integration-nested-demo"
+DRIFT_SESSION_NAME = "muxly-integration-drift-demo"
 
 
 def run_cli(env: dict[str, str], *args: str) -> dict:
@@ -84,6 +85,20 @@ def wait_for_pane_node(env: dict[str, str], pane_id: str, timeout: float = 3.0) 
     raise AssertionError(f"timed out waiting for pane node {pane_id!r}: {last_document!r}")
 
 
+def wait_for_window_name(env: dict[str, str], window_id: str, expected_name: str, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last_windows: dict | None = None
+    while time.time() < deadline:
+        last_windows = run_cli(env, "window", "list")
+        matches = [item for item in last_windows["result"] if item["windowId"] == window_id]
+        if matches and matches[0]["windowName"] == expected_name:
+            return last_windows
+        time.sleep(0.1)
+    raise AssertionError(
+        f"timed out waiting for window {window_id} to be named {expected_name!r}: {last_windows!r}"
+    )
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -95,6 +110,7 @@ def main() -> None:
 
     cleanup_tmux_session(env, SESSION_NAME)
     cleanup_tmux_session(env, NESTED_SESSION_NAME)
+    cleanup_tmux_session(env, DRIFT_SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -240,6 +256,13 @@ def main() -> None:
         document, external_tty_node = wait_for_pane_node(env, external_split_pane_id)
         external_split_capture = wait_for_pane_content(env, external_split_pane_id, "external-split-event")
         assert "external-split-event" in external_split_capture["result"]["content"].replace("n\n", "\n")
+        subprocess.run(
+            ["tmux", "rename-window", "-t", window_entry["windowId"], "externally-renamed"],
+            cwd=REPO,
+            env=env,
+            check=True,
+        )
+        wait_for_window_name(env, window_entry["windowId"], "externally-renamed")
         external_split_close = run_cli(env, "pane", "close", external_split_pane_id)
         assert external_split_close["result"]["ok"] is True
         document = wait_for_node_absent(env, external_tty_node["id"])["result"]
@@ -292,6 +315,29 @@ def main() -> None:
         document = wait_for_node_absent(env, split["result"]["nodeId"])["result"]
         node_ids = {node["id"] for node in document["nodes"]}
         assert split["result"]["nodeId"] not in node_ids
+
+        drift_session = run_cli(
+            env,
+            "session",
+            "create",
+            DRIFT_SESSION_NAME,
+            "sh -lc 'printf drift-session\\\\n; sleep 5'",
+        )
+        assert drift_session["result"]["nodeId"] > 0
+        drift_session_node = run_cli(env, "node", "get", str(drift_session["result"]["nodeId"]))
+        drift_window_node = run_cli(env, "node", "get", str(drift_session_node["result"]["parentId"]))
+        drift_session_container = run_cli(env, "node", "get", str(drift_window_node["result"]["parentId"]))
+        subprocess.run(
+            ["tmux", "kill-session", "-t", DRIFT_SESSION_NAME],
+            cwd=REPO,
+            env=env,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        document = wait_for_node_absent(env, drift_session_container["result"]["id"])["result"]
+        node_ids = {node["id"] for node in document["nodes"]}
+        assert drift_session_container["result"]["id"] not in node_ids
 
         viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
         viewer_scope_id = viewer_scope["result"]["nodeId"]
@@ -372,6 +418,7 @@ def main() -> None:
     finally:
         cleanup_tmux_session(env, SESSION_NAME)
         cleanup_tmux_session(env, NESTED_SESSION_NAME)
+        cleanup_tmux_session(env, DRIFT_SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)

@@ -295,6 +295,10 @@ Current status:
 - first tranche underway
 - a lazy control-mode attachment now drains state-changing tmux notifications
   into snapshot-backed rebuild for already-projected tmux session subtrees
+- control-mode exit now degrades explicitly to request-time snapshot rebuild
+  for known projections until reconnect is available
+- integration proof now covers external pane/window/session drift against that
+  invalidation-and-rebuild path
 - this is still invalidation plus rebuild, not yet fine-grained incremental
   pane/window/session mutation handling
 

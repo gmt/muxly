@@ -10,13 +10,19 @@ const control_mode = muxly.daemon.tmux.control_mode;
 const tmux_events = muxly.daemon.tmux.events;
 const tmux_reconcile = muxly.daemon.tmux.reconcile;
 
+const TmuxProjectionState = enum {
+    clean,
+    invalidated_by_notification,
+    invalidated_by_control_disconnect,
+};
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     capabilities: capabilities_mod.Capabilities = .{},
     document: document_mod.Document,
     tmux_pane_snapshots: std.ArrayListUnmanaged(tmux_events.PaneSnapshot) = .{},
     control_connection: ?control_mode.ControlConnection = null,
-    tmux_projection_dirty: bool = false,
+    tmux_projection_state: TmuxProjectionState = .clean,
 
     pub fn init(allocator: std.mem.Allocator) !Store {
         var document = try document_mod.Document.init(allocator, 1, "muxly");
@@ -49,11 +55,11 @@ pub const Store = struct {
                     switch (event) {
                         .notification => |notification| {
                             if (isStateInvalidatingNotification(notification.name)) {
-                                store.tmux_projection_dirty = true;
+                                store.invalidateTmuxProjection(.invalidated_by_notification);
                             }
                         },
                         .exit => {
-                            store.tmux_projection_dirty = true;
+                            store.invalidateTmuxProjection(.invalidated_by_control_disconnect);
                             return error.ControlModeExited;
                         },
                         else => {},
@@ -68,11 +74,13 @@ pub const Store = struct {
             };
         }
 
-        if (!self.tmux_projection_dirty) return;
+        if (self.tmux_projection_state == .clean) return;
         try self.refreshTmuxPaneSnapshots();
         try self.reconcileKnownTmuxProjections();
         try self.refreshSources();
-        self.tmux_projection_dirty = false;
+        if (self.control_connection != null) {
+            self.tmux_projection_state = .clean;
+        }
     }
 
     pub fn refreshSources(self: *Store) !void {
@@ -175,7 +183,7 @@ pub const Store = struct {
         snapshots: []const tmux_events.PaneSnapshot,
     ) !ids.NodeId {
         const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(&self.document, parent_id, snapshots);
-        self.tmux_projection_dirty = false;
+        self.tmux_projection_state = .clean;
         try self.refreshSources();
         return session_node_id;
     }
@@ -409,6 +417,16 @@ pub const Store = struct {
             error.FileNotFound, error.ControlModeUnavailable => null,
             else => return err,
         };
+    }
+
+    fn invalidateTmuxProjection(self: *Store, state: TmuxProjectionState) void {
+        if (state == .invalidated_by_control_disconnect) {
+            self.tmux_projection_state = state;
+            return;
+        }
+        if (self.tmux_projection_state == .clean) {
+            self.tmux_projection_state = state;
+        }
     }
 
     fn isStateInvalidatingNotification(name: []const u8) bool {

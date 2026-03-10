@@ -27,6 +27,9 @@ notification path for invalidation and snapshot-backed rebuild.
 - a lazy control-mode attachment can now notice state-changing tmux
   notifications and trigger snapshot-backed projection rebuild for known tmux
   session subtrees on the next server pump
+- if the control-mode attachment exits unexpectedly, the backend now degrades to
+  request-time snapshot rebuild for known tmux projections until a richer
+  reconnect path lands
 
 ## Planned evolution
 
