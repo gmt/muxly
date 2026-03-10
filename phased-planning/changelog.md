@@ -147,6 +147,38 @@ Closure evidence:
 - `python3 tests/integration/tmux_adapter_test.py`
 - `./examples/tty/basic-nesting/run.sh`
 
+## phase 4 slices 4 and 5 — first-pass live invalidation, reconnect, and proof hardening
+
+Completed work:
+
+- lazy control-mode attachment for live tmux-backed documents
+- notification-driven invalidation of known projected tmux session subtrees
+- explicit drift fallback policy:
+  - control-mode exit degrades to request-time snapshot rebuild
+  - rebuild remains the correctness backstop when event confidence is limited
+- reconnect/reattach path:
+  - focused control-mode proof now covers reattaching to surviving tmux state
+  - store-side backend pump can recover a live control attachment after exit
+- structured control-mode output parsing:
+  - `%output`
+  - `%extended-output`
+- best-effort live append for known follow-tail pane leaves on top of the
+  invalidation/rebuild path
+- conservative tmux output escape-sequence decoding for live append
+- proof/docs hardening:
+  - capabilities and viewer surfaces now report
+    `hybrid-control-invalidation`
+  - integration proof covers external pane/window/session drift
+  - backend docs describe the hybrid cutline plainly instead of calling it
+    purely command-backed
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
+- `python3 tests/integration/tmux_adapter_test.py`
+- `./examples/tty/basic-nesting/run.sh`
+
 ## next major work
 
 Work that is still important but **not** part of completed phase 1/2/3 work or
