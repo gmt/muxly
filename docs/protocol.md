@@ -84,7 +84,8 @@ explicit, testable, and debuggable.
 - `node.freeze` currently supports tty-backed nodes only and accepts an
   `artifactKind` of `text` or `surface`; it preserves node identity while
   transitioning the source into a durable `terminal_artifact` form, including
-  an explicit `contentFormat` in the source payload
+  an explicit `contentFormat` plus first-pass `sections` metadata in the source
+  payload and freeze response
 - `view.reset` clears shared root/elision transforms stored in the daemon's
   current document state without mutating source attachments or node content
 - `session.create` accepts an optional `parentId`; when omitted it attaches the

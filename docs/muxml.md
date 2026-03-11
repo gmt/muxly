@@ -62,6 +62,10 @@ The current first-pass representation posture is:
   transitioning out of live tty-source semantics
 - `lifecycle` plus `source` transitions should do as much of that work as
   possible before muxly grows a larger dedicated capture taxonomy
+- captured terminal-artifact source metadata now also describes:
+  - `contentFormat`
+  - first-pass `sections` when the artifact payload is sectioned rather than
+    plain text
 
 ## Planned leaf source kinds
 
