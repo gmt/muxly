@@ -62,6 +62,16 @@ fn parseSectionedText(allocator: std.mem.Allocator, content: []const u8) !std.St
         existing.* = try buffer.toOwnedSlice();
     }
 
+    var it = sections.iterator();
+    while (it.next()) |entry| {
+        const trimmed = std.mem.trimRight(u8, entry.value_ptr.*, "\n");
+        if (trimmed.len != entry.value_ptr.*.len) {
+            const copy = try allocator.dupe(u8, trimmed);
+            allocator.free(entry.value_ptr.*);
+            entry.value_ptr.* = copy;
+        }
+    }
+
     return sections;
 }
 

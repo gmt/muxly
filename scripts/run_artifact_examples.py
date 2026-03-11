@@ -23,9 +23,9 @@ def main() -> None:
     env = os.environ.copy()
 
     for name, path in EXAMPLES:
-        print(f"== running artifact example: {name} ==")
+        print(f"== running artifact example: {name} ==", flush=True)
         run(env, path)
-        print()
+        print(flush=True)
 
 
 if __name__ == "__main__":
