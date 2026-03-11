@@ -143,6 +143,10 @@ Current status:
 - integration proof now covers both public artifact kinds:
   - `text`
   - `surface`
+- current capture posture is now explicit:
+  - `text` uses tmux history + visible capture
+  - `surface` uses visible surface capture and includes alternate-screen
+    capture when available
 
 ### Slice 4 — proof artifacts
 

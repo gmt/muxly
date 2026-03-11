@@ -40,6 +40,8 @@ The wrapper will:
 - both switch their source to `kind = terminal_artifact`
 - one records `artifactKind = text`
 - the other records `artifactKind = surface`
+- the surface payload is prefixed with `[surface]` and may also include an
+  `[alternate]` section later when tmux exposes alternate-screen contents
 
 That is the current first-pass implementation of the Phase 6 contract:
 preserve node identity, change source/lifecycle semantics, and keep provenance.

@@ -142,6 +142,10 @@ The first implementation seam for this posture now exists in the core model:
 - the integration proof now exercises both public branches:
   - `node.freeze ... text`
   - `node.freeze ... surface`
+- current capture posture:
+  - `text` freezes from tmux history + visible content capture
+  - `surface` freezes from visible surface capture and includes alternate-screen
+    capture when tmux exposes it
 
 This leaves room for later implementation choices:
 

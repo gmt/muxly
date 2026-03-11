@@ -336,7 +336,7 @@ pub const Store = struct {
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
     ) !void {
-        try self.refreshSources();
+        try self.captureTerminalArtifact(node_id, artifact_kind);
         try self.document.freezeTtyNodeAsArtifact(node_id, artifact_kind);
     }
 
@@ -475,6 +475,26 @@ pub const Store = struct {
         defer self.allocator.free(normalized);
         try self.document.appendTextToNode(node_id, normalized);
     }
+
+    fn captureTerminalArtifact(
+        self: *Store,
+        node_id: ids.NodeId,
+        artifact_kind: source_mod.TerminalArtifactKind,
+    ) !void {
+        const node = self.document.findNode(node_id) orelse return error.UnknownNode;
+        const tty = switch (node.source) {
+            .tty => |value| value,
+            else => return error.InvalidSourceKind,
+        };
+        const pane_id = tty.pane_id orelse return error.MissingPaneId;
+
+        const content = switch (artifact_kind) {
+            .text => try tmux.capturePane(self.allocator, pane_id),
+            .surface => try captureSurfaceArtifact(self.allocator, pane_id),
+        };
+        defer self.allocator.free(content);
+        try node.setContent(self.allocator, content);
+    }
 };
 
 fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
@@ -515,6 +535,29 @@ fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) !
         }
         try buffer.append(char);
         index += 1;
+    }
+
+    return try buffer.toOwnedSlice();
+}
+
+fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
+    const visible = try tmux.capturePaneVisible(allocator, pane_id);
+    defer allocator.free(visible);
+
+    const alternate = try tmux.capturePaneAlternate(allocator, pane_id);
+    defer allocator.free(alternate);
+
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    defer buffer.deinit();
+
+    try buffer.appendSlice("[surface]\n");
+    try buffer.appendSlice(visible);
+    if (alternate.len != 0) {
+        if (visible.len != 0 and visible[visible.len - 1] != '\n') {
+            try buffer.append('\n');
+        }
+        try buffer.appendSlice("\n[alternate]\n");
+        try buffer.appendSlice(alternate);
     }
 
     return try buffer.toOwnedSlice();
