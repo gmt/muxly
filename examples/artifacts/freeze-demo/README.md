@@ -40,6 +40,8 @@ The wrapper will:
 - both switch their source to `kind = terminal_artifact`
 - one records `artifactKind = text`
 - the other records `artifactKind = surface`
+- the source metadata now also records `contentFormat`, so consumers can tell
+  whether the payload is plain transcript text or a sectioned surface capture
 - the surface payload is prefixed with `[surface]` and may also include an
   `[alternate]` section later when tmux exposes alternate-screen contents
 

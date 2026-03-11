@@ -146,6 +146,9 @@ The first implementation seam for this posture now exists in the core model:
   - `text` freezes from tmux history + visible content capture
   - `surface` freezes from visible surface capture and includes alternate-screen
     capture when tmux exposes it
+- terminal artifacts now also describe their payload layout explicitly:
+  - `text` currently uses `contentFormat = plain_text`
+  - `surface` currently uses `contentFormat = sectioned_text`
 
 This leaves room for later implementation choices:
 

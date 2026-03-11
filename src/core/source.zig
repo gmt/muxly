@@ -30,12 +30,18 @@ pub const TerminalArtifactKind = enum {
     surface,
 };
 
+pub const TerminalArtifactContentFormat = enum {
+    plain_text,
+    sectioned_text,
+};
+
 pub const TerminalArtifactOriginKind = enum {
     tty,
 };
 
 pub const TerminalArtifactSource = struct {
     artifact_kind: TerminalArtifactKind,
+    content_format: TerminalArtifactContentFormat,
     origin: TerminalArtifactOriginKind = .tty,
     session_name: ?[]u8 = null,
     window_id: ?[]u8 = null,
@@ -48,6 +54,10 @@ pub const TerminalArtifactSource = struct {
     ) !TerminalArtifactSource {
         return .{
             .artifact_kind = artifact_kind,
+            .content_format = switch (artifact_kind) {
+                .text => .plain_text,
+                .surface => .sectioned_text,
+            },
             .origin = .tty,
             .session_name = try allocator.dupe(u8, tty.session_name),
             .window_id = if (tty.window_id) |value| try allocator.dupe(u8, value) else null,
@@ -58,6 +68,7 @@ pub const TerminalArtifactSource = struct {
     pub fn clone(self: TerminalArtifactSource, allocator: std.mem.Allocator) !TerminalArtifactSource {
         return .{
             .artifact_kind = self.artifact_kind,
+            .content_format = self.content_format,
             .origin = self.origin,
             .session_name = if (self.session_name) |value| try allocator.dupe(u8, value) else null,
             .window_id = if (self.window_id) |value| try allocator.dupe(u8, value) else null,

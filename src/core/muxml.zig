@@ -127,6 +127,8 @@ pub fn writeSourceJson(source: source_mod.Source, writer: anytype) !void {
         .terminal_artifact => |artifact| {
             try writer.writeAll("{\"kind\":\"terminal_artifact\",\"artifactKind\":\"");
             try writer.writeAll(@tagName(artifact.artifact_kind));
+            try writer.writeAll("\",\"contentFormat\":\"");
+            try writer.writeAll(@tagName(artifact.content_format));
             try writer.writeAll("\",\"origin\":\"");
             try writer.writeAll(@tagName(artifact.origin));
             try writer.writeAll("\"");
@@ -177,6 +179,8 @@ fn writeSourceXml(source: source_mod.Source, writer: anytype) !void {
         .terminal_artifact => |artifact| {
             try writer.writeAll("<source kind=\"terminal_artifact\" artifactKind=\"");
             try writer.writeAll(@tagName(artifact.artifact_kind));
+            try writer.writeAll("\" contentFormat=\"");
+            try writer.writeAll(@tagName(artifact.content_format));
             try writer.writeAll("\" origin=\"");
             try writer.writeAll(@tagName(artifact.origin));
             try writer.writeAll("\"");
