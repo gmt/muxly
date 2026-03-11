@@ -211,10 +211,19 @@ Completed work:
 - payload shape is now explicit in source metadata:
   - `text` uses `contentFormat = plain_text`
   - `surface` uses `contentFormat = sectioned_text`
+- captured terminal artifacts now also expose first-pass section metadata:
+  - `text` reports `sections = []`
+  - `surface` reports at least `sections = ["surface"]`
+  - `alternate` is included when tmux exposes alternate-screen capture
 - proof/examples:
   - unit proof for document-side tty-to-artifact transition
   - integration proof for both `text` and `surface` freeze paths
   - runnable playbook under `examples/artifacts/freeze-demo/`
+  - runnable C / Python / Zig `libmuxly` playbooks under:
+    - `examples/artifacts/c-freeze/`
+    - `examples/artifacts/python-freeze/`
+    - `examples/artifacts/zig-freeze/`
+  - shared artifact example runner under `scripts/run_artifact_examples.py`
 
 Closure evidence:
 
@@ -222,6 +231,7 @@ Closure evidence:
 - `zig build test`
 - `python3 tests/integration/tmux_adapter_test.py`
 - `./examples/artifacts/freeze-demo/run.sh`
+- `python3 scripts/run_artifact_examples.py`
 
 ## next major work
 

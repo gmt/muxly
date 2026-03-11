@@ -99,6 +99,9 @@ Milestones and remaining major work live in `phased-planning/`:
 - `examples/README.md` — example taxonomy and intended structure
 - `examples/artifacts/` — durable text/surface artifact witnesses for Phase 6
 - `examples/artifacts/freeze-demo/` — runnable `node.freeze` text/surface demo
+- `examples/artifacts/c-freeze/` — C `libmuxly` artifact freeze playbook
+- `examples/artifacts/python-freeze/` — Python `ctypes` artifact freeze playbook
+- `examples/artifacts/zig-freeze/` — Zig `libmuxly` artifact freeze playbook
 - `examples/tom/zig/` — Zig "hello TOM" playbook
 - `examples/tom/c/` — C "hello TOM" playbook
 - `examples/tom/python/` — Python "hello TOM" playbook
@@ -133,4 +136,10 @@ The default proof path for the shipped binding examples is:
 ```sh
 zig build example-deps
 python3 scripts/run_binding_examples.py
+```
+
+The default proof path for the shipped terminal-artifact examples is:
+
+```sh
+python3 scripts/run_artifact_examples.py
 ```
