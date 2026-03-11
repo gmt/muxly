@@ -183,3 +183,6 @@ Current phase status:
 - Slice 3: first-pass complete
 - Slice 4: first-pass complete
 - Phase 6 overall: first-pass contract complete, implementation still open
+- the completed first-pass contract and initial public freeze seam are
+  summarized in
+  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)

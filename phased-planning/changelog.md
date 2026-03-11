@@ -179,6 +179,43 @@ Closure evidence:
 - `python3 tests/integration/tmux_adapter_test.py`
 - `./examples/tty/basic-nesting/run.sh`
 
+## phase 6 — first-pass terminal artifact contract and freeze seam
+
+Completed work:
+
+- durable terminal-artifact contract written down explicitly:
+  - live tty source
+  - detached but recoverable tty source
+  - captured text artifact
+  - captured surface artifact
+- explicit append/history versus surface/raw distinction with concrete example
+  classes and first-pass heuristics
+- conservative TOM/muxml representation posture chosen:
+  - preserve node identity and tree position
+  - prefer `lifecycle` plus `source` transitions before a larger node-kind
+    taxonomy
+- checked-in witness artifacts under `examples/artifacts/`
+- first implementation seam in the core model:
+  - new `terminal_artifact` source family with `text` versus `surface`
+  - tty provenance preserved when a node transitions into a captured artifact
+  - XML source serialization now records source metadata alongside JSON
+- first public seam:
+  - `node.freeze <node-id> <text|surface>` through JSON-RPC
+  - Zig API helper
+  - CLI command
+  - C ABI helper
+- proof/examples:
+  - unit proof for document-side tty-to-artifact transition
+  - integration proof for both `text` and `surface` freeze paths
+  - runnable playbook under `examples/artifacts/freeze-demo/`
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
+- `python3 tests/integration/tmux_adapter_test.py`
+- `./examples/artifacts/freeze-demo/run.sh`
+
 ## next major work
 
 Work that is still important but **not** part of completed phase 1/2/3 work or
@@ -187,3 +224,4 @@ tracked in later phase files, especially:
 
 - phase 4 — tmux control-mode/state recovery
 - phase 5 — keybindings, menu/modeline projection, Neovim integration
+- phase 6 — terminal capture, scrollback, and durable artifacts
