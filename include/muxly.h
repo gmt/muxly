@@ -59,6 +59,8 @@ char *muxly_client_document_status(muxly_client *client);
  * node ids are muxly node ids from earlier response payloads.
  * muxly_client_node_append() requires non-null `kind` and `title`.
  * muxly_client_node_update() requires at least one of `title` or `content`.
+ * muxly_client_node_freeze() currently supports tty-backed nodes only and
+ * requires a non-null artifact kind string such as "text" or "surface".
  */
 char *muxly_client_node_append(
     muxly_client *client,
@@ -71,6 +73,11 @@ char *muxly_client_node_update(
     unsigned long long node_id,
     const char *title,
     const char *content
+);
+char *muxly_client_node_freeze(
+    muxly_client *client,
+    unsigned long long node_id,
+    const char *artifact_kind
 );
 char *muxly_client_node_remove(muxly_client *client, unsigned long long node_id);
 

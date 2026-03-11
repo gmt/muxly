@@ -97,6 +97,18 @@ export fn muxly_client_node_update(
     );
 }
 
+export fn muxly_client_node_freeze(
+    handle: ?*ClientHandle,
+    node_id: u64,
+    artifact_kind: [*:0]const u8,
+) ?[*:0]u8 {
+    const client = handle orelse return null;
+    return ownedStringResult(
+        client.allocator,
+        muxly.api.nodeFreeze(client.allocator, client.socket_path, node_id, std.mem.span(artifact_kind)),
+    );
+}
+
 export fn muxly_client_node_remove(handle: ?*ClientHandle, node_id: u64) ?[*:0]u8 {
     const client = handle orelse return null;
     return ownedStringResult(client.allocator, muxly.api.nodeRemove(client.allocator, client.socket_path, node_id));
