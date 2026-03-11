@@ -148,17 +148,28 @@ pub fn handleRequest(
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
         };
-        const content_format = switch (artifact_kind) {
-            .text => muxly.source.TerminalArtifactContentFormat.plain_text,
-            .surface => muxly.source.TerminalArtifactContentFormat.sectioned_text,
+        const node = store.document.findNode(@intCast(node_id)) orelse
+            return try buildError(allocator, parsed.value.id, .internal_error, "frozen node missing from document");
+        const artifact = switch (node.source) {
+            .terminal_artifact => |value| value,
+            else => return try buildError(allocator, parsed.value.id, .internal_error, "frozen node did not transition source"),
         };
 
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().print(
-            "{{\"ok\":true,\"nodeId\":{d},\"lifecycle\":\"frozen\",\"artifactKind\":\"{s}\",\"contentFormat\":\"{s}\"}}",
-            .{ node_id, @tagName(artifact_kind), @tagName(content_format) },
+            "{{\"ok\":true,\"nodeId\":{d},\"lifecycle\":\"frozen\",\"artifactKind\":\"{s}\",\"contentFormat\":\"{s}\",\"sections\":[",
+            .{ node_id, @tagName(artifact_kind), @tagName(artifact.content_format) },
         );
+        if (artifact.sections.surface) {
+            try result.writer().writeAll("\"surface\"");
+            if (artifact.sections.alternate) {
+                try result.writer().writeAll(",\"alternate\"");
+            }
+        } else if (artifact.sections.alternate) {
+            try result.writer().writeAll("\"alternate\"");
+        }
+        try result.writer().writeAll("]}");
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 

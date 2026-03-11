@@ -129,7 +129,9 @@ pub fn writeSourceJson(source: source_mod.Source, writer: anytype) !void {
             try writer.writeAll(@tagName(artifact.artifact_kind));
             try writer.writeAll("\",\"contentFormat\":\"");
             try writer.writeAll(@tagName(artifact.content_format));
-            try writer.writeAll("\",\"origin\":\"");
+            try writer.writeAll("\",\"sections\":[");
+            try writeArtifactSectionsJson(artifact.sections, writer);
+            try writer.writeAll("],\"origin\":\"");
             try writer.writeAll(@tagName(artifact.origin));
             try writer.writeAll("\"");
             if (artifact.session_name) |session_name| {
@@ -181,6 +183,10 @@ fn writeSourceXml(source: source_mod.Source, writer: anytype) !void {
             try writer.writeAll(@tagName(artifact.artifact_kind));
             try writer.writeAll("\" contentFormat=\"");
             try writer.writeAll(@tagName(artifact.content_format));
+            if (!artifact.sections.isEmpty()) {
+                try writer.writeAll("\" sections=\"");
+                try writeArtifactSectionsXml(artifact.sections, writer);
+            }
             try writer.writeAll("\" origin=\"");
             try writer.writeAll(@tagName(artifact.origin));
             try writer.writeAll("\"");
@@ -201,6 +207,30 @@ fn writeSourceXml(source: source_mod.Source, writer: anytype) !void {
             }
             try writer.writeAll("/>");
         },
+    }
+}
+
+fn writeArtifactSectionsJson(sections: source_mod.TerminalArtifactSections, writer: anytype) !void {
+    var wrote_one = false;
+    if (sections.surface) {
+        try writer.writeAll("\"surface\"");
+        wrote_one = true;
+    }
+    if (sections.alternate) {
+        if (wrote_one) try writer.writeAll(",");
+        try writer.writeAll("\"alternate\"");
+    }
+}
+
+fn writeArtifactSectionsXml(sections: source_mod.TerminalArtifactSections, writer: anytype) !void {
+    var wrote_one = false;
+    if (sections.surface) {
+        try writer.writeAll("surface");
+        wrote_one = true;
+    }
+    if (sections.alternate) {
+        if (wrote_one) try writer.writeAll(",");
+        try writer.writeAll("alternate");
     }
 }
 

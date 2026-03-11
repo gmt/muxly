@@ -370,12 +370,14 @@ def main() -> None:
         assert frozen["result"]["ok"] is True
         assert frozen["result"]["artifactKind"] == "text"
         assert frozen["result"]["contentFormat"] == "plain_text"
+        assert frozen["result"]["sections"] == []
 
         freeze_node_after = run_cli(env, "node", "get", str(freeze_session["result"]["nodeId"]))
         assert freeze_node_after["result"]["lifecycle"] == "frozen"
         assert freeze_node_after["result"]["source"]["kind"] == "terminal_artifact"
         assert freeze_node_after["result"]["source"]["artifactKind"] == "text"
         assert freeze_node_after["result"]["source"]["contentFormat"] == "plain_text"
+        assert freeze_node_after["result"]["source"]["sections"] == []
         assert freeze_node_after["result"]["source"]["origin"] == "tty"
         assert freeze_node_after["result"]["source"]["sessionName"] == FREEZE_SESSION_NAME
         assert freeze_node_after["result"]["source"]["paneId"] == freeze_pane_id
@@ -413,12 +415,14 @@ def main() -> None:
         assert frozen_surface["result"]["ok"] is True
         assert frozen_surface["result"]["artifactKind"] == "surface"
         assert frozen_surface["result"]["contentFormat"] == "sectioned_text"
+        assert frozen_surface["result"]["sections"] == ["surface"]
 
         freeze_surface_node_after = run_cli(env, "node", "get", str(freeze_surface_session["result"]["nodeId"]))
         assert freeze_surface_node_after["result"]["lifecycle"] == "frozen"
         assert freeze_surface_node_after["result"]["source"]["kind"] == "terminal_artifact"
         assert freeze_surface_node_after["result"]["source"]["artifactKind"] == "surface"
         assert freeze_surface_node_after["result"]["source"]["contentFormat"] == "sectioned_text"
+        assert freeze_surface_node_after["result"]["source"]["sections"] == ["surface"]
         assert freeze_surface_node_after["result"]["source"]["origin"] == "tty"
         assert freeze_surface_node_after["result"]["source"]["sessionName"] == FREEZE_SURFACE_SESSION_NAME
         assert freeze_surface_node_after["result"]["source"]["paneId"] == freeze_surface_pane_id

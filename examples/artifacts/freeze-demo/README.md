@@ -42,6 +42,9 @@ The wrapper will:
 - the other records `artifactKind = surface`
 - the source metadata now also records `contentFormat`, so consumers can tell
   whether the payload is plain transcript text or a sectioned surface capture
+- the source metadata now also records `sections`, so consumers can tell
+  whether the captured surface currently includes only `[surface]` or also
+  `[alternate]`
 - the surface payload is prefixed with `[surface]` and may also include an
   `[alternate]` section later when tmux exposes alternate-screen contents
 

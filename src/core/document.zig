@@ -120,10 +120,11 @@ pub const Document = struct {
         self: *Document,
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
+        sections: source_mod.TerminalArtifactSections,
     ) !void {
         const node = self.findNode(node_id) orelse return error.UnknownNode;
         const artifact = switch (node.source) {
-            .tty => |tty| try source_mod.TerminalArtifactSource.fromTty(self.allocator, tty, artifact_kind),
+            .tty => |tty| try source_mod.TerminalArtifactSource.fromTty(self.allocator, tty, artifact_kind, sections),
             else => return error.InvalidSourceKind,
         };
         node.source.deinit(self.allocator);

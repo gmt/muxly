@@ -149,6 +149,10 @@ The first implementation seam for this posture now exists in the core model:
 - terminal artifacts now also describe their payload layout explicitly:
   - `text` currently uses `contentFormat = plain_text`
   - `surface` currently uses `contentFormat = sectioned_text`
+- terminal artifacts now also expose first-pass `sections` metadata:
+  - `text` currently reports `sections = []`
+  - `surface` currently reports at least `sections = ["surface"]`
+  - `alternate` appears in that list when tmux provides alternate-screen capture
 
 This leaves room for later implementation choices:
 

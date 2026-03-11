@@ -10,6 +10,11 @@ const control_mode = muxly.daemon.tmux.control_mode;
 const tmux_events = muxly.daemon.tmux.events;
 const tmux_reconcile = muxly.daemon.tmux.reconcile;
 
+const TerminalArtifactCapture = struct {
+    content: []u8,
+    sections: source_mod.TerminalArtifactSections = .{},
+};
+
 const TmuxProjectionState = enum {
     clean,
     invalidated_by_notification,
@@ -336,8 +341,8 @@ pub const Store = struct {
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
     ) !void {
-        try self.captureTerminalArtifact(node_id, artifact_kind);
-        try self.document.freezeTtyNodeAsArtifact(node_id, artifact_kind);
+        const sections = try self.captureTerminalArtifact(node_id, artifact_kind);
+        try self.document.freezeTtyNodeAsArtifact(node_id, artifact_kind, sections);
     }
 
     pub fn removeNode(self: *Store, node_id: ids.NodeId) !void {
@@ -480,7 +485,7 @@ pub const Store = struct {
         self: *Store,
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
-    ) !void {
+    ) !source_mod.TerminalArtifactSections {
         const node = self.document.findNode(node_id) orelse return error.UnknownNode;
         const tty = switch (node.source) {
             .tty => |value| value,
@@ -488,12 +493,16 @@ pub const Store = struct {
         };
         const pane_id = tty.pane_id orelse return error.MissingPaneId;
 
-        const content = switch (artifact_kind) {
-            .text => try tmux.capturePane(self.allocator, pane_id),
+        const capture: TerminalArtifactCapture = switch (artifact_kind) {
+            .text => .{
+                .content = try tmux.capturePane(self.allocator, pane_id),
+                .sections = source_mod.TerminalArtifactSections{},
+            },
             .surface => try captureSurfaceArtifact(self.allocator, pane_id),
         };
-        defer self.allocator.free(content);
-        try node.setContent(self.allocator, content);
+        defer self.allocator.free(capture.content);
+        try node.setContent(self.allocator, capture.content);
+        return capture.sections;
     }
 };
 
@@ -540,7 +549,7 @@ fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) !
     return try buffer.toOwnedSlice();
 }
 
-fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
+fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) !TerminalArtifactCapture {
     const visible = try tmux.capturePaneVisible(allocator, pane_id);
     defer allocator.free(visible);
 
@@ -549,11 +558,13 @@ fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) ![]
 
     var buffer = std.array_list.Managed(u8).init(allocator);
     defer buffer.deinit();
+    var sections = source_mod.TerminalArtifactSections{ .surface = true };
 
     try buffer.appendSlice("[surface]\n");
     try buffer.appendSlice(visible);
     const trimmed_alternate = std.mem.trim(u8, alternate, "\r\n\t ");
     if (trimmed_alternate.len != 0) {
+        sections.alternate = true;
         if (visible.len != 0 and visible[visible.len - 1] != '\n') {
             try buffer.append('\n');
         }
@@ -561,7 +572,10 @@ fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) ![]
         try buffer.appendSlice(alternate);
     }
 
-    return try buffer.toOwnedSlice();
+    return .{
+        .content = try buffer.toOwnedSlice(),
+        .sections = sections,
+    };
 }
 
 fn isOctalDigit(char: u8) bool {

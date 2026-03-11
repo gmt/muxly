@@ -17,7 +17,7 @@ test "tty leaf can freeze into captured text artifact while preserving provenanc
     );
     try document.setNodeContent(node_id, "hello\nworld\n");
 
-    try document.freezeTtyNodeAsArtifact(node_id, .text);
+    try document.freezeTtyNodeAsArtifact(node_id, .text, .{});
 
     const node = document.findNode(node_id).?;
     try std.testing.expectEqual(muxly.types.LifecycleState.frozen, node.lifecycle);
@@ -25,6 +25,7 @@ test "tty leaf can freeze into captured text artifact while preserving provenanc
         .terminal_artifact => |artifact| {
             try std.testing.expectEqual(muxly.source.TerminalArtifactKind.text, artifact.artifact_kind);
             try std.testing.expectEqual(muxly.source.TerminalArtifactContentFormat.plain_text, artifact.content_format);
+            try std.testing.expect(artifact.sections.isEmpty());
             try std.testing.expectEqual(muxly.source.TerminalArtifactOriginKind.tty, artifact.origin);
             try std.testing.expectEqualStrings("demo", artifact.session_name.?);
             try std.testing.expectEqualStrings("@1", artifact.window_id.?);
@@ -39,6 +40,7 @@ test "tty leaf can freeze into captured text artifact while preserving provenanc
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"kind\":\"terminal_artifact\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"artifactKind\":\"text\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"contentFormat\":\"plain_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"sections\":[]") != null);
 
     var xml = std.array_list.Managed(u8).init(std.testing.allocator);
     defer xml.deinit();
@@ -64,7 +66,7 @@ test "tty leaf can freeze into captured surface artifact while preserving proven
     );
     try document.setNodeContent(node_id, "[surface]\nframe-1\n");
 
-    try document.freezeTtyNodeAsArtifact(node_id, .surface);
+    try document.freezeTtyNodeAsArtifact(node_id, .surface, .{ .surface = true, .alternate = true });
 
     const node = document.findNode(node_id).?;
     try std.testing.expectEqual(muxly.types.LifecycleState.frozen, node.lifecycle);
@@ -72,6 +74,8 @@ test "tty leaf can freeze into captured surface artifact while preserving proven
         .terminal_artifact => |artifact| {
             try std.testing.expectEqual(muxly.source.TerminalArtifactKind.surface, artifact.artifact_kind);
             try std.testing.expectEqual(muxly.source.TerminalArtifactContentFormat.sectioned_text, artifact.content_format);
+            try std.testing.expect(artifact.sections.surface);
+            try std.testing.expect(artifact.sections.alternate);
             try std.testing.expectEqual(muxly.source.TerminalArtifactOriginKind.tty, artifact.origin);
             try std.testing.expectEqualStrings("demo-surface", artifact.session_name.?);
             try std.testing.expectEqualStrings("@2", artifact.window_id.?);
@@ -85,10 +89,12 @@ test "tty leaf can freeze into captured surface artifact while preserving proven
     try document.writeJson(json.writer());
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"artifactKind\":\"surface\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"contentFormat\":\"sectioned_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"sections\":[\"surface\",\"alternate\"]") != null);
 
     var xml = std.array_list.Managed(u8).init(std.testing.allocator);
     defer xml.deinit();
     try document.writeXml(xml.writer());
     try std.testing.expect(std.mem.indexOf(u8, xml.items, "artifactKind=\"surface\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, xml.items, "contentFormat=\"sectioned_text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml.items, "sections=\"surface,alternate\"") != null);
 }

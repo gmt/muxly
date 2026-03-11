@@ -35,6 +35,15 @@ pub const TerminalArtifactContentFormat = enum {
     sectioned_text,
 };
 
+pub const TerminalArtifactSections = struct {
+    surface: bool = false,
+    alternate: bool = false,
+
+    pub fn isEmpty(self: TerminalArtifactSections) bool {
+        return !self.surface and !self.alternate;
+    }
+};
+
 pub const TerminalArtifactOriginKind = enum {
     tty,
 };
@@ -42,6 +51,7 @@ pub const TerminalArtifactOriginKind = enum {
 pub const TerminalArtifactSource = struct {
     artifact_kind: TerminalArtifactKind,
     content_format: TerminalArtifactContentFormat,
+    sections: TerminalArtifactSections = .{},
     origin: TerminalArtifactOriginKind = .tty,
     session_name: ?[]u8 = null,
     window_id: ?[]u8 = null,
@@ -51,6 +61,7 @@ pub const TerminalArtifactSource = struct {
         allocator: std.mem.Allocator,
         tty: TtySource,
         artifact_kind: TerminalArtifactKind,
+        sections: TerminalArtifactSections,
     ) !TerminalArtifactSource {
         return .{
             .artifact_kind = artifact_kind,
@@ -58,6 +69,7 @@ pub const TerminalArtifactSource = struct {
                 .text => .plain_text,
                 .surface => .sectioned_text,
             },
+            .sections = sections,
             .origin = .tty,
             .session_name = try allocator.dupe(u8, tty.session_name),
             .window_id = if (tty.window_id) |value| try allocator.dupe(u8, value) else null,
@@ -69,6 +81,7 @@ pub const TerminalArtifactSource = struct {
         return .{
             .artifact_kind = self.artifact_kind,
             .content_format = self.content_format,
+            .sections = self.sections,
             .origin = self.origin,
             .session_name = if (self.session_name) |value| try allocator.dupe(u8, value) else null,
             .window_id = if (self.window_id) |value| try allocator.dupe(u8, value) else null,

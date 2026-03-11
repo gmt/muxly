@@ -150,6 +150,10 @@ Current status:
 - terminal artifact payloads now also describe their shape explicitly:
   - `text` currently uses `contentFormat = plain_text`
   - `surface` currently uses `contentFormat = sectioned_text`
+- terminal artifacts now also expose first-pass `sections` metadata:
+  - `text` currently reports `sections = []`
+  - `surface` currently reports at least `sections = ["surface"]`
+  - `alternate` appears when tmux exposes alternate-screen capture at freeze time
 
 ### Slice 4 — proof artifacts
 
