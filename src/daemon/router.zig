@@ -148,12 +148,16 @@ pub fn handleRequest(
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
         };
+        const content_format = switch (artifact_kind) {
+            .text => muxly.source.TerminalArtifactContentFormat.plain_text,
+            .surface => muxly.source.TerminalArtifactContentFormat.sectioned_text,
+        };
 
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try result.writer().print(
-            "{{\"ok\":true,\"nodeId\":{d},\"lifecycle\":\"frozen\",\"artifactKind\":\"{s}\"}}",
-            .{ node_id, @tagName(artifact_kind) },
+            "{{\"ok\":true,\"nodeId\":{d},\"lifecycle\":\"frozen\",\"artifactKind\":\"{s}\",\"contentFormat\":\"{s}\"}}",
+            .{ node_id, @tagName(artifact_kind), @tagName(content_format) },
         );
         return try buildResult(allocator, parsed.value.id, result.items);
     }

@@ -369,6 +369,7 @@ def main() -> None:
         frozen = run_cli(env, "node", "freeze", str(freeze_session["result"]["nodeId"]), "text")
         assert frozen["result"]["ok"] is True
         assert frozen["result"]["artifactKind"] == "text"
+        assert frozen["result"]["contentFormat"] == "plain_text"
 
         freeze_node_after = run_cli(env, "node", "get", str(freeze_session["result"]["nodeId"]))
         assert freeze_node_after["result"]["lifecycle"] == "frozen"
@@ -411,6 +412,7 @@ def main() -> None:
         )
         assert frozen_surface["result"]["ok"] is True
         assert frozen_surface["result"]["artifactKind"] == "surface"
+        assert frozen_surface["result"]["contentFormat"] == "sectioned_text"
 
         freeze_surface_node_after = run_cli(env, "node", "get", str(freeze_surface_session["result"]["nodeId"]))
         assert freeze_surface_node_after["result"]["lifecycle"] == "frozen"
