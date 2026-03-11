@@ -43,5 +43,11 @@ The wrapper will:
 - the surface payload is prefixed with `[surface]` and may also include an
   `[alternate]` section later when tmux exposes alternate-screen contents
 
+The current surface demo deliberately runs in the terminal alternate screen so
+the frozen `surface` case is at least exercising fullscreen-style behavior.
+tmux does not always expose a separate alternate-screen payload in a way that
+produces useful extra content here, so `[alternate]` should be treated as an
+opportunistic bonus rather than a guaranteed section today.
+
 That is the current first-pass implementation of the Phase 6 contract:
 preserve node identity, change source/lifecycle semantics, and keep provenance.

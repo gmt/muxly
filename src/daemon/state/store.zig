@@ -552,7 +552,8 @@ fn captureSurfaceArtifact(allocator: std.mem.Allocator, pane_id: []const u8) ![]
 
     try buffer.appendSlice("[surface]\n");
     try buffer.appendSlice(visible);
-    if (alternate.len != 0) {
+    const trimmed_alternate = std.mem.trim(u8, alternate, "\r\n\t ");
+    if (trimmed_alternate.len != 0) {
         if (visible.len != 0 and visible[visible.len - 1] != '\n') {
             try buffer.append('\n');
         }
