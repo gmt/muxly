@@ -331,6 +331,15 @@ pub const Store = struct {
         if (content) |value| try self.document.setNodeContent(node_id, value);
     }
 
+    pub fn freezeTerminalNode(
+        self: *Store,
+        node_id: ids.NodeId,
+        artifact_kind: source_mod.TerminalArtifactKind,
+    ) !void {
+        try self.refreshSources();
+        try self.document.freezeTtyNodeAsArtifact(node_id, artifact_kind);
+    }
+
     pub fn removeNode(self: *Store, node_id: ids.NodeId) !void {
         try self.document.removeNode(node_id);
     }

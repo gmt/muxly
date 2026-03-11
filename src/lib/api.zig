@@ -74,6 +74,23 @@ pub fn nodeUpdate(
     return error.InvalidArguments;
 }
 
+pub fn nodeFreeze(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    node_id: u64,
+    artifact_kind: []const u8,
+) ![]u8 {
+    const artifact_kind_json = try std.json.Stringify.valueAlloc(allocator, artifact_kind, .{});
+    defer allocator.free(artifact_kind_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"nodeId\":{d},\"artifactKind\":{s}}}",
+        .{ node_id, artifact_kind_json },
+    );
+    defer allocator.free(params_json);
+    return try request(allocator, socket_path, "node.freeze", params_json);
+}
+
 pub fn nodeRemove(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
     const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
     defer allocator.free(params_json);

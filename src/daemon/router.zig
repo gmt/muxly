@@ -136,6 +136,28 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "node.freeze")) {
+        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const artifact_kind_name = protocol.getString(parsed.value.params, "artifactKind") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "artifactKind is required");
+        const artifact_kind = parseTerminalArtifactKind(artifact_kind_name) orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported artifactKind");
+        store.freezeTerminalNode(@intCast(node_id), artifact_kind) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to freeze node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+
+        var result = std.array_list.Managed(u8).init(allocator);
+        defer result.deinit();
+        try result.writer().print(
+            "{{\"ok\":true,\"nodeId\":{d},\"lifecycle\":\"frozen\",\"artifactKind\":\"{s}\"}}",
+            .{ node_id, @tagName(artifact_kind) },
+        );
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "node.remove")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
@@ -562,5 +584,11 @@ fn parseNodeKind(name: []const u8) ?muxly.types.NodeKind {
             return @enumFromInt(field.value);
         }
     }
+    return null;
+}
+
+fn parseTerminalArtifactKind(name: []const u8) ?muxly.source.TerminalArtifactKind {
+    if (std.mem.eql(u8, name, "text")) return .text;
+    if (std.mem.eql(u8, name, "surface")) return .surface;
     return null;
 }

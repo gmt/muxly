@@ -11,6 +11,7 @@ SOCKET_PATH = "/tmp/muxly-integration.sock"
 SESSION_NAME = "muxly-integration-demo"
 NESTED_SESSION_NAME = "muxly-integration-nested-demo"
 DRIFT_SESSION_NAME = "muxly-integration-drift-demo"
+FREEZE_SESSION_NAME = "muxly-integration-freeze-demo"
 
 
 def run_cli(env: dict[str, str], *args: str) -> dict:
@@ -122,6 +123,7 @@ def main() -> None:
     cleanup_tmux_session(env, SESSION_NAME)
     cleanup_tmux_session(env, NESTED_SESSION_NAME)
     cleanup_tmux_session(env, DRIFT_SESSION_NAME)
+    cleanup_tmux_session(env, FREEZE_SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -350,6 +352,41 @@ def main() -> None:
         node_ids = {node["id"] for node in document["nodes"]}
         assert drift_session_container["result"]["id"] not in node_ids
 
+        freeze_session = run_cli(
+            env,
+            "session",
+            "create",
+            FREEZE_SESSION_NAME,
+            "sh -lc 'printf freeze-demo\\\\n; sleep 5'",
+        )
+        assert freeze_session["result"]["nodeId"] > 0
+        freeze_node_before = run_cli(env, "node", "get", str(freeze_session["result"]["nodeId"]))
+        freeze_pane_id = freeze_node_before["result"]["source"]["paneId"]
+        wait_for_pane_content(env, freeze_pane_id, "freeze-demo")
+
+        frozen = run_cli(env, "node", "freeze", str(freeze_session["result"]["nodeId"]), "text")
+        assert frozen["result"]["ok"] is True
+        assert frozen["result"]["artifactKind"] == "text"
+
+        freeze_node_after = run_cli(env, "node", "get", str(freeze_session["result"]["nodeId"]))
+        assert freeze_node_after["result"]["lifecycle"] == "frozen"
+        assert freeze_node_after["result"]["source"]["kind"] == "terminal_artifact"
+        assert freeze_node_after["result"]["source"]["artifactKind"] == "text"
+        assert freeze_node_after["result"]["source"]["origin"] == "tty"
+        assert freeze_node_after["result"]["source"]["sessionName"] == FREEZE_SESSION_NAME
+        assert freeze_node_after["result"]["source"]["paneId"] == freeze_pane_id
+        assert "freeze-demo" in freeze_node_after["result"]["content"]
+
+        post_freeze_send_keys = run_cli(env, "pane", "send-keys", freeze_pane_id, "echo after-freeze", "--enter")
+        assert post_freeze_send_keys["result"]["ok"] is True
+        post_freeze_capture = run_cli(env, "pane", "capture", freeze_pane_id)
+        assert "after-freeze" in post_freeze_capture["result"]["content"]
+        document = run_cli(env, "document", "get")["result"]
+        frozen_node = next(node for node in document["nodes"] if node["id"] == freeze_session["result"]["nodeId"])
+        assert frozen_node["lifecycle"] == "frozen"
+        assert frozen_node["source"]["kind"] == "terminal_artifact"
+        assert "after-freeze" not in frozen_node["content"]
+
         viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
         viewer_scope_id = viewer_scope["result"]["nodeId"]
         viewer_child = run_cli(env, "node", "append", str(viewer_scope_id), "scroll_region", "viewer-child")
@@ -430,6 +467,7 @@ def main() -> None:
         cleanup_tmux_session(env, SESSION_NAME)
         cleanup_tmux_session(env, NESTED_SESSION_NAME)
         cleanup_tmux_session(env, DRIFT_SESSION_NAME)
+        cleanup_tmux_session(env, FREEZE_SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)

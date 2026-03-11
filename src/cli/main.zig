@@ -45,6 +45,11 @@ pub fn main() !void {
                 if (std.mem.eql(u8, args[cursor + 3], "content")) args[cursor + 4] else null,
             );
         }
+    else if (std.mem.eql(u8, args[cursor], "node") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze"))
+        blk: {
+            const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+            break :blk try muxly.api.nodeFreeze(allocator, socket_path, node_id, args[cursor + 3]);
+        }
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "remove"))
         blk: {
             const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
@@ -227,6 +232,7 @@ fn printUsage() !void {
         \\  muxly [--socket PATH] node get <node-id>
         \\  muxly [--socket PATH] node append <parent-id> <kind> <title>
         \\  muxly [--socket PATH] node update <node-id> <title|content> <value>
+        \\  muxly [--socket PATH] node freeze <node-id> <text|surface>
         \\  muxly [--socket PATH] node remove <node-id>
         \\  muxly [--socket PATH] session list
         \\  muxly [--socket PATH] window list

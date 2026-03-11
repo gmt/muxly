@@ -137,6 +137,8 @@ The first implementation seam for this posture now exists in the core model:
 - captured terminal artifacts now use `source = terminal_artifact`
 - `terminal_artifact` currently distinguishes `text` versus `surface`
   artifacts while preserving tty provenance fields
+- the first public daemon seam now exists as `node.freeze <node-id> <text|surface>`
+  over the JSON-RPC/API/CLI surface
 
 This leaves room for later implementation choices:
 
