@@ -14,6 +14,10 @@ Phase 6 grounded in concrete payload shapes before implementation hardens.
 - `captured-surface.txt`
   A visible-screen snapshot representing a fullscreen/raw/surface-oriented
   terminal interaction.
+- `freeze-demo/`
+  CLI/playbook proof for `node.freeze <text|surface>`.
+- `python-freeze/`
+  `ctypes`/`libmuxly` proof for the same public terminal-artifact seam.
 
 ## Intent
 

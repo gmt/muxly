@@ -21,6 +21,7 @@ Reference example locations:
 
 - `examples/README.md`
 - `examples/artifacts/freeze-demo/`
+- `examples/artifacts/python-freeze/`
 - `examples/tom/zig/`
 - `examples/tom/c/`
 - `examples/tom/python/`
@@ -99,3 +100,15 @@ The first public Phase 6 seam is now runnable as a playbook too:
 
 That flow creates one transcript-like TTY and one surface-like TTY, freezes
 them through `node.freeze`, and prints the resulting frozen artifact nodes.
+
+Binding-level artifact freeze demo:
+
+There is also a `libmuxly`-consumer version of the same seam:
+
+```sh
+./examples/artifacts/python-freeze/run.sh
+```
+
+That playbook exercises terminal artifact freezing through `ctypes` and the
+public C ABI, then prints the frozen node payloads plus a small parsed view of
+the surface artifact sections.
