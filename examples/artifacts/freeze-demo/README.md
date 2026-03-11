@@ -51,5 +51,9 @@ tmux does not always expose a separate alternate-screen payload in a way that
 produces useful extra content here, so `[alternate]` should be treated as an
 opportunistic bonus rather than a guaranteed section today.
 
+The playbook also prints a tiny parsed view of the `sectioned_text` payload so
+you can see how a consumer might read the frozen surface artifact without
+having to reverse-engineer the section markers by eye.
+
 That is the current first-pass implementation of the Phase 6 contract:
 preserve node identity, change source/lifecycle semantics, and keep provenance.

@@ -134,6 +134,21 @@ def print_section(title: str, payload: dict) -> None:
     print(json.dumps(payload["result"], indent=2))
 
 
+def parse_sectioned_text(content: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current = "body"
+    sections[current] = []
+
+    for line in content.splitlines():
+        if line.startswith("[") and line.endswith("]") and len(line) > 2:
+            current = line[1:-1]
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+
+    return {name: "\n".join(lines).rstrip("\n") for name, lines in sections.items()}
+
+
 def main() -> None:
     env = os.environ.copy()
     socket_path = env.get("MUXLY_SOCKET", DEFAULT_SOCKET)
@@ -183,6 +198,8 @@ def main() -> None:
         print_section("text frozen node", frozen_text_node)
         print_section("surface freeze response", frozen_surface)
         print_section("surface frozen node", frozen_surface_node)
+        print("\n== parsed surface sections ==")
+        print(json.dumps(parse_sectioned_text(frozen_surface_node["result"]["content"]), indent=2))
     finally:
         cleanup_tmux_session(env, TEXT_SESSION_NAME)
         cleanup_tmux_session(env, SURFACE_SESSION_NAME)
