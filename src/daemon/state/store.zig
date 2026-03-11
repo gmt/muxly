@@ -116,6 +116,7 @@ pub const Store = struct {
                         try node.setContent(self.allocator, buffer.items);
                     }
                 },
+                .terminal_artifact => {},
                 .file => |file| {
                     const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
                         var fallback = std.array_list.Managed(u8).init(self.allocator);

@@ -134,6 +134,11 @@ Current status:
     node-kind taxonomy
   - keep room for richer capture metadata or dedicated artifact kinds later if
     the simple posture becomes too cramped
+- the first implementation seam now exists in the core model:
+  - captured terminal artifacts use a dedicated `terminal_artifact` source
+    family
+  - document-side transition helpers can freeze a tty-backed node into a
+    captured text or surface artifact while preserving provenance
 
 ### Slice 4 — proof artifacts
 

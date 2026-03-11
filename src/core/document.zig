@@ -116,6 +116,21 @@ pub const Document = struct {
         self.lifecycle = .frozen;
     }
 
+    pub fn freezeTtyNodeAsArtifact(
+        self: *Document,
+        node_id: ids.NodeId,
+        artifact_kind: source_mod.TerminalArtifactKind,
+    ) !void {
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        const artifact = switch (node.source) {
+            .tty => |tty| try source_mod.TerminalArtifactSource.fromTty(self.allocator, tty, artifact_kind),
+            else => return error.InvalidSourceKind,
+        };
+        node.source.deinit(self.allocator);
+        node.source = .{ .terminal_artifact = artifact };
+        node.lifecycle = .frozen;
+    }
+
     pub fn thawDetached(self: *Document) void {
         self.lifecycle = .detached;
     }

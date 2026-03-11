@@ -95,7 +95,9 @@ pub const Node = struct {
         });
         try writer.writeAll("<title>");
         try escapeXml(self.title, writer);
-        try writer.writeAll("</title><content>");
+        try writer.writeAll("</title>");
+        try writeSourceXml(self.source, writer);
+        try writer.writeAll("<content>");
         try escapeXml(self.content, writer);
         try writer.writeAll("</content></node>");
     }
@@ -121,6 +123,79 @@ pub fn writeSourceJson(source: source_mod.Source, writer: anytype) !void {
             try writer.writeAll("{\"kind\":\"file\",\"path\":");
             try writeJsonString(writer, file.path);
             try writer.print(",\"mode\":\"{s}\"}}", .{@tagName(file.mode)});
+        },
+        .terminal_artifact => |artifact| {
+            try writer.writeAll("{\"kind\":\"terminal_artifact\",\"artifactKind\":\"");
+            try writer.writeAll(@tagName(artifact.artifact_kind));
+            try writer.writeAll("\",\"origin\":\"");
+            try writer.writeAll(@tagName(artifact.origin));
+            try writer.writeAll("\"");
+            if (artifact.session_name) |session_name| {
+                try writer.writeAll(",\"sessionName\":");
+                try writeJsonString(writer, session_name);
+            }
+            if (artifact.window_id) |window_id| {
+                try writer.writeAll(",\"windowId\":");
+                try writeJsonString(writer, window_id);
+            }
+            if (artifact.pane_id) |pane_id| {
+                try writer.writeAll(",\"paneId\":");
+                try writeJsonString(writer, pane_id);
+            }
+            try writer.writeAll("}");
+        },
+    }
+}
+
+fn writeSourceXml(source: source_mod.Source, writer: anytype) !void {
+    switch (source) {
+        .none => try writer.writeAll("<source kind=\"none\"/>"),
+        .tty => |tty| {
+            try writer.writeAll("<source kind=\"tty\"");
+            try writer.writeAll(" sessionName=\"");
+            try escapeXml(tty.session_name, writer);
+            try writer.writeAll("\"");
+            if (tty.window_id) |window_id| {
+                try writer.writeAll(" windowId=\"");
+                try escapeXml(window_id, writer);
+                try writer.writeAll("\"");
+            }
+            if (tty.pane_id) |pane_id| {
+                try writer.writeAll(" paneId=\"");
+                try escapeXml(pane_id, writer);
+                try writer.writeAll("\"");
+            }
+            try writer.writeAll("/>");
+        },
+        .file => |file| {
+            try writer.writeAll("<source kind=\"file\" path=\"");
+            try escapeXml(file.path, writer);
+            try writer.writeAll("\" mode=\"");
+            try writer.writeAll(@tagName(file.mode));
+            try writer.writeAll("\"/>");
+        },
+        .terminal_artifact => |artifact| {
+            try writer.writeAll("<source kind=\"terminal_artifact\" artifactKind=\"");
+            try writer.writeAll(@tagName(artifact.artifact_kind));
+            try writer.writeAll("\" origin=\"");
+            try writer.writeAll(@tagName(artifact.origin));
+            try writer.writeAll("\"");
+            if (artifact.session_name) |session_name| {
+                try writer.writeAll(" sessionName=\"");
+                try escapeXml(session_name, writer);
+                try writer.writeAll("\"");
+            }
+            if (artifact.window_id) |window_id| {
+                try writer.writeAll(" windowId=\"");
+                try escapeXml(window_id, writer);
+                try writer.writeAll("\"");
+            }
+            if (artifact.pane_id) |pane_id| {
+                try writer.writeAll(" paneId=\"");
+                try escapeXml(pane_id, writer);
+                try writer.writeAll("\"");
+            }
+            try writer.writeAll("/>");
         },
     }
 }

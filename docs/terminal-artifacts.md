@@ -131,6 +131,13 @@ In practical terms, the first-pass representation target is:
   - carries a durable surface-oriented payload plus any future metadata needed
     to describe the captured screen honestly
 
+The first implementation seam for this posture now exists in the core model:
+
+- live recoverable terminals still use `source = tty`
+- captured terminal artifacts now use `source = terminal_artifact`
+- `terminal_artifact` currently distinguishes `text` versus `surface`
+  artifacts while preserving tty provenance fields
+
 This leaves room for later implementation choices:
 
 - new node kinds
