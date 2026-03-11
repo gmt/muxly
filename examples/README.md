@@ -20,8 +20,14 @@ Examples are grouped by what they are trying to prove, not only by language.
   Contract examples for captured text/history versus captured surface payloads.
 - `artifacts/freeze-demo/`
   Runnable playbook for the public `node.freeze <text|surface>` seam.
+- `artifacts/c-freeze/`
+  Runnable C / `libmuxly` playbook for the same freeze seam.
 - `artifacts/python-freeze/`
   Runnable `libmuxly`/`ctypes` playbook for the same freeze seam.
+- `artifacts/zig-freeze/`
+  Runnable Zig / `libmuxly` playbook for the same freeze seam.
+- `scripts/run_artifact_examples.py`
+  Convenience runner for the currently shipped artifact playbooks.
 - `tom/c/`
   C binding playbook for synthetic TOM inspection and mutation.
 - `tom/zig/`

@@ -14,10 +14,16 @@ Phase 6 grounded in concrete payload shapes before implementation hardens.
 - `captured-surface.txt`
   A visible-screen snapshot representing a fullscreen/raw/surface-oriented
   terminal interaction.
+- `c-freeze/`
+  C / `libmuxly` proof for the public terminal-artifact seam.
 - `freeze-demo/`
   CLI/playbook proof for `node.freeze <text|surface>`.
 - `python-freeze/`
   `ctypes`/`libmuxly` proof for the same public terminal-artifact seam.
+- `zig-freeze/`
+  Zig / `libmuxly` proof for the same public terminal-artifact seam.
+- `scripts/run_artifact_examples.py`
+  Convenience runner for the currently shipped runnable artifact playbooks.
 
 ## Intent
 

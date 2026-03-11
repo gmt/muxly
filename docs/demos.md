@@ -21,7 +21,9 @@ Reference example locations:
 
 - `examples/README.md`
 - `examples/artifacts/freeze-demo/`
+- `examples/artifacts/c-freeze/`
 - `examples/artifacts/python-freeze/`
+- `examples/artifacts/zig-freeze/`
 - `examples/tom/zig/`
 - `examples/tom/c/`
 - `examples/tom/python/`
@@ -103,12 +105,20 @@ them through `node.freeze`, and prints the resulting frozen artifact nodes.
 
 Binding-level artifact freeze demo:
 
-There is also a `libmuxly`-consumer version of the same seam:
+There are also `libmuxly`-consumer versions of the same seam:
 
 ```sh
+./examples/artifacts/c-freeze/run.sh
 ./examples/artifacts/python-freeze/run.sh
+./examples/artifacts/zig-freeze/run.sh
 ```
 
-That playbook exercises terminal artifact freezing through `ctypes` and the
-public C ABI, then prints the frozen node payloads plus a small parsed view of
-the surface artifact sections.
+Those playbooks exercise terminal artifact freezing through the public library
+surface in C, Python/`ctypes`, and Zig, then print the frozen node payloads
+plus a small parsed view of the surface artifact sections.
+
+One simple way to run the currently shipped artifact playbooks together is:
+
+```sh
+python3 scripts/run_artifact_examples.py
+```
