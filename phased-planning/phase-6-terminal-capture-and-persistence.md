@@ -156,6 +156,9 @@ Current status:
   families under [`examples/artifacts/`](/home/greg/src/muxly/examples/artifacts)
 - these are contract examples rather than daemon-emitted fixtures, but they
   make the text-versus-surface distinction concrete and reviewable
+- the repo now also includes a runnable public-seam playbook under
+  [`examples/artifacts/freeze-demo/`](/home/greg/src/muxly/examples/artifacts/freeze-demo)
+  that exercises both `node.freeze ... text` and `node.freeze ... surface`
 
 ## Per-slice proof
 

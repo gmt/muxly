@@ -18,6 +18,8 @@ Examples are grouped by what they are trying to prove, not only by language.
 
 - `artifacts/`
   Contract examples for captured text/history versus captured surface payloads.
+- `artifacts/freeze-demo/`
+  Runnable playbook for the public `node.freeze <text|surface>` seam.
 - `tom/c/`
   C binding playbook for synthetic TOM inspection and mutation.
 - `tom/zig/`

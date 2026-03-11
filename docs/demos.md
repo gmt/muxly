@@ -20,6 +20,7 @@ Core demos:
 Reference example locations:
 
 - `examples/README.md`
+- `examples/artifacts/freeze-demo/`
 - `examples/tom/zig/`
 - `examples/tom/c/`
 - `examples/tom/python/`
@@ -87,3 +88,14 @@ One simple way to exercise them against a live daemon is:
 zig build example-deps
 python3 scripts/run_binding_examples.py
 ```
+
+Artifact freeze demo:
+
+The first public Phase 6 seam is now runnable as a playbook too:
+
+```sh
+./examples/artifacts/freeze-demo/run.sh
+```
+
+That flow creates one transcript-like TTY and one surface-like TTY, freezes
+them through `node.freeze`, and prints the resulting frozen artifact nodes.
