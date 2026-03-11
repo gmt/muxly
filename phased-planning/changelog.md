@@ -204,6 +204,10 @@ Completed work:
   - Zig API helper
   - CLI command
   - C ABI helper
+- current capture posture:
+  - `text` freezes from tmux history + visible capture
+  - `surface` freezes from visible surface capture, with alternate-screen
+    capture included opportunistically when tmux provides useful content
 - proof/examples:
   - unit proof for document-side tty-to-artifact transition
   - integration proof for both `text` and `surface` freeze paths
