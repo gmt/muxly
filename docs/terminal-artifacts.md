@@ -139,6 +139,9 @@ The first implementation seam for this posture now exists in the core model:
   artifacts while preserving tty provenance fields
 - the first public daemon seam now exists as `node.freeze <node-id> <text|surface>`
   over the JSON-RPC/API/CLI surface
+- the integration proof now exercises both public branches:
+  - `node.freeze ... text`
+  - `node.freeze ... surface`
 
 This leaves room for later implementation choices:
 

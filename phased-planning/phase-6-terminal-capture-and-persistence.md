@@ -139,7 +139,10 @@ Current status:
     family
   - document-side transition helpers can freeze a tty-backed node into a
     captured text or surface artifact while preserving provenance
-  - the first public seam now exists through `node.freeze`
+- the first public seam now exists through `node.freeze`
+- integration proof now covers both public artifact kinds:
+  - `text`
+  - `surface`
 
 ### Slice 4 — proof artifacts
 

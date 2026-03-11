@@ -12,6 +12,7 @@ SESSION_NAME = "muxly-integration-demo"
 NESTED_SESSION_NAME = "muxly-integration-nested-demo"
 DRIFT_SESSION_NAME = "muxly-integration-drift-demo"
 FREEZE_SESSION_NAME = "muxly-integration-freeze-demo"
+FREEZE_SURFACE_SESSION_NAME = "muxly-integration-freeze-surface-demo"
 
 
 def run_cli(env: dict[str, str], *args: str) -> dict:
@@ -124,6 +125,7 @@ def main() -> None:
     cleanup_tmux_session(env, NESTED_SESSION_NAME)
     cleanup_tmux_session(env, DRIFT_SESSION_NAME)
     cleanup_tmux_session(env, FREEZE_SESSION_NAME)
+    cleanup_tmux_session(env, FREEZE_SURFACE_SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -387,6 +389,57 @@ def main() -> None:
         assert frozen_node["source"]["kind"] == "terminal_artifact"
         assert "after-freeze" not in frozen_node["content"]
 
+        freeze_surface_session = run_cli(
+            env,
+            "session",
+            "create",
+            FREEZE_SURFACE_SESSION_NAME,
+            "sh -lc 'printf freeze-surface-demo\\\\n; sleep 5'",
+        )
+        assert freeze_surface_session["result"]["nodeId"] > 0
+        freeze_surface_node_before = run_cli(env, "node", "get", str(freeze_surface_session["result"]["nodeId"]))
+        freeze_surface_pane_id = freeze_surface_node_before["result"]["source"]["paneId"]
+        wait_for_pane_content(env, freeze_surface_pane_id, "freeze-surface-demo")
+
+        frozen_surface = run_cli(
+            env,
+            "node",
+            "freeze",
+            str(freeze_surface_session["result"]["nodeId"]),
+            "surface",
+        )
+        assert frozen_surface["result"]["ok"] is True
+        assert frozen_surface["result"]["artifactKind"] == "surface"
+
+        freeze_surface_node_after = run_cli(env, "node", "get", str(freeze_surface_session["result"]["nodeId"]))
+        assert freeze_surface_node_after["result"]["lifecycle"] == "frozen"
+        assert freeze_surface_node_after["result"]["source"]["kind"] == "terminal_artifact"
+        assert freeze_surface_node_after["result"]["source"]["artifactKind"] == "surface"
+        assert freeze_surface_node_after["result"]["source"]["origin"] == "tty"
+        assert freeze_surface_node_after["result"]["source"]["sessionName"] == FREEZE_SURFACE_SESSION_NAME
+        assert freeze_surface_node_after["result"]["source"]["paneId"] == freeze_surface_pane_id
+        assert "freeze-surface-demo" in freeze_surface_node_after["result"]["content"]
+
+        post_surface_freeze_send_keys = run_cli(
+            env,
+            "pane",
+            "send-keys",
+            freeze_surface_pane_id,
+            "echo after-surface-freeze",
+            "--enter",
+        )
+        assert post_surface_freeze_send_keys["result"]["ok"] is True
+        post_surface_freeze_capture = run_cli(env, "pane", "capture", freeze_surface_pane_id)
+        assert "after-surface-freeze" in post_surface_freeze_capture["result"]["content"]
+        document = run_cli(env, "document", "get")["result"]
+        frozen_surface_node = next(
+            node for node in document["nodes"] if node["id"] == freeze_surface_session["result"]["nodeId"]
+        )
+        assert frozen_surface_node["lifecycle"] == "frozen"
+        assert frozen_surface_node["source"]["kind"] == "terminal_artifact"
+        assert frozen_surface_node["source"]["artifactKind"] == "surface"
+        assert "after-surface-freeze" not in frozen_surface_node["content"]
+
         viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
         viewer_scope_id = viewer_scope["result"]["nodeId"]
         viewer_child = run_cli(env, "node", "append", str(viewer_scope_id), "scroll_region", "viewer-child")
@@ -468,6 +521,7 @@ def main() -> None:
         cleanup_tmux_session(env, NESTED_SESSION_NAME)
         cleanup_tmux_session(env, DRIFT_SESSION_NAME)
         cleanup_tmux_session(env, FREEZE_SESSION_NAME)
+        cleanup_tmux_session(env, FREEZE_SURFACE_SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)
