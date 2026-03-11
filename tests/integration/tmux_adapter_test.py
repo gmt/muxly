@@ -374,6 +374,7 @@ def main() -> None:
         assert freeze_node_after["result"]["lifecycle"] == "frozen"
         assert freeze_node_after["result"]["source"]["kind"] == "terminal_artifact"
         assert freeze_node_after["result"]["source"]["artifactKind"] == "text"
+        assert freeze_node_after["result"]["source"]["contentFormat"] == "plain_text"
         assert freeze_node_after["result"]["source"]["origin"] == "tty"
         assert freeze_node_after["result"]["source"]["sessionName"] == FREEZE_SESSION_NAME
         assert freeze_node_after["result"]["source"]["paneId"] == freeze_pane_id
@@ -415,6 +416,7 @@ def main() -> None:
         assert freeze_surface_node_after["result"]["lifecycle"] == "frozen"
         assert freeze_surface_node_after["result"]["source"]["kind"] == "terminal_artifact"
         assert freeze_surface_node_after["result"]["source"]["artifactKind"] == "surface"
+        assert freeze_surface_node_after["result"]["source"]["contentFormat"] == "sectioned_text"
         assert freeze_surface_node_after["result"]["source"]["origin"] == "tty"
         assert freeze_surface_node_after["result"]["source"]["sessionName"] == FREEZE_SURFACE_SESSION_NAME
         assert freeze_surface_node_after["result"]["source"]["paneId"] == freeze_surface_pane_id
