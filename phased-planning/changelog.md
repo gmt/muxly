@@ -208,6 +208,9 @@ Completed work:
   - `text` freezes from tmux history + visible capture
   - `surface` freezes from visible surface capture, with alternate-screen
     capture included opportunistically when tmux provides useful content
+- payload shape is now explicit in source metadata:
+  - `text` uses `contentFormat = plain_text`
+  - `surface` uses `contentFormat = sectioned_text`
 - proof/examples:
   - unit proof for document-side tty-to-artifact transition
   - integration proof for both `text` and `surface` freeze paths

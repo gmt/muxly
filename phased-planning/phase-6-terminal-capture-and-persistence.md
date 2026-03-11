@@ -147,6 +147,9 @@ Current status:
   - `text` uses tmux history + visible capture
   - `surface` uses visible surface capture and includes alternate-screen
     capture when available
+- terminal artifact payloads now also describe their shape explicitly:
+  - `text` currently uses `contentFormat = plain_text`
+  - `surface` currently uses `contentFormat = sectioned_text`
 
 ### Slice 4 — proof artifacts
 
