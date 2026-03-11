@@ -135,7 +135,7 @@ def wait_for_pane_content(env: dict[str, str], pane_id: str, needle: str, timeou
     last_capture: dict | None = None
     while time.time() < deadline:
         last_capture = run_cli(env, "pane", "capture", pane_id)
-        if needle in last_capture["result"]["content"].replace("n\n", "\n"):
+        if needle in last_capture["result"]["content"]:
             return last_capture
         time.sleep(0.1)
     raise RuntimeError(f"timed out waiting for pane {pane_id} to contain {needle!r}: {last_capture!r}")

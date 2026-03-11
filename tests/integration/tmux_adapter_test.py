@@ -50,7 +50,7 @@ def wait_for_pane_content(env: dict[str, str], pane_id: str, needle: str, timeou
     last_capture: dict | None = None
     while time.time() < deadline:
         last_capture = run_cli(env, "pane", "capture", pane_id)
-        if needle in last_capture["result"]["content"].replace("n\n", "\n"):
+        if needle in last_capture["result"]["content"]:
             return last_capture
         time.sleep(0.1)
     raise AssertionError(
@@ -218,7 +218,7 @@ def main() -> None:
             "session",
             "create",
             SESSION_NAME,
-            "sh -lc 'printf integration-tmux\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" integration-tmux; sleep 5'",
         )
         assert session["result"]["nodeId"] > 0
 
@@ -246,7 +246,7 @@ def main() -> None:
         assert windows["result"]
 
         capture = wait_for_pane_content(env, pane_id, "integration-tmux")
-        assert "integration-tmux" in capture["result"]["content"].replace("n\n", "\n")
+        assert "integration-tmux" in capture["result"]["content"]
 
         external_split_pane_id = subprocess.check_output(
             [
@@ -259,7 +259,7 @@ def main() -> None:
                 "-t",
                 pane_id,
                 "-h",
-                "sh -lc 'printf external-split-event\\\\n; sleep 5'",
+                "sh -lc 'printf \"%s\\\\n\" external-split-event; sleep 5'",
             ],
             cwd=REPO,
             env=env,
@@ -270,7 +270,7 @@ def main() -> None:
         assert external_pane_entry["sessionId"] == session_entry["sessionId"]
         document, external_tty_node = wait_for_pane_node(env, external_split_pane_id)
         external_split_capture = wait_for_pane_content(env, external_split_pane_id, "external-split-event")
-        assert "external-split-event" in external_split_capture["result"]["content"].replace("n\n", "\n")
+        assert "external-split-event" in external_split_capture["result"]["content"]
         subprocess.run(
             ["tmux", "rename-window", "-t", window_entry["windowId"], "externally-renamed"],
             cwd=REPO,
@@ -285,7 +285,7 @@ def main() -> None:
         assert external_tty_node["id"] not in node_ids
 
         scroll = run_cli(env, "pane", "scroll", pane_id, "-5", "-1")
-        assert "integration-tmux" in scroll["result"]["content"].replace("n\n", "\n")
+        assert "integration-tmux" in scroll["result"]["content"]
 
         pane_follow = run_cli(env, "pane", "follow-tail", pane_id, "false")
         assert pane_follow["result"]["ok"] is True
@@ -302,7 +302,7 @@ def main() -> None:
             "split",
             pane_id,
             "right",
-            "sh -lc 'printf split-pane\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" split-pane; sleep 5'",
         )
         assert split["result"]["nodeId"] > 0
         document = run_cli(env, "document", "get")["result"]
@@ -321,7 +321,7 @@ def main() -> None:
             "create",
             SESSION_NAME,
             "extra",
-            "sh -lc 'printf window-pane\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" window-pane; sleep 5'",
         )
         assert window["result"]["nodeId"] > 0
 
@@ -336,7 +336,7 @@ def main() -> None:
             "session",
             "create",
             DRIFT_SESSION_NAME,
-            "sh -lc 'printf drift-session\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" drift-session; sleep 5'",
         )
         assert drift_session["result"]["nodeId"] > 0
         drift_session_node = run_cli(env, "node", "get", str(drift_session["result"]["nodeId"]))
@@ -359,7 +359,7 @@ def main() -> None:
             "session",
             "create",
             FREEZE_SESSION_NAME,
-            "sh -lc 'printf freeze-demo\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" freeze-demo; sleep 5'",
         )
         assert freeze_session["result"]["nodeId"] > 0
         freeze_node_before = run_cli(env, "node", "get", str(freeze_session["result"]["nodeId"]))
@@ -396,7 +396,7 @@ def main() -> None:
             "session",
             "create",
             FREEZE_SURFACE_SESSION_NAME,
-            "sh -lc 'printf freeze-surface-demo\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" freeze-surface-demo; sleep 5'",
         )
         assert freeze_surface_session["result"]["nodeId"] > 0
         freeze_surface_node_before = run_cli(env, "node", "get", str(freeze_surface_session["result"]["nodeId"]))
@@ -456,7 +456,7 @@ def main() -> None:
             "create-under",
             str(viewer_scope_id),
             NESTED_SESSION_NAME,
-            "sh -lc 'printf theorem-demo\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" theorem-demo; sleep 5'",
         )
         nested_view_node = run_cli(env, "node", "get", str(nested_view["result"]["nodeId"]))
         nested_window_node = run_cli(env, "node", "get", str(nested_view_node["result"]["parentId"]))
@@ -464,7 +464,7 @@ def main() -> None:
         assert nested_session_node["result"]["parentId"] == viewer_scope_id
         nested_view_pane_id = nested_view_node["result"]["source"]["paneId"]
         nested_capture = wait_for_pane_content(env, nested_view_pane_id, "theorem-demo")
-        assert "theorem-demo" in nested_capture["result"]["content"].replace("n\n", "\n")
+        assert "theorem-demo" in nested_capture["result"]["content"]
 
         nested_split = run_cli(
             env,
@@ -472,7 +472,7 @@ def main() -> None:
             "split",
             nested_view_pane_id,
             "right",
-            "sh -lc 'printf nested-split\\\\n; sleep 5'",
+            "sh -lc 'printf \"%s\\\\n\" nested-split; sleep 5'",
         )
         nested_split_node = run_cli(env, "node", "get", str(nested_split["result"]["nodeId"]))
         nested_split_window_node = run_cli(env, "node", "get", str(nested_split_node["result"]["parentId"]))
@@ -481,7 +481,7 @@ def main() -> None:
         assert nested_split_session_node["result"]["parentId"] == viewer_scope_id
         nested_split_pane_id = nested_split_node["result"]["source"]["paneId"]
         nested_split_capture = wait_for_pane_content(env, nested_split_pane_id, "nested-split")
-        assert "nested-split" in nested_split_capture["result"]["content"].replace("n\n", "\n")
+        assert "nested-split" in nested_split_capture["result"]["content"]
 
         root = run_cli(env, "view", "set-root", str(viewer_scope_id))
         assert root["result"]["ok"] is True
