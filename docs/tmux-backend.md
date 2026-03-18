@@ -33,7 +33,7 @@ notification path for invalidation and snapshot-backed rebuild.
 - if the control-mode attachment exits unexpectedly, the backend now degrades to
   request-time snapshot rebuild for known tmux projections until a control-mode
   reattach succeeds
-- focused control-mode proof now covers reattaching to surviving tmux state
+- focused control-mode verification now covers reattaching to surviving tmux state
   after the originally attached session exits
 
 ## Planned evolution
@@ -82,13 +82,13 @@ Identity should also stay explicit:
 This keeps tmux useful as a source of truth without letting tmux's internal
 layout ontology become muxly's constitution by accident.
 
-## Current proof path
+## Current verification path
 
-The current repo-local proof path for tmux-backed behavior is:
+The current repo-local verification path for tmux-backed behavior is:
 
 - `zig build test` for parser/control-mode coverage, explicit
-  snapshot-to-projection rebuild proof from external tmux state, and
-  control-mode reattach proof
+  snapshot-to-projection rebuild coverage from external tmux state, and
+  control-mode reattach coverage
 - `python3 tests/integration/tmux_adapter_test.py` for the main daemon/CLI/view
   flow
 - `./examples/tty/basic-nesting/run.sh` for one small nested live-TTY demo

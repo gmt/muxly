@@ -47,7 +47,7 @@ semantics harden too far:
   fullscreen/raw/surface-oriented cases
 - docs stop leaving it ambiguous whether muxml persists tmux scrollback,
   terminal surface state, or both
-- at least one concrete proof/example exists for each durable artifact family
+- at least one concrete example or verification path exists for each durable artifact family
 
 ## Repo baseline
 
@@ -77,7 +77,7 @@ The first useful move is to write down:
 
 1. the artifact families muxly wants
 2. the transitions that create them
-3. the minimum examples that prove the distinctions are worth having
+3. the minimum examples that make the distinctions concrete and reviewable
 
 First-pass Slice 1 contract:
 
@@ -140,7 +140,7 @@ Current status:
   - document-side transition helpers can freeze a tty-backed node into a
     captured text or surface artifact while preserving provenance
 - the first public seam now exists through `node.freeze`
-- integration proof now covers both public artifact kinds:
+- integration coverage now covers both public artifact kinds:
   - `text`
   - `surface`
 - current capture posture is now explicit:
@@ -155,9 +155,9 @@ Current status:
   - `surface` currently reports at least `sections = ["surface"]`
   - `alternate` appears when tmux exposes alternate-screen capture at freeze time
 
-### Slice 4 — proof artifacts
+### Slice 4 — examples and verification paths
 
-Add small checked-in examples/proof paths for the chosen durable forms so the
+Add small checked-in examples and verification paths for the chosen durable forms so the
 contract is not purely theoretical.
 
 Current status:
@@ -171,7 +171,7 @@ Current status:
   [`examples/artifacts/freeze-demo/`](/home/greg/src/muxly/examples/artifacts/freeze-demo)
   that exercises both `node.freeze ... text` and `node.freeze ... surface`
 
-## Per-slice proof
+## Per-slice verification
 
 - Slice 1:
   design doc / roadmap contract only
@@ -180,7 +180,7 @@ Current status:
 - Slice 3:
   docs/tests that show the chosen TOM/muxml representation
 - Slice 4:
-  repo-local proof/example for durable capture behavior
+  repo-local example or verification path for durable capture behavior
 
 ## Exit condition
 

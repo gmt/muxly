@@ -24,7 +24,7 @@ into explicit, capability-gated working subsystems.
 ## Out of scope
 
 - pretending all platform projections are production-ready from day one
-- overpromising transparent Neovim pane semantics before runtime proof exists
+- overpromising transparent Neovim pane semantics before runtime validation exists
 - building a full menuing/windowing product before the data model is stable
 
 ## Acceptance criteria
@@ -36,7 +36,7 @@ into explicit, capability-gated working subsystems.
   - keybinding analysis support
   - menu/modeline projection support
   - Neovim integration support
-- at least one repo-local proof/example exists for each subsystem that stops
+- at least one repo-local example or verification path exists for each subsystem that stops
   being scaffolded
 
 ## Repo baseline
@@ -63,7 +63,7 @@ What still needs to become concrete before this phase feels real:
 - a keybinding data model and first useful analysis cutline
 - daemon-side modeline/menu state that can be queried and projected
 - a platform-adapter posture that is capability-gated instead of hand-wavy
-- a first explicit Neovim attach/detach contract and proof path
+- a first explicit Neovim attach/detach contract and verification path
 
 ## Agentic-harness starting point
 
@@ -74,7 +74,7 @@ The first useful move should be the same move that helped in earlier phases:
 
 1. make the execution order explicit
 2. choose the smallest subsystem with the best leverage
-3. leave behind one proof path before broadening outward
+3. leave behind one verification path before broadening outward
 
 The recommended first substantive tranche is **keybinding analysis**, because it
 is the least platform-specific and does not depend on menu adapters or Neovim
@@ -90,7 +90,7 @@ implementation tranche obvious.
 Acceptance bar:
 
 - the phase file names the current stubs, the first real implementation slice,
-  and the proof path expected for each later slice
+  and the verification path expected for each later slice
 
 ### Slice 2 — keybinding analysis contract and first engine
 
@@ -111,7 +111,7 @@ Acceptance bar:
 
 - at least one `keybinding.*` method becomes real
 - one documented keybinding payload shape exists
-- one repo-local proof demonstrates a useful analysis result
+- one repo-local verification path demonstrates a useful analysis result
 
 ### Slice 3 — menu/modeline schema and daemon state
 
@@ -128,7 +128,7 @@ Acceptance bar:
 
 - `modeline.*` and/or `menu.*` stop being pure unsupported stubs
 - one stable schema/payload is documented
-- one proof path shows stored state flowing through a public surface
+- one verification path shows stored state flowing through a public surface
 
 ### Slice 4 — capability-gated platform/menu projection
 
@@ -163,40 +163,40 @@ Current design target:
 Acceptance bar:
 
 - `nvim.attach` / `nvim.detach` stop being structured unsupported errors
-- one repo-local proof demonstrates attach/detach behavior
+- one repo-local verification path demonstrates attach/detach behavior
 - docs and capabilities describe the actual cutline honestly
 
-### Slice 6 — proof hardening and docs close-out
+### Slice 6 — verification hardening and docs close-out
 
-Once one or more of the subsystems above are real, tighten proof and repo
+Once one or more of the subsystems above are real, tighten verification and repo
 storytelling so future contributors do not mistake scaffolding for support.
 
 Acceptance bar:
 
 - examples/docs/capabilities agree on what is actually supported
 - unsupported-capability stubs remain only for the still-unimplemented areas
-- at least one authoritative proof path exists for each newly real subsystem
+- at least one authoritative verification path exists for each newly real subsystem
 
-## Per-slice proof
+## Per-slice verification
 
 - Slice 1:
-  docs-only proof
+  docs-only verification
 - Slice 2:
-  one keybinding analysis proof/example
+  one keybinding analysis example or verification path
 - Slice 3:
-  one menu/modeline public-surface proof
+  one menu/modeline public-surface verification path
 - Slice 4:
-  one capability-gated projection proof
+  one capability-gated projection verification path
 - Slice 5:
-  one Neovim attach/detach proof
+  one Neovim attach/detach verification path
 - Slice 6:
-  repo-local examples/docs/proof paths all agree
+  repo-local examples/docs/verification paths all agree
 
 ## Exit condition
 
 This phase closes when keybinding analysis, menu/modeline projection, and the
 initial Neovim adapter boundary are no longer merely scaffolded stubs, and the
-repo can prove which parts are truly supported.
+repo can show which parts are truly supported.
 
 Current phase status:
 

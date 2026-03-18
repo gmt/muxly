@@ -131,14 +131,14 @@ Current daemon-lifecycle posture:
 - a more transparent downstream-consumer experience likely wants an explicit
   daemon discovery/autostart policy rather than leaving that behavior implicit
 
-The default proof path for the shipped binding examples is:
+The default verification path for the shipped binding examples is:
 
 ```sh
 zig build example-deps
 python3 scripts/run_binding_examples.py
 ```
 
-The default proof path for the shipped terminal-artifact examples is:
+The default verification path for the shipped terminal-artifact examples is:
 
 ```sh
 python3 scripts/run_artifact_examples.py

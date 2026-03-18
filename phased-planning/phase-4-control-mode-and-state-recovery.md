@@ -22,7 +22,7 @@ rather than a pile of one-shot subprocess calls:
 - recovery after drift or reconnect
 - richer pane/window/session listings
 - tighter integration between backend state and muxml documents
-- tests and demos that prove the new backend behavior
+- tests and demos that verify the new backend behavior
 
 ## Out of scope
 
@@ -58,7 +58,7 @@ Phase 4 starts from a working but intentionally thin tmux integration:
 - [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md) correctly
   describes the current backend as command-backed and intentionally modest.
 - [tests/integration/tmux_adapter_test.py](/home/greg/src/muxly/tests/integration/tmux_adapter_test.py)
-  already proves a fair amount of tmux-backed behavior:
+  already verifies a fair amount of tmux-backed behavior:
   session creation, pane split/capture/resize/focus/send-keys/close, file
   sources, and scoped viewer rendering.
 - tmux session/window/pane projection is now real in the repo:
@@ -83,38 +83,38 @@ What still keeps this phase from feeling complete:
   path
 - projection identity still uses a temporary marker-content trick on projected
   tmux containers
-- the current proof stack exercises tmux-backed behavior, but it does not yet
-  prove durable control-mode recovery
+- the current verification stack exercises tmux-backed behavior, but it does
+  not yet verify durable control-mode recovery
 
 ## Agentic-harness starting point
 
 The right starting move for phase 4 is:
 
-1. do a short Slice 1 framing pass to make the execution order and proof path
+1. do a short Slice 1 framing pass to make the execution order and verification path
    explicit
 2. treat Slice 2 as the first substantive implementation tranche
 3. do not jump to reconnect logic before a normalized control-mode attachment
    and snapshot shape exist
-4. use Slice 5 to harden proof around the new backend rather than as a detached
+4. use Slice 5 to harden verification around the new backend rather than as a detached
    cleanup pass
 
 If an agent needs one sentence of direction, use this one:
 
-> Do a short Slice 1 pass to make the control-mode proof path obvious, then
+> Do a short Slice 1 pass to make the control-mode verification path obvious, then
 > move immediately into Slice 2 and treat normalized control-mode attachment and
 > parsing as the first real code tranche of phase 4.
 
 ## Execution order
 
 Work this phase in the following order. Avoid blending snapshot design,
-reconnect policy, and user-facing proof into one undifferentiated backend push.
+reconnect policy, and user-facing verification into one undifferentiated backend push.
 
-### Slice 1 — backend framing and proof path
+### Slice 1 — backend framing and verification path
 
 Make the current cutline and the first real control-mode tranche obvious.
 
 This slice is intentionally short. Its job is to stop phase 4 from reading like
-"tmux but better somehow" and to leave behind one authoritative proof path for
+"tmux but better somehow" and to leave behind one authoritative verification path for
 the later slices.
 
 Likely touchpoints:
@@ -127,7 +127,7 @@ Target:
 
 - phase 4 names the current baseline and first substantive slice explicitly
 - docs state that the current backend is still command-backed
-- one repo-visible proof path is named for the new backend as it comes online
+- one repo-visible verification path is named for the new backend as it comes online
 
 Done when:
 
@@ -174,13 +174,13 @@ Done when:
 
 - there is a repo-visible control-mode attachment path
 - normalized event/snapshot structures exist and are not just ad hoc strings
-- unit or focused integration proof exists for the parser path
+- unit or focused integration coverage exists for the parser path
 
 Current status:
 
 - first-pass complete
 - control-mode attachment, parser isolation, typed command blocks, and focused
-  proof all exist in the repository
+  verification coverage all exist in the repository
 
 ### Slice 3 — snapshot rebuild and TOM reconciliation
 
@@ -234,12 +234,12 @@ Recommended execution order inside Slice 3:
   First acceptance bar:
   at least one list family is derived from snapshot-backed state rather than an
   ad hoc one-shot command result.
-- `3e` — proof and example touch-up
-  Update integration proof and affected live-TTY demos so snapshot rebuild is
+- `3e` — verification and example touch-up
+  Update integration coverage and affected live-TTY demos so snapshot rebuild is
   demonstrated as checked-in behavior rather than as a private implementation
   claim.
   First acceptance bar:
-  one checked-in proof path demonstrates rebuild from snapshot truth.
+  one checked-in verification path demonstrates rebuild from snapshot truth.
 
 Target:
 
@@ -251,7 +251,7 @@ Target:
 Done when:
 
 - daemon restart or explicit rebuild can recover tmux-backed document state
-- nested/live TTY examples and integration proof no longer depend on
+- nested/live TTY examples and integration coverage no longer depend on
   hand-maintained attachment assumptions
 
 Current status:
@@ -300,9 +300,9 @@ Current status:
   correctness backstop
 - control-mode exit now degrades explicitly to request-time snapshot rebuild
   for known projections until reconnect succeeds
-- focused control-mode proof now shows reattachment to surviving tmux state
+- focused control-mode verification now shows reattachment to surviving tmux state
   after the attached session exits
-- integration proof now covers external pane/window/session drift against that
+- integration coverage now covers external pane/window/session drift against that
   invalidation-and-rebuild path
 - this is still invalidation plus rebuild, not yet fine-grained incremental
   pane/window/session mutation handling
@@ -321,9 +321,9 @@ Done when:
 - the control-mode path is credible as the default backend rather than a lab
   experiment
 
-### Slice 5 — proof hardening and docs close-out
+### Slice 5 — verification hardening and docs close-out
 
-Strengthen proof around the new backend and update the docs to match the new
+Strengthen verification around the new backend and update the docs to match the new
 truth.
 
 Likely touchpoints:
@@ -336,21 +336,21 @@ Likely touchpoints:
 
 Priorities:
 
-- keep one strong end-to-end tmux proof path as the main backend check
+- keep one strong end-to-end tmux verification path as the main backend check
 - extend examples only where they demonstrate the new backend value clearly
 - update backend docs and capability notes so they stop understating or
   overstating reality
 
 Target:
 
-- reconnect/recovery proof is checked in and runnable
+- reconnect/recovery verification path is checked in and runnable
 - docs describe the backend that actually exists
 - at least one repo-local TTY example demonstrates value from the richer
   backend rather than from static command-backed snapshots alone
 
 Done when:
 
-- the proof stack would catch a regression in control-mode attach, rebuild, or
+- the verification stack would catch a regression in control-mode attach, rebuild, or
   reconnect behavior
 - repo docs and examples describe the new backend plainly
 
@@ -361,28 +361,28 @@ Current status:
   `hybrid-control-invalidation` instead of `command-backed`
 - `zig build test` now covers parser/control-mode attachment, snapshot rebuild,
   and control-mode reattach
-- the main integration proof covers external pane/window/session drift against
+- the main integration coverage covers external pane/window/session drift against
   the invalidation-and-rebuild path
 - backend docs and demos now describe the hybrid cutline plainly
 
-## Per-slice proof
+## Per-slice verification
 
-Use the strongest proof that matches the slice:
+Use the strongest verification that matches the slice:
 
 - Slice 1:
   docs and phase-file updates only
 - Slice 2:
-  parser-focused unit tests plus one small integration proof that the daemon
+  parser-focused unit tests plus one small integration verification path that the daemon
   can hold a control-mode attachment
 - Slice 3:
-  integration proof that snapshot rebuild reconstructs tmux-backed state
+  integration coverage that snapshot rebuild reconstructs tmux-backed state
 - Slice 4:
-  integration proof that reconnect or drift recovery restores correct state
+  integration coverage that reconnect or drift recovery restores correct state
 - Slice 5:
-  repo-local proof commands documented in docs plus updated integration/demo
+  repo-local verification commands documented in docs plus updated integration/demo
   flows
 
-The current baseline proof that later slices should evolve rather than replace
+The current baseline verification stack that later slices should evolve rather than replace
 is:
 
 - `zig build`
@@ -396,7 +396,7 @@ Phase 4 closes when:
 
 - tmux control mode is the default durable backend path
 - muxly can rebuild and recover tmux-backed state intentionally
-- reconnect/drift handling is proven in repo-local artifacts
+- reconnect/drift handling is verified in repo-local artifacts
 - `docs/tmux-backend.md` and related demo docs describe that stronger backend
   accurately
 

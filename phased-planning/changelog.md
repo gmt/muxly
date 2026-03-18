@@ -68,7 +68,7 @@ Completed work:
   - Unix-domain sockets as the implemented transport on this target
   - named pipes/stdio as planned/scaffolded rather than implemented
   - the tmux backend as **command-backed**
-- mixed-source docs/examples/tests left behind as living proof
+- mixed-source docs/examples/tests left behind as living evidence
 
 Closure evidence:
 
@@ -96,9 +96,9 @@ Completed work:
     long-lived local daemon
   - `zig build example-deps` narrows the example prerequisite build to the
     daemon, CLI, shared library, and header
-- docs/proof cleanup:
-  - `README.md` and `docs/demos.md` point at authoritative example/proof paths
-  - `scripts/run_binding_examples.py` is the checked-in live-daemon proof path
+- docs/verification cleanup:
+  - `README.md` and `docs/demos.md` point at authoritative example/verification paths
+  - `scripts/run_binding_examples.py` is the checked-in live-daemon verification path
   - `muxview` remains a public-surface consumer rather than a privileged path
 - terminology cleanup:
   - muxly's live server-side object graph is now described as the TOM
@@ -131,10 +131,10 @@ Completed work:
 - `session.list`, `window.list`, and `pane.list` now read from normalized
   snapshot state
 - projected tmux containers are pruned when pane close empties them
-- explicit rebuild proof from external tmux state:
-  - unit proof rebuilds a projected `session -> window -> pane` subtree from
+- explicit rebuild verification from external tmux state:
+  - unit test coverage rebuilds a projected `session -> window -> pane` subtree from
     snapshots
-  - integration proof covers projected-parent retention under `create-under`
+  - integration coverage covers projected-parent retention under `create-under`
     plus later tmux mutations
 - stale tmux test cruft removed:
   - deleted placeholder `daemon_protocol_test.zig`
@@ -147,7 +147,7 @@ Closure evidence:
 - `python3 tests/integration/tmux_adapter_test.py`
 - `./examples/tty/basic-nesting/run.sh`
 
-## phase 4 slices 4 and 5 — first-pass live invalidation, reconnect, and proof hardening
+## phase 4 slices 4 and 5 — first-pass live invalidation, reconnect, and verification hardening
 
 Completed work:
 
@@ -157,7 +157,7 @@ Completed work:
   - control-mode exit degrades to request-time snapshot rebuild
   - rebuild remains the correctness backstop when event confidence is limited
 - reconnect/reattach path:
-  - focused control-mode proof now covers reattaching to surviving tmux state
+  - focused control-mode verification now covers reattaching to surviving tmux state
   - store-side backend pump can recover a live control attachment after exit
 - structured control-mode output parsing:
   - `%output`
@@ -165,10 +165,10 @@ Completed work:
 - best-effort live append for known follow-tail pane leaves on top of the
   invalidation/rebuild path
 - conservative tmux output escape-sequence decoding for live append
-- proof/docs hardening:
+- verification/docs hardening:
   - capabilities and viewer surfaces now report
     `hybrid-control-invalidation`
-  - integration proof covers external pane/window/session drift
+  - integration coverage covers external pane/window/session drift
   - backend docs describe the hybrid cutline plainly instead of calling it
     purely command-backed
 
@@ -215,9 +215,9 @@ Completed work:
   - `text` reports `sections = []`
   - `surface` reports at least `sections = ["surface"]`
   - `alternate` is included when tmux exposes alternate-screen capture
-- proof/examples:
-  - unit proof for document-side tty-to-artifact transition
-  - integration proof for both `text` and `surface` freeze paths
+- verification/examples:
+  - unit test coverage for document-side tty-to-artifact transition
+  - integration coverage for both `text` and `surface` freeze paths
   - runnable playbook under `examples/artifacts/freeze-demo/`
   - runnable C / Python / Zig `libmuxly` playbooks under:
     - `examples/artifacts/c-freeze/`

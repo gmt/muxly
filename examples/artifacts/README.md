@@ -15,13 +15,13 @@ Phase 6 grounded in concrete payload shapes before implementation hardens.
   A visible-screen snapshot representing a fullscreen/raw/surface-oriented
   terminal interaction.
 - `c-freeze/`
-  C / `libmuxly` proof for the public terminal-artifact seam.
+  C / `libmuxly` verification path for the public terminal-artifact seam.
 - `freeze-demo/`
-  CLI/playbook proof for `node.freeze <text|surface>`.
+  CLI/playbook verification path for `node.freeze <text|surface>`.
 - `python-freeze/`
-  `ctypes`/`libmuxly` proof for the same public terminal-artifact seam.
+  `ctypes`/`libmuxly` verification path for the same public terminal-artifact seam.
 - `zig-freeze/`
-  Zig / `libmuxly` proof for the same public terminal-artifact seam.
+  Zig / `libmuxly` verification path for the same public terminal-artifact seam.
 - `scripts/run_artifact_examples.py`
   Convenience runner for the currently shipped runnable artifact playbooks.
 

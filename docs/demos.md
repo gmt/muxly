@@ -53,7 +53,7 @@ printf 'tail-1\n' >/tmp/muxly-monitored.txt
 ./zig-out/bin/muxview
 ```
 
-Artifact-aware `muxview` manual proof:
+Artifact-aware `muxview` manual verification:
 
 Use this when you want to verify that `muxview` now distinguishes live,
 detached, and frozen terminal-backed nodes honestly through the same public
@@ -88,7 +88,7 @@ zig build
 python3 tests/integration/tmux_adapter_test.py
 ```
 
-This is the current authoritative tmux-backend proof path while the backend
+This is the current authoritative tmux-backend verification path while the backend
 remains a command-backed/control-invalidating hybrid.
 
 That flow now also exercises the current projected tmux shape:

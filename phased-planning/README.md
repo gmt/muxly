@@ -25,7 +25,7 @@ agentic harness:
 - what is still missing
 - which slice should be done first
 - which files are likely to move
-- how to prove the slice is complete before claiming progress
+- how to verify the slice is complete before claiming progress
 
 When a phase file stays at the "good vibes" level, it becomes easy to produce
 plausible-looking partial work without actually closing the named gap.
@@ -41,7 +41,7 @@ For active work, prefer keeping these sections up to date:
 - `Repo baseline`
 - `Remaining gaps`
 - `Execution order`
-- `Per-slice proof`
+- `Per-slice verification`
 - `Exit condition`
 
 The point is not rigid formatting. The point is leaving behind a plan that an
@@ -97,7 +97,7 @@ Future phases should continue to treat testing as first-class work:
 - unit tests for pure logic
 - integration tests for daemon/protocol/tmux behavior
 - cross-target compile checks
-- runnable examples/demos that users and contributors can use as living proofs
+- runnable examples/demos that users and contributors can use as living evidence
 
 ## Agentic harness doctrine
 
@@ -105,7 +105,7 @@ When an agent works from these phase files, it should prefer the smallest
 slice that closes one named gap and leaves behind all of:
 
 - code or doc changes that close the named gap
-- updated proof instructions or automated coverage
+- updated verification instructions or automated coverage
 - repo-visible evidence in docs/examples/tests rather than private notes
 
 When a phase starts with a framing or discoverability slice, keep that slice
@@ -118,7 +118,7 @@ surface is clarified. Do not expand examples, bindings, or convenience layers
 against a contract that the preceding implementation slice is still defining.
 
 Do not mark a phase complete because the implementation "feels close". A phase
-should close only when the acceptance criteria and proof steps are true in the
+should close only when the acceptance criteria and verification steps are true in the
 repository as checked-in artifacts.
 
 ## Why this exists
