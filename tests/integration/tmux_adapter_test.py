@@ -448,6 +448,23 @@ def main() -> None:
         assert frozen_surface_node["source"]["artifactKind"] == "surface"
         assert "after-surface-freeze" not in frozen_surface_node["content"]
 
+        artifact_viewer_output = subprocess.check_output(
+            [str(REPO / "zig-out/bin/muxview")],
+            cwd=REPO,
+            env=env,
+            text=True,
+        )
+        assert "lifecycle=frozen, source=artifact:text" in artifact_viewer_output
+        assert "lifecycle=frozen, source=artifact:surface" in artifact_viewer_output
+        assert f"artifact :: origin=tty, session={FREEZE_SESSION_NAME}" in artifact_viewer_output
+        assert f"pane={freeze_pane_id}" in artifact_viewer_output
+        assert "format=plain_text, sections=none" in artifact_viewer_output
+        assert f"artifact :: origin=tty, session={FREEZE_SURFACE_SESSION_NAME}" in artifact_viewer_output
+        assert f"pane={freeze_surface_pane_id}" in artifact_viewer_output
+        assert "format=sectioned_text, sections=surface" in artifact_viewer_output
+        assert "freeze-demo" in artifact_viewer_output
+        assert "freeze-surface-demo" in artifact_viewer_output
+
         viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
         viewer_scope_id = viewer_scope["result"]["nodeId"]
         viewer_child = run_cli(env, "node", "append", str(viewer_scope_id), "scroll_region", "viewer-child")
@@ -503,6 +520,7 @@ def main() -> None:
         assert "path :: muxly / viewer-scope" in viewer_output
         assert "back-out :: muxly view clear-root | muxly view reset" in viewer_output
         assert "… elided by shared view state …" in viewer_output
+        assert "lifecycle=live" in viewer_output
         assert "theorem-demo" in viewer_output
 
         nested_split_close = run_cli(env, "pane", "close", nested_split_pane_id)

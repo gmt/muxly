@@ -55,21 +55,28 @@ fn renderNodeTree(
     const id = node.object.get("id") orelse return error.InvalidDocument;
     const title = node.object.get("title") orelse return error.InvalidDocument;
     const kind = node.object.get("kind") orelse return error.InvalidDocument;
+    const lifecycle = node.object.get("lifecycle") orelse return error.InvalidDocument;
     const content = node.object.get("content") orelse return error.InvalidDocument;
     const follow_tail = node.object.get("followTail") orelse return error.InvalidDocument;
     const source = node.object.get("source") orelse return error.InvalidDocument;
     const children = node.object.get("children") orelse return error.InvalidDocument;
 
-    if (id != .integer or title != .string or kind != .string or content != .string or follow_tail != .bool or source != .object or children != .array) return error.InvalidDocument;
+    if (id != .integer or title != .string or kind != .string or lifecycle != .string or content != .string or follow_tail != .bool or source != .object or children != .array) return error.InvalidDocument;
+
+    const lifecycle_name = try validateLifecycle(lifecycle.string);
+    const source_label = try describeSourceLabel(source);
 
     for (0..depth) |_| try writer.writeAll("  ");
-    try writer.print("- {s} [id={d}, kind={s}, source={s}, tail={s}]\n", .{
+    try writer.print("- {s} [id={d}, kind={s}, lifecycle={s}, source={s}, tail={s}]\n", .{
         title.string,
         @as(u64, @intCast(id.integer)),
         kind.string,
-        try describeSource(source),
+        lifecycle_name,
+        source_label,
         if (follow_tail.bool) "follow" else "manual",
     });
+
+    try writeSourceMetadata(source, lifecycle_name, depth + 1, writer);
 
     if (content.string.len != 0 and shouldRenderContent(kind.string, children.array.items.len)) {
         var line_it = std.mem.splitScalar(u8, content.string, '\n');
@@ -139,7 +146,7 @@ fn writeBreadcrumb(
     }
 }
 
-fn describeSource(source: std.json.Value) ![]const u8 {
+fn describeSourceLabel(source: std.json.Value) ![]const u8 {
     const kind = source.object.get("kind") orelse return error.InvalidDocument;
     if (kind != .string) return error.InvalidDocument;
 
@@ -155,6 +162,14 @@ fn describeSource(source: std.json.Value) ![]const u8 {
         return session_name.string;
     }
 
+    if (std.mem.eql(u8, kind.string, "terminal_artifact")) {
+        const artifact_kind = source.object.get("artifactKind") orelse return error.InvalidDocument;
+        if (artifact_kind != .string) return error.InvalidDocument;
+        if (std.mem.eql(u8, artifact_kind.string, "text")) return "artifact:text";
+        if (std.mem.eql(u8, artifact_kind.string, "surface")) return "artifact:surface";
+        return error.InvalidDocument;
+    }
+
     if (std.mem.eql(u8, kind.string, "file")) {
         const path = source.object.get("path") orelse return error.InvalidDocument;
         if (path != .string) return error.InvalidDocument;
@@ -167,4 +182,84 @@ fn describeSource(source: std.json.Value) ![]const u8 {
 fn shouldRenderContent(kind: []const u8, child_count: usize) bool {
     if (std.mem.eql(u8, kind, "scroll_region")) return true;
     return child_count == 0;
+}
+
+fn validateLifecycle(lifecycle: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, lifecycle, "live")) return "live";
+    if (std.mem.eql(u8, lifecycle, "read_only")) return "read_only";
+    if (std.mem.eql(u8, lifecycle, "frozen")) return "frozen";
+    if (std.mem.eql(u8, lifecycle, "detached")) return "detached";
+    return error.InvalidDocument;
+}
+
+fn writeSourceMetadata(
+    source: std.json.Value,
+    lifecycle: []const u8,
+    depth: usize,
+    writer: anytype,
+) !void {
+    const kind = source.object.get("kind") orelse return error.InvalidDocument;
+    if (kind != .string) return error.InvalidDocument;
+
+    if (std.mem.eql(u8, kind.string, "tty") and std.mem.eql(u8, lifecycle, "detached")) {
+        try writeIndentedPrefix(depth, writer);
+        try writer.writeAll("state :: detached tty source\n");
+        return;
+    }
+
+    if (!std.mem.eql(u8, kind.string, "terminal_artifact")) return;
+
+    const artifact_kind = try requireEnumString(source, "artifactKind", &.{ "text", "surface" });
+    _ = artifact_kind;
+    const content_format = try requireEnumString(source, "contentFormat", &.{ "plain_text", "sectioned_text" });
+    const origin = try requireEnumString(source, "origin", &.{ "tty" });
+    const sections = source.object.get("sections") orelse return error.InvalidDocument;
+    if (sections != .array) return error.InvalidDocument;
+
+    try writeIndentedPrefix(depth, writer);
+    try writer.print("artifact :: origin={s}", .{origin});
+    if (source.object.get("sessionName")) |session_name| {
+        if (session_name != .string) return error.InvalidDocument;
+        try writer.print(", session={s}", .{session_name.string});
+    }
+    if (source.object.get("windowId")) |window_id| {
+        if (window_id != .string) return error.InvalidDocument;
+        try writer.print(", window={s}", .{window_id.string});
+    }
+    if (source.object.get("paneId")) |pane_id| {
+        if (pane_id != .string) return error.InvalidDocument;
+        try writer.print(", pane={s}", .{pane_id.string});
+    }
+    try writer.print(", format={s}, sections=", .{content_format});
+    try writeArtifactSections(sections.array.items, writer);
+    try writer.writeAll("\n");
+}
+
+fn requireEnumString(source: std.json.Value, field_name: []const u8, valid_values: []const []const u8) ![]const u8 {
+    const value = source.object.get(field_name) orelse return error.InvalidDocument;
+    if (value != .string) return error.InvalidDocument;
+    for (valid_values) |valid_value| {
+        if (std.mem.eql(u8, value.string, valid_value)) return value.string;
+    }
+    return error.InvalidDocument;
+}
+
+fn writeArtifactSections(sections: []const std.json.Value, writer: anytype) !void {
+    if (sections.len == 0) {
+        try writer.writeAll("none");
+        return;
+    }
+
+    for (sections, 0..) |section, index| {
+        if (section != .string) return error.InvalidDocument;
+        if (!std.mem.eql(u8, section.string, "surface") and !std.mem.eql(u8, section.string, "alternate")) {
+            return error.InvalidDocument;
+        }
+        if (index != 0) try writer.writeAll(",");
+        try writer.writeAll(section.string);
+    }
+}
+
+fn writeIndentedPrefix(depth: usize, writer: anytype) !void {
+    for (0..depth) |_| try writer.writeAll("  ");
 }

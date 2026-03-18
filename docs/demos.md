@@ -53,6 +53,34 @@ printf 'tail-1\n' >/tmp/muxly-monitored.txt
 ./zig-out/bin/muxview
 ```
 
+Artifact-aware `muxview` manual proof:
+
+Use this when you want to verify that `muxview` now distinguishes live,
+detached, and frozen terminal-backed nodes honestly through the same public
+surfaces used by the automated tests.
+
+```sh
+zig build
+./zig-out/bin/muxlyd
+./zig-out/bin/muxly session create live-demo "sh -lc 'printf live-demo\\n; sleep 30'"
+./zig-out/bin/muxly session create freeze-text-demo "sh -lc 'printf freeze-text-demo\\n; sleep 30'"
+./zig-out/bin/muxly session create freeze-surface-demo "sh -lc 'printf freeze-surface-demo\\n; sleep 30'"
+./zig-out/bin/muxly document get
+# note the tty leaf node ids for the three new sessions from the document payload
+./zig-out/bin/muxly node freeze <freeze-text-node-id> text
+./zig-out/bin/muxly node freeze <freeze-surface-node-id> surface
+./zig-out/bin/muxview
+```
+
+What to confirm in the viewer output:
+
+- the still-live tty node renders with `lifecycle=live`
+- the frozen text node renders with `source=artifact:text`
+- the frozen surface node renders with `source=artifact:surface`
+- artifact metadata lines show tty provenance, content format, and sections
+- if a tty node is later observed in `lifecycle=detached`, `muxview` prints
+  `state :: detached tty source`
+
 Automated integration flow:
 
 ```sh
