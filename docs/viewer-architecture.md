@@ -70,21 +70,22 @@ The current cutline already supports that model in a first-pass way:
 
 - `muxview` attaches live by default when stdout is a TTY
 - it enters the alternate screen, refreshes on a fixed cadence, and repaints
-  from the public `view.get` surface
+  from the public `projection.get` surface
 - `muxview --snapshot` keeps the one-shot textual readout available when a
   deterministic frame is the right tool
 - tmux is the current likely first presentation substrate because it already
   buys much of the terminal/session machinery, while remaining replaceable if
   it later constrains the desired muxly experience
 
-## Current phase-2 cutline
+## Current cutline
 
 The current viewer is intentionally modest in interaction depth, but it should
 still make the public state model legible:
 
-- it consumes the public `view.get` surface, not a private daemon shortcut
-- the first attached-viewer loop is still a textual presentation of that public
-  projection rather than a richer tiled compositor
+- it consumes the public `projection.get` surface for boxed frames while
+  leaving shared root/elision state on `view.*`
+- the first attached-viewer loop is still a text/ANSI boxed presentation of
+  that public projection rather than a richer tiled compositor
 - root/elision state is currently **shared document state**, not viewer-local
   state
 - follow-tail is currently a **stored node preference**, not a private capture
@@ -121,11 +122,12 @@ Whichever pattern is used, users should get strong orientation cues:
 - where am I in the hierarchy?
 - how do I get back out?
 
-In the current phase-2 implementation, the immediate precursor model is:
+In the current implementation, the immediate precursor model is:
 
 - a shared `viewRootNodeId` supplied by the daemon
-- breadcrumb/path text showing the current scope boundary
-- explicit back-out affordances (`muxly view clear-root` / `muxly view reset`)
+- boxed stage boundaries showing the current scope boundary
+- explicit external back-out affordances (`muxly view clear-root` /
+  `muxly view reset`)
 - visible elision markers when a node is hidden by shared view state
 
 That is intentionally simpler than a full interactive drill-in UI, but it keeps

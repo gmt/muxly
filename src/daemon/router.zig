@@ -45,6 +45,21 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
+    if (std.mem.eql(u8, parsed.value.method, "projection.get")) {
+        try store.refreshSources();
+        const request_value = parseProjectionRequest(allocator, parsed.value.params) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "invalid projection params: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        defer if (request_value.local_state.scroll_offsets.len != 0) allocator.free(request_value.local_state.scroll_offsets);
+
+        var result = std.array_list.Managed(u8).init(allocator);
+        defer result.deinit();
+        try muxly.projection.writeProjectionJson(allocator, &store.document, request_value, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
     if (std.mem.eql(u8, parsed.value.method, "document.status")) {
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
@@ -606,4 +621,43 @@ fn parseTerminalArtifactKind(name: []const u8) ?muxly.source.TerminalArtifactKin
     if (std.mem.eql(u8, name, "text")) return .text;
     if (std.mem.eql(u8, name, "surface")) return .surface;
     return null;
+}
+
+fn parseProjectionRequest(allocator: std.mem.Allocator, params: ?std.json.Value) !muxly.projection.Request {
+    const rows_value = protocol.getInteger(params, "rows") orelse return error.MissingRows;
+    const cols_value = protocol.getInteger(params, "cols") orelse return error.MissingCols;
+    if (rows_value <= 0 or cols_value <= 0) return error.InvalidViewport;
+
+    var request_value = muxly.projection.Request{
+        .rows = @intCast(rows_value),
+        .cols = @intCast(cols_value),
+    };
+
+    if (protocol.getInteger(params, "focusedNodeId")) |focused_node_id| {
+        if (focused_node_id < 0) return error.InvalidFocusedNode;
+        request_value.local_state.focused_node_id = @intCast(focused_node_id);
+    }
+
+    const value = params orelse return request_value;
+    if (value != .object) return error.InvalidParamsShape;
+    const offsets_value = value.object.get("scrollOffsets") orelse return request_value;
+    if (offsets_value != .array) return error.InvalidScrollOffsets;
+
+    var offsets = std.array_list.Managed(muxly.projection.ScrollOffset).init(allocator);
+    errdefer offsets.deinit();
+
+    for (offsets_value.array.items) |item| {
+        if (item != .object) return error.InvalidScrollOffset;
+        const node_id_value = item.object.get("nodeId") orelse return error.InvalidScrollOffset;
+        const top_line_value = item.object.get("topLine") orelse return error.InvalidScrollOffset;
+        if (node_id_value != .integer or top_line_value != .integer) return error.InvalidScrollOffset;
+        if (node_id_value.integer < 0 or top_line_value.integer < 0) return error.InvalidScrollOffset;
+        try offsets.append(.{
+            .node_id = @intCast(node_id_value.integer),
+            .top_line = @intCast(top_line_value.integer),
+        });
+    }
+
+    request_value.local_state.scroll_offsets = try offsets.toOwnedSlice();
+    return request_value;
 }

@@ -93,6 +93,12 @@ pub const Document = struct {
         return &self.nodes.items[index];
     }
 
+    /// Finds an immutable node pointer by id.
+    pub fn findNodeConst(self: *const Document, node_id: ids.NodeId) ?*const muxml.Node {
+        const index = self.findNodeIndexConst(node_id) orelse return null;
+        return &self.nodes.items[index];
+    }
+
     /// Removes a leaf node from the document.
     ///
     /// Callers must remove descendants before removing a parent node.
@@ -260,6 +266,13 @@ pub const Document = struct {
     }
 
     fn findNodeIndex(self: *Document, node_id: ids.NodeId) ?usize {
+        for (self.nodes.items, 0..) |node, index| {
+            if (node.id == node_id) return index;
+        }
+        return null;
+    }
+
+    fn findNodeIndexConst(self: *const Document, node_id: ids.NodeId) ?usize {
         for (self.nodes.items, 0..) |node, index| {
             if (node.id == node_id) return index;
         }

@@ -21,8 +21,14 @@ pub const NodeKind = enum {
     subdocument,
     /// Generic structural container.
     container,
+    /// Explicit horizontal split container.
+    h_container,
+    /// Explicit vertical split container.
+    v_container,
     /// Scroll-bearing structural region.
     scroll_region,
+    /// Appendable non-terminal text or message leaf.
+    text_leaf,
     /// Live terminal-backed leaf.
     tty_leaf,
     /// File-backed leaf that is monitored for updates.

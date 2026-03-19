@@ -16,6 +16,7 @@ Core demos:
    - one static text file
 3. `muxview` consuming daemon state through the same public surfaces as other
    clients while staying attached to a live TOM stage
+4. `muxguide` demonstrating the boxed stage/thread metaphor without tmux
 
 Reference example locations:
 
@@ -28,6 +29,7 @@ Reference example locations:
 - `examples/tom/c/`
 - `examples/tom/python/`
 - `examples/tty/basic-nesting/`
+- `examples/guided-tour/`
 - `tests/integration/tmux_adapter_test.py` as the current reference mixed-source
   / tmux mutation flow
 
@@ -83,12 +85,10 @@ zig build
 
 What to confirm in the viewer output:
 
-- the still-live tty node renders with `lifecycle=live`
-- the frozen text node renders with `source=artifact:text`
-- the frozen surface node renders with `source=artifact:surface`
-- artifact metadata lines show tty provenance, content format, and sections
-- if a tty node is later observed in `lifecycle=detached`, `muxview` prints
-  `state :: detached tty source`
+- the still-live tty node remains visibly live in the boxed viewer
+- the frozen text and frozen surface sessions remain distinguishable from live
+  tty regions
+- detached/frozen tty-backed nodes still render truthful textual fallbacks
 
 Automated integration flow:
 
@@ -164,6 +164,17 @@ For a deterministic single frame of the same demo, use:
 
 ```sh
 ./examples/tty/basic-nesting/run.sh --snapshot
+```
+
+Synthetic boxed-stage tour:
+
+Use this when you want a deterministic, tmux-free tour of the stage-first
+viewer model:
+
+```sh
+zig build muxguide
+./zig-out/bin/muxguide
+./zig-out/bin/muxguide --snapshot --step 2 --rows 24 --cols 80
 ```
 
 Binding-level artifact freeze demo:

@@ -113,7 +113,7 @@ pub fn main() !void {
 
     switch (run_mode) {
         .snapshot => {
-            const frame = try buildFrame(allocator, config.socket_path);
+            const frame = try buildFrame(allocator, config.socket_path, .{});
             defer allocator.free(frame);
             try stdout_file.writeAll(frame);
         },
@@ -154,7 +154,7 @@ fn runLiveViewer(
             force_redraw = true;
         }
 
-        const frame = try buildFrame(allocator, socket_path);
+        const frame = try buildFrame(allocator, socket_path, viewport);
         defer allocator.free(frame);
 
         if (force_redraw or previous_frame == null or !std.mem.eql(u8, previous_frame.?, frame)) {
@@ -173,8 +173,11 @@ fn runLiveViewer(
     }
 }
 
-fn buildFrame(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
-    const response = try muxly.api.viewGet(allocator, socket_path);
+fn buildFrame(allocator: std.mem.Allocator, socket_path: []const u8, viewport: Viewport) ![]u8 {
+    const response = try muxly.api.projectionGet(allocator, socket_path, .{
+        .rows = viewport.rows,
+        .cols = viewport.cols,
+    });
     defer allocator.free(response);
 
     const parsed_response = try std.json.parseFromSlice(std.json.Value, allocator, response, .{
@@ -190,7 +193,7 @@ fn buildFrame(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
 
     var rendered = std.array_list.Managed(u8).init(allocator);
     errdefer rendered.deinit();
-    try muxly.viewer_render.renderDocumentValue(allocator, result, rendered.writer());
+    try muxly.viewer_render.renderProjectionValue(allocator, result, rendered.writer());
     return rendered.toOwnedSlice();
 }
 

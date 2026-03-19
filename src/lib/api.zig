@@ -9,6 +9,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const client_mod = @import("client.zig");
+const projection_mod = @import("../core/projection.zig");
 
 /// Verifies that a daemon is reachable and responsive.
 pub fn ping(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
@@ -136,6 +137,18 @@ pub fn documentSerialize(allocator: std.mem.Allocator, socket_path: []const u8) 
 /// viewer.
 pub fn viewGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "view.get", "{}");
+}
+
+/// Returns a boxed viewer projection for one viewport and optional local state.
+pub fn projectionGet(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    request_value: projection_mod.Request,
+) ![]u8 {
+    var params = std.array_list.Managed(u8).init(allocator);
+    defer params.deinit();
+    try projection_mod.writeRequestJson(params.writer(), request_value);
+    return try request(allocator, socket_path, "projection.get", params.items);
 }
 
 /// Clears the shared document-scoped view root.

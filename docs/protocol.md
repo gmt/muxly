@@ -42,6 +42,7 @@ explicit, testable, and debuggable.
 - `pane.list`
 - `graph.get`
 - `view.get`
+- `projection.get`
 - `view.clearRoot`
 - `view.setRoot`
 - `view.elide`
@@ -79,9 +80,13 @@ explicit, testable, and debuggable.
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
-- the current attached `muxview` loop keeps using repeated `view.get` reads as
-  its public projection surface; snapshot mode uses that same payload for a
-  one-shot rendered frame
+- `projection.get` is the public boxed-view surface for one concrete viewport;
+  it combines:
+  - shared document state from the daemon-owned TOM
+  - viewer-local viewport size
+  - optional viewer-local focus and scroll offsets
+- the current attached `muxview` loop polls `projection.get`; snapshot mode
+  uses that same surface for a one-shot rendered frame
 - `node.remove` currently succeeds only for childless nodes; callers should
   remove descendants first when editing synthetic muxml structure
 - `node.freeze` currently supports tty-backed nodes only and accepts an

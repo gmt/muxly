@@ -52,6 +52,20 @@ pub fn build(b: *std.Build) void {
     const install_viewer = b.addInstallArtifact(viewer, .{});
     b.getInstallStep().dependOn(&install_viewer.step);
 
+    const guided_tour = b.addExecutable(.{
+        .name = "muxguide",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/guided-tour/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
+    });
+    const install_guided_tour = b.addInstallArtifact(guided_tour, .{});
+    b.getInstallStep().dependOn(&install_guided_tour.step);
+
     const shared = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "muxly",
@@ -117,6 +131,9 @@ pub fn build(b: *std.Build) void {
 
     const viewer_step = b.step("muxview", "Build muxview viewer");
     viewer_step.dependOn(&viewer.step);
+
+    const guided_tour_step = b.step("muxguide", "Build muxguide guided tour demo");
+    guided_tour_step.dependOn(&install_guided_tour.step);
 
     const docs_step = b.step("docs", "Build generated Zig API documentation");
     docs_step.dependOn(&install_api_docs.step);

@@ -7,6 +7,8 @@ comptime {
     _ = @import("view_test.zig");
     _ = @import("viewer_app_test.zig");
     _ = @import("viewer_render_test.zig");
+    _ = @import("projection_test.zig");
+    _ = @import("guided_tour_test.zig");
     _ = @import("keymap_test.zig");
     _ = @import("tmux_control_mode_test.zig");
     _ = @import("tmux_projection_rebuild_test.zig");

@@ -24,6 +24,8 @@ pub const errors = @import("core/errors.zig");
 pub const capabilities = @import("core/capabilities.zig");
 /// Shared document/view state helpers.
 pub const view = @import("core/view.zig");
+/// Boxed viewer projection helpers over the live TOM.
+pub const projection = @import("core/projection.zig");
 /// Future keybinding analysis model helpers.
 pub const keymap = @import("core/keymap.zig");
 /// Future menu/modeline schema helpers.
@@ -57,4 +59,9 @@ pub const platform = struct {
     /// Windows named-pipe transport placeholder. The current client surface is
     /// still Unix-only until a real Windows transport implementation lands.
     pub const windows_pipe = @import("platform/windows_pipe.zig");
+};
+
+/// Synthetic demos used to exercise viewer and TOM ideas without a live backend.
+pub const demo = struct {
+    pub const guided_tour = @import("demo/guided_tour.zig");
 };

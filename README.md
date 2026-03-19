@@ -47,6 +47,7 @@ This repository has a working implementation centered on:
 - `muxlyd` — daemon
 - `muxly` — automation-first CLI
 - `muxview` — reference viewer / universal viewer
+- `muxguide` — synthetic guided-tour demo for the boxed viewer
 - `libmuxly` — shared library with a C ABI
 
 ## Getting started
@@ -58,6 +59,7 @@ zig build docs
 zig build muxlyd
 zig build muxly
 zig build muxview
+zig build muxguide
 ```
 
 Then, in another shell:
@@ -70,8 +72,10 @@ Then, in another shell:
 ./zig-out/bin/muxly pane split %0 right "sh -lc 'printf split\\n; sleep 30'"
 ./zig-out/bin/muxly pane send-keys %0 "echo from-cli" --enter
 ./zig-out/bin/muxly pane scroll %0 -5 -1
+./zig-out/bin/muxly projection get 24 80
 ./zig-out/bin/muxview
 ./zig-out/bin/muxview --snapshot
+./zig-out/bin/muxguide --snapshot --step 2
 ```
 
 When launched in a terminal, `muxview` now attaches live by default. Press `q`
@@ -123,6 +127,7 @@ Milestones and remaining major work live in `phased-planning/`:
 - `examples/tom/python/` — Python "hello TOM" playbook
 - `examples/tty/basic-nesting/` — live attached stage with several active
   tty-backed regions
+- `examples/guided-tour/` — synthetic boxed-stage tour with deterministic steps
 
 The playbook wrappers use dedicated example sockets by default so they can be
 run locally without colliding with a long-lived `muxlyd` on `/tmp/muxly.sock`.
