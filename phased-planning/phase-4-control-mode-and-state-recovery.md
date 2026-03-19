@@ -1,413 +1,213 @@
-# phase 4 — tmux control mode and state recovery
+# phase 4 - active follow-on: tmux backend credibility and recovery
+
+## Status
+
+This file no longer tracks the whole history of control-mode bring-up.
+Control-mode attachment, parser isolation, snapshot-backed reconciliation, lazy
+invalidation, reconnect/reattach coverage, and first-pass live append already
+exist and are summarized in `changelog.md`.
+
+Phase 4 stays open only for the narrower remaining gap between the current
+hybrid backend and a default backend path that feels deliberate instead of
+provisional.
 
 ## Goal
 
-Replace the current command-backed tmux layer with a more durable backend that
-can observe state changes, reconnect cleanly, and keep muxml synchronized with
-less polling and fewer blind spots.
+Make the current hybrid tmux backend credible as muxly's default live backend
+path without pretending the daemon must become a perfect event-by-event tmux
+mirror or that every command-backed path must disappear.
 
-This phase is complete when muxly can treat tmux as a recoverable live backend
-rather than a pile of one-shot subprocess calls:
+This phase closes when:
 
-- the daemon can attach to tmux control mode and keep that attachment alive
-- tmux state can be rebuilt from snapshots rather than from ad hoc leaf hacks
-- live events can update the TOM without requiring manual capture refreshes
-- drift and reconnect paths are explicit, testable, and documented
+- the default backend cutline is explicit in docs, capabilities, and tests
+- one narrow family of structure changes can apply incrementally without
+  forcing subtree rebuild every time
+- rebuild remains the correctness backstop with explicit trust rules
+- projected session/window identity no longer depends on marker strings stored
+  in node content
+- reconnect/drift behavior is documented and tested as a first-class path
 
 ## In scope
 
-- tmux control-mode attachment
-- event parsing
-- session/window/pane snapshot rebuilding
-- recovery after drift or reconnect
-- richer pane/window/session listings
-- tighter integration between backend state and muxml documents
-- tests and demos that verify the new backend behavior
+- default-backend definition for `hybrid-control-invalidation`
+- narrow incremental event application on top of snapshot-backed rebuild
+- explicit trust/fallback rules for event application versus
+  invalidation/rebuild
+- reconnect/drift semantics for already-projected tmux subtrees
+- cleanup of the `tmux-session:` / `tmux-window:` marker-content identity hack
+- docs, tests, and examples needed to make that cutline honest
 
 ## Out of scope
 
-- keybinding analysis
-- menu/modeline projection
-- Neovim bridge
-- viewer-local interaction polish unrelated to backend state truthfulness
-- speculative tmux feature parity beyond what phase 4 needs for recovery
+- removing every command-backed mutation/capture path for purity
+- full event-driven mirroring of every tmux detail
+- viewer-local navigation or retargeting UX work
+- bindings, menu, or Neovim work
+- persistence/rehydrate follow-on beyond the current artifact contract
+- speculative tmux feature parity unrelated to default-path credibility
 
 ## Acceptance criteria
 
-- daemon can rebuild muxml state from tmux without manual reattachment hacks
-- event-driven changes are reflected in document state
-- reconnect/recovery tests exist
-- `docs/tmux-backend.md` reflects the richer architecture
-- `capabilities.get` and repo docs stop describing the tmux backend as purely
-  command-backed once the new control-mode path is the default
+- `docs/tmux-backend.md`, this file, `README.md`, and `capabilities.get` all
+  describe the same default backend cutline
+- at least one narrow structure-changing event family is applied incrementally
+  into TOM/projection state with focused tests
+- the rebuild fallback remains explicit and documented for low-confidence cases
+- projected session/window identity survives rebuild without storing backend
+  marker strings in renderable `Node.content`
+- end-to-end verification catches regressions in attach, rebuild, reconnect,
+  and fallback behavior
 
 ## Repo baseline
 
-Phase 4 starts from a working but intentionally thin tmux integration:
+The repo already has much more than the original phase title implies:
 
-- [src/daemon/tmux/client.zig](/home/greg/src/muxly/src/daemon/tmux/client.zig)
-  shells out to `tmux` commands such as `new-session`, `split-window`,
-  `capture-pane`, `resize-pane`, and `send-keys`.
-- [src/daemon/state/store.zig](/home/greg/src/muxly/src/daemon/state/store.zig)
-  refreshes TTY-backed leaves by recapturing pane content on demand rather than
-  by processing a live tmux event stream.
-- [src/daemon/tmux/control_mode.zig](/home/greg/src/muxly/src/daemon/tmux/control_mode.zig),
-  [src/daemon/tmux/parser.zig](/home/greg/src/muxly/src/daemon/tmux/parser.zig),
-  and adjacent tmux modules now provide a real control-mode attachment path,
-  typed command blocks, and normalized parser coverage.
-- [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md) correctly
-  describes the current backend as command-backed and intentionally modest.
-- [tests/integration/tmux_adapter_test.py](/home/greg/src/muxly/tests/integration/tmux_adapter_test.py)
-  already verifies a fair amount of tmux-backed behavior:
-  session creation, pane split/capture/resize/focus/send-keys/close, file
-  sources, and scoped viewer rendering.
-- tmux session/window/pane projection is now real in the repo:
-  - a session projects to a `subdocument`
-  - a window projects to a nested `subdocument`
-  - a pane projects to a nested `tty_leaf`
-  - tmux mutation flows return the projected pane node rather than a loose leaf
+- `src/daemon/tmux/control_mode.zig` and `src/daemon/tmux/parser.zig` provide a
+  real control-mode attachment path and structured parser coverage
+- tmux session/window/pane projection into the TOM is real:
+  - session -> `subdocument`
+  - window -> nested `subdocument`
+  - pane -> nested `tty_leaf`
 - `session.list`, `window.list`, and `pane.list` now read from normalized tmux
-  pane snapshots rather than from document-accidental tty leaves.
-- [examples/tty/basic-nesting/](/home/greg/src/muxly/examples/tty/basic-nesting)
-  now gives the repo one small live attached TTY stage with several active
-  projected regions under one scoped viewer session.
+  pane snapshots
+- snapshot-to-TOM reconciliation already exists and is used as the correctness
+  path for projected tmux state
+- lazy control-mode invalidation and reattach behavior already exist for known
+  tmux projections
+- `%output` / `%extended-output` parsing already supports best-effort live
+  append for known follow-tail panes
+- `capabilities.get` already reports `tmuxBackendMode =
+  hybrid-control-invalidation`
+- `docs/tmux-backend.md` already describes the backend as hybrid rather than
+  purely command-backed
+- `src/daemon/tmux/reconcile.zig` still writes `tmux-session:` and
+  `tmux-window:` markers into projected node content to keep identity stable
+  across rebuild
 
 ## Remaining gaps
 
-What still keeps this phase from feeling complete:
+What still keeps this phase open:
 
-- there is still no live event application into the TOM from control-mode
-- tmux state truth is still rebuilt from command-era snapshot refreshes rather
-  than from a durable event stream
-- recovery after daemon restart, tmux drift, or reconnect is not a first-class
-  path
-- projection identity still uses a temporary marker-content trick on projected
-  tmux containers
-- the current verification stack exercises tmux-backed behavior, but it does
-  not yet verify durable control-mode recovery
-
-## Agentic-harness starting point
-
-The right starting move for phase 4 is:
-
-1. do a short Slice 1 framing pass to make the execution order and verification path
-   explicit
-2. treat Slice 2 as the first substantive implementation tranche
-3. do not jump to reconnect logic before a normalized control-mode attachment
-   and snapshot shape exist
-4. use Slice 5 to harden verification around the new backend rather than as a detached
-   cleanup pass
-
-If an agent needs one sentence of direction, use this one:
-
-> Do a short Slice 1 pass to make the control-mode verification path obvious, then
-> move immediately into Slice 2 and treat normalized control-mode attachment and
-> parsing as the first real code tranche of phase 4.
+- "default backend" still means different things in different docs and code
+  comments
+- topology/state truth still mostly advances by invalidating and rebuilding
+  known projected session subtrees
+- there is no narrow explicit incremental topology mutation path yet
+- trust rules for when to accept live control-mode info versus rebuild are
+  still implicit
+- the marker-content identity seam leaks backend bookkeeping into document
+  content and requires special-case hiding in rendering/projection paths
+- verification proves the current hybrid path works, but the closure bar for
+  "default" is still fuzzy
 
 ## Execution order
 
-Work this phase in the following order. Avoid blending snapshot design,
-reconnect policy, and user-facing verification into one undifferentiated backend push.
+### Slice 1 - default-path definition and identity contract
 
-### Slice 1 — backend framing and verification path
-
-Make the current cutline and the first real control-mode tranche obvious.
-
-This slice is intentionally short. Its job is to stop phase 4 from reading like
-"tmux but better somehow" and to leave behind one authoritative verification path for
-the later slices.
+Before more implementation, pin down what "default backend" means and choose a
+non-content carrier for projected tmux identity.
 
 Likely touchpoints:
 
-- [phased-planning/phase-4-control-mode-and-state-recovery.md](/home/greg/src/muxly/phased-planning/phase-4-control-mode-and-state-recovery.md)
-- [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md)
-- [docs/demos.md](/home/greg/src/muxly/docs/demos.md)
+- `docs/tmux-backend.md`
+- `src/core/capabilities.zig`
+- `src/daemon/tmux/reconcile.zig`
+- document/source/metadata types under `src/core/`
 
-Target:
+Acceptance bar:
 
-- phase 4 names the current baseline and first substantive slice explicitly
-- docs state that the current backend is still command-backed
-- one repo-visible verification path is named for the new backend as it comes online
+- one explicit statement exists for what `hybrid-control-invalidation`
+  promises
+- one explicit carrier for projected session/window identity is chosen that
+  does not rely on renderable node content
 
-Done when:
+### Slice 2 - projected identity cleanup
 
-- a contributor can tell what is already true in the repo and what phase 4
-  still needs to change
-- the first real implementation slice is obvious from this file alone
-
-### Slice 2 — control-mode attachment and parser isolation
-
-Create a long-lived tmux control-mode connection and isolate the logic that
-turns its output into normalized muxly-side events and snapshots.
-
-Treat this as the first real implementation tranche of phase 4.
-
-Likely touchpoints:
-
-- `src/daemon/tmux/` modules adjacent to
-  [client.zig](/home/greg/src/muxly/src/daemon/tmux/client.zig)
-- [src/daemon/server.zig](/home/greg/src/muxly/src/daemon/server.zig)
-- [src/daemon/state/store.zig](/home/greg/src/muxly/src/daemon/state/store.zig)
-- tests for parser or control-mode line handling
+Replace the `tmux-session:` / `tmux-window:` marker-content trick with the
+chosen identity carrier.
 
 Priorities:
 
-- keep control-mode parsing isolated from TOM mutation at first
-- normalize tmux session/window/pane identity and event shapes before wiring
-  them into the document model
-- leave the command-backed path available as a fallback until later slices make
-  the replacement credible
+- preserve muxly node ids across rebuild when the tmux object still exists
+- keep backend bookkeeping out of user-visible content
+- avoid introducing a larger metadata taxonomy than the phase actually needs
 
-Good sub-tranche boundaries:
+Acceptance bar:
 
-- spawn and hold a control-mode subprocess
-- parse line-oriented control-mode output into typed events
-- normalize snapshot payloads for sessions/windows/panes
+- projected session/window identity survives rebuild without the marker-content
+  seam
+- no projection code needs to hide synthetic marker strings from normal
+  rendering
 
-Target:
+### Slice 3 - narrow incremental topology events
 
-- the daemon can maintain a live control-mode attachment
-- tmux output is parsed into muxly-owned event/snapshot structures
-- parser and normalization logic are testable without a full daemon round-trip
+Add one deliberately small family of incremental control-mode-driven updates on
+top of the existing snapshot/rebuild path.
 
-Done when:
+Start with high-confidence topology or metadata changes rather than trying to
+make every byte of pane output authoritative. Good candidates include one or
+more of:
 
-- there is a repo-visible control-mode attachment path
-- normalized event/snapshot structures exist and are not just ad hoc strings
-- unit or focused integration coverage exists for the parser path
-
-Current status:
-
-- first-pass complete
-- control-mode attachment, parser isolation, typed command blocks, and focused
-  verification coverage all exist in the repository
-
-### Slice 3 — snapshot rebuild and TOM reconciliation
-
-Use normalized tmux snapshots to rebuild muxly state intentionally instead of
-depending on command-era leaf attachment shortcuts.
-
-Likely touchpoints:
-
-- [src/daemon/state/store.zig](/home/greg/src/muxly/src/daemon/state/store.zig)
-- document/source mapping code under `src/core/`
-- tmux identity mapping modules introduced in Slice 2
-- [tests/integration/tmux_adapter_test.py](/home/greg/src/muxly/tests/integration/tmux_adapter_test.py)
+- pane add/remove
+- window add/remove
+- rename/title updates
 
 Priorities:
 
-- define how tmux sessions/windows/panes map into TOM nodes during rebuild
-- preserve stable identity where practical instead of tearing down and
-  recreating unrelated nodes blindly
-- make `session.list`, `window.list`, and `pane.list` richer if the snapshot
-  model naturally supports it
+- keep rebuild as the correctness backstop
+- make trust versus rebuild rules explicit
+- prove value with one event family before widening the surface
 
-Good sub-tranche boundaries:
+Acceptance bar:
 
-- build a session/window/pane snapshot model
-- reconcile one snapshot into document state
-- replace manual attach/rebuild hacks with snapshot-driven reconstruction
+- at least one family above applies incrementally into the projected TOM
+- tests cover both the incremental happy path and the rebuild fallback
 
-Recommended execution order inside Slice 3:
+### Slice 4 - reconnect truthfulness and docs close-out
 
-- `3a` — mapping contract
-  Decide what tmux `session`, `window`, and `pane` become in the TOM, which
-  fields are preserved as metadata, and which identities should remain stable
-  across rebuild.
-  First acceptance bar:
-  one written backend-to-TOM mapping exists, and one concrete snapshot/example
-  can be judged against it.
-- `3b` — snapshot model
-  Expand the normalized snapshot types introduced in Slice 2 so they carry the
-  data reconciliation actually needs, without mutating TOM state yet.
-  First acceptance bar:
-  one normalized snapshot shape exists with enough fields to describe one
-  session with one window and multiple panes.
-- `3c` — rebuild and reconcile
-  Teach the store to rebuild one tmux-backed subtree from snapshot truth
-  instead of relying on command-era attachment shortcuts.
-  First acceptance bar:
-  one snapshot can deterministically rebuild one tmux-backed subtree in memory.
-- `3d` — list and query alignment
-  Make `session.list`, `window.list`, and `pane.list` reflect the richer
-  snapshot-driven model where that falls out naturally.
-  First acceptance bar:
-  at least one list family is derived from snapshot-backed state rather than an
-  ad hoc one-shot command result.
-- `3e` — verification and example touch-up
-  Update integration coverage and affected live-TTY demos so snapshot rebuild is
-  demonstrated as checked-in behavior rather than as a private implementation
-  claim.
-  First acceptance bar:
-  one checked-in verification path demonstrates rebuild from snapshot truth.
-
-Target:
-
-- muxly can rebuild relevant TTY-backed state from tmux truth
-- the TOM shape for tmux-backed nodes is the result of a deliberate
-  reconciliation step, not one-off command callbacks
-- list operations reflect the richer snapshot model
-
-Done when:
-
-- daemon restart or explicit rebuild can recover tmux-backed document state
-- nested/live TTY examples and integration coverage no longer depend on
-  hand-maintained attachment assumptions
-
-Current status:
-
-- first-pass complete
-- `3a`: first-pass complete
-- `3b`: first-pass complete
-- `3c`: first-pass complete
-- `3d`: first-pass complete
-- `3e`: first-pass complete
-- the closed first-pass Slice 3 work is summarized in
-  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)
-
-### Slice 4 — live event application, drift handling, and reconnect
-
-Move from "can rebuild from snapshots" to "can stay correct while tmux keeps
-moving."
+Once identity and one incremental family are real, harden the repo story around
+the backend that actually exists.
 
 Likely touchpoints:
 
-- control-mode attachment lifecycle code from Slice 2
-- store reconciliation code from Slice 3
-- daemon startup/reconnect paths
-- integration tests that simulate drift or reconnect
+- `tests/integration/tmux_adapter_test.py`
+- control-mode lifecycle tests under `tests/unit/`
+- `docs/tmux-backend.md`
+- `README.md`
+- capability reporting if semantics changed
 
-Priorities:
+Acceptance bar:
 
-- apply control-mode events into the TOM incrementally when safe
-- define when to trust incremental updates versus when to trigger snapshot
-  rebuild
-- make reconnect/drift policy explicit rather than magical
-
-Good sub-tranche boundaries:
-
-- incremental event application for a narrow event family
-- drift detection / invalidation policy
-- reconnect path that reattaches and rebuilds state
-
-Current status:
-
-- first-pass complete
-- a lazy control-mode attachment now drains state-changing tmux notifications
-  into snapshot-backed rebuild for already-projected tmux session subtrees
-- structured `%output` / `%extended-output` events now support best-effort live
-  append into known follow-tail pane leaves, with rebuild still acting as the
-  correctness backstop
-- control-mode exit now degrades explicitly to request-time snapshot rebuild
-  for known projections until reconnect succeeds
-- focused control-mode verification now shows reattachment to surviving tmux state
-  after the attached session exits
-- integration coverage now covers external pane/window/session drift against that
-  invalidation-and-rebuild path
-- this is still invalidation plus rebuild, not yet fine-grained incremental
-  pane/window/session mutation handling
-
-Target:
-
-- event-driven changes are reflected in document state without manual refresh
-  calls for the common path
-- reconnect after daemon or tmux disruption is a supported path
-- fallback rebuild behavior is explicit when event application loses confidence
-
-Done when:
-
-- a tmux-backed document can survive reconnect or drift through documented
-  recovery behavior
-- the control-mode path is credible as the default backend rather than a lab
-  experiment
-
-### Slice 5 — verification hardening and docs close-out
-
-Strengthen verification around the new backend and update the docs to match the new
-truth.
-
-Likely touchpoints:
-
-- [tests/integration/tmux_adapter_test.py](/home/greg/src/muxly/tests/integration/tmux_adapter_test.py)
-- [examples/tty/](/home/greg/src/muxly/examples/tty/)
-- [docs/tmux-backend.md](/home/greg/src/muxly/docs/tmux-backend.md)
-- [docs/demos.md](/home/greg/src/muxly/docs/demos.md)
-- capability reporting if backend semantics changed
-
-Priorities:
-
-- keep one strong end-to-end tmux verification path as the main backend check
-- extend examples only where they demonstrate the new backend value clearly
-- update backend docs and capability notes so they stop understating or
-  overstating reality
-
-Target:
-
-- reconnect/recovery verification path is checked in and runnable
-- docs describe the backend that actually exists
-- at least one repo-local TTY example demonstrates value from the richer
-  backend rather than from static command-backed snapshots alone
-
-Done when:
-
-- the verification stack would catch a regression in control-mode attach, rebuild, or
-  reconnect behavior
-- repo docs and examples describe the new backend plainly
-
-Current status:
-
-- first-pass complete
-- capability and viewer surfaces now report the backend as
-  `hybrid-control-invalidation` instead of `command-backed`
-- `zig build test` now covers parser/control-mode attachment, snapshot rebuild,
-  and control-mode reattach
-- the main integration coverage covers external pane/window/session drift against
-  the invalidation-and-rebuild path
-- backend docs and demos now describe the hybrid cutline plainly
+- repo docs define the backend default path plainly
+- tests would catch regressions in control attachment, incremental updates,
+  fallback rebuild, and reconnect
+- the phase can close without pretending the backend is a perfect tmux mirror
 
 ## Per-slice verification
 
-Use the strongest verification that matches the slice:
-
-- Slice 1:
-  docs and phase-file updates only
-- Slice 2:
-  parser-focused unit tests plus one small integration verification path that the daemon
-  can hold a control-mode attachment
-- Slice 3:
-  integration coverage that snapshot rebuild reconstructs tmux-backed state
-- Slice 4:
-  integration coverage that reconnect or drift recovery restores correct state
-- Slice 5:
-  repo-local verification commands documented in docs plus updated integration/demo
-  flows
-
-The current baseline verification stack that later slices should evolve rather than replace
-is:
-
-- `zig build`
-- `zig build test`
-- `python3 tests/integration/tmux_adapter_test.py`
-- the live TTY demo(s) under [examples/tty/](/home/greg/src/muxly/examples/tty/)
+- Slice 1: docs plus focused unit coverage around any new identity carrier
+- Slice 2: unit coverage for reconcile/identity behavior plus one
+  projection/render sanity check
+- Slice 3: focused parser/store tests and one integration path covering event
+  application plus fallback rebuild
+- Slice 4: `zig build test`, `python3 tests/integration/tmux_adapter_test.py`,
+  and `./examples/tty/basic-nesting/run.sh` remain the authoritative repo-local
+  checks
 
 ## Exit condition
 
-Phase 4 closes when:
+Phase 4 closes when muxly can honestly call the current tmux path its default
+live backend because:
 
-- tmux control mode is the default durable backend path
-- muxly can rebuild and recover tmux-backed state intentionally
-- reconnect/drift handling is verified in repo-local artifacts
-- `docs/tmux-backend.md` and related demo docs describe that stronger backend
-  accurately
+- the cutline is documented consistently
+- one narrow event family is applied incrementally when confidence is high
+- rebuild remains the explicit correctness backstop when confidence is low
+- reconnect/drift behavior is verified
+- projected tmux identity no longer depends on marker strings in document
+  content
 
-Until then, this phase should remain open even if the backend "feels close."
+## Current phase status
 
-Current phase status:
-
-- Slice 1: first-pass complete
-- Slice 2: first-pass complete
-- Slice 3: first-pass complete and summarized in
-  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)
-- Slice 4: first-pass complete
-- Slice 5: first-pass complete
-- Phase 4 overall: still open for deeper event-driven/default-backend work
+- earlier bring-up work is archived in `changelog.md`
+- this file tracks only the remaining active follow-on
+- Phase 4 overall: active, but much smaller than the original control-mode plan

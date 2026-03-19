@@ -3,6 +3,10 @@
 `muxview` is intended to be the reference implementation and universal viewer
 for live muxly documents.
 
+This document mixes implemented cutline with directional architecture. It
+should not be read as evidence that every deeper viewer interaction described here
+is already shipped or currently on the immediate roadmap.
+
 ## Design rule
 
 `muxview` should use the same public API surface as other clients:
@@ -90,8 +94,11 @@ still make the public state model legible:
   state
 - follow-tail is currently a **stored node preference**, not a private capture
   cursor inside `muxview`
-- tmux interaction remains command-backed in this phase; richer control-mode
-  behavior belongs to phase 4
+- tmux interaction currently rides on the hybrid backend cutline:
+  command-backed mutation/capture plus control-mode invalidation/rebuild and
+  best-effort live append
+- the active phase-4 follow-on is backend credibility and recovery cleanup, not
+  a claim that the viewer already has rich in-place navigation
 
 ## Presentation substrate direction
 
@@ -132,6 +139,9 @@ In the current implementation, the immediate precursor model is:
 
 That is intentionally simpler than a full interactive drill-in UI, but it keeps
 depthwise traversal state concrete, public, and testable.
+
+It should be read as precursor architecture rather than as evidence that a
+fully interactive depthwise viewer UX is already a current execution phase.
 
 ## Mouse policy direction
 

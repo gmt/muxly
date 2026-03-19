@@ -58,5 +58,6 @@ The playbook also prints a tiny parsed view of the `sectioned_text` payload so
 you can see how a consumer might read the frozen surface artifact without
 having to reverse-engineer the section markers by eye.
 
-That is the current first-pass implementation of the Phase 6 contract:
-preserve node identity, change source/lifecycle semantics, and keep provenance.
+That is the archived first-pass artifact contract in executable form: preserve
+node identity, change source/lifecycle semantics, and keep provenance without
+pretending the node is still just a forever-live tty source.

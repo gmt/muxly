@@ -1,56 +1,49 @@
 # roadmap
 
-This directory breaks the larger muxly roadmap into smaller execution tranches.
+This directory is not a pile of equally-live phase files anymore. Each doc
+should clearly be one of:
 
-`changelog.md` summarizes milestones and completed slices that are already
-closed. The remaining phase files track major work that is still open or still
-useful as a reference point.
+- active follow-on work
+- deferred backlog/reference
+- archived implemented material
+
+## Triage rule
+
+Keep something active only when all of the following are true:
+
+- it directly advances muxly's core objective: terminal session embedding and
+  management, nested hierarchy, retargeting/rooting/elision, or truthful live
+  backend behavior
+- the remaining gap is concrete enough to execute and verify
+- the repo does not already materially implement the named scope
+- the work is important enough to deserve a checked-in execution doc rather
+  than a vague future note
+
+Archive work that already landed. Defer work that may still be interesting but
+is not on the current critical path. Dismiss any framing that is stale,
+contradictory, or too vague to execute honestly.
 
 ## How to use these files
 
-- treat each phase file as a self-contained execution target
-- prefer completing one phase at a time
-- use acceptance criteria and test notes in each phase file as the completion
-  checklist
-- update repo-visible docs and tests as you complete each phase
+Active docs should make five things obvious:
 
-## What makes a phase file useful
+- repo baseline
+- remaining gaps
+- execution order
+- verification
+- exit condition
 
-Phase files should be written for execution, not just for orientation.
+Deferred docs should not pretend to be execution-ready. They should name the
+current scaffolding, why the work is deferred, and what would need to be true
+before reactivating it.
 
-Each active phase file should make the following obvious to a contributor or
-agentic harness:
+Archived docs should point at the checked-in evidence that closed their scope
+and should not quietly drift back into the active roadmap just because nearby
+future work still exists.
 
-- what is already true in the repo right now
-- what is still missing
-- which slice should be done first
-- which files are likely to move
-- how to verify the slice is complete before claiming progress
+## Shared doctrine across active phases
 
-When a phase file stays at the "good vibes" level, it becomes easy to produce
-plausible-looking partial work without actually closing the named gap.
-
-## Preferred phase-file shape
-
-For active work, prefer keeping these sections up to date:
-
-- `Goal`
-- `In scope`
-- `Out of scope`
-- `Acceptance criteria`
-- `Repo baseline`
-- `Remaining gaps`
-- `Execution order`
-- `Per-slice verification`
-- `Exit condition`
-
-The point is not rigid formatting. The point is leaving behind a plan that an
-unfamiliar contributor can execute in the right order without reverse
-engineering project intent from scattered docs and code.
-
-## Shared doctrine across all phases
-
-Every phase should preserve the project-wide rules documented in
+Every active phase should preserve the project-wide rules documented in
 `docs/trine.md`, especially:
 
 - function over form
@@ -62,66 +55,57 @@ Every phase should preserve the project-wide rules documented in
 
 ## Current layout
 
-- `changelog.md` for completed phase work and closed slice checkpoints
-- `phase-4-control-mode-and-state-recovery.md`
-- `phase-5-keybindings-menu-nvim.md`
-- `phase-6-terminal-capture-and-persistence.md`
+- `changelog.md` records completed milestones and archived first-pass
+  completions
+- `phase-4-control-mode-and-state-recovery.md` is the only active follow-on
+  phase right now
+- `phase-5-keybindings-menu-nvim.md` is a deferred backlog/reference document,
+  not an execution target as one umbrella
+- `phase-6-terminal-capture-and-persistence.md` is archived first-pass-complete
+  material for the terminal artifact contract
 
 ## Current status snapshot
 
-Phase 1, 2, and 3 are summarized in `changelog.md`. Remaining large work is
-concentrated in:
+Active work is currently concentrated in one area:
 
-- richer tmux control-mode/state recovery
-- keybinding analysis engine
+- tmux backend default-path credibility
+- narrow incremental event application where confidence is high
+- explicit reconnect/drift fallback rules
+- cleanup of projected tmux identity hacks
+
+Deferred work remains documented, but not active:
+
+- bindings analysis
 - menu/modeline projection
-- deeper viewer UX
 - Neovim integration
-- terminal capture / scrollback / durable artifact semantics
 
-One additional future seam should now be treated as explicit roadmap material,
-not as an accidental implementation detail:
+Archived implemented material:
 
-- daemon discovery/autostart policy for transparent library-consumer UX
+- first-pass terminal artifact contract
+- `node.freeze` public seam
+- witness artifacts and verification paths around captured text/surface
+  payloads
 
-Right now `libmuxly` is a client surface over an external `muxlyd`, while the
-example/playbook layer may start the daemon on demand. If muxly eventually
-wants a truly transparent downstream library experience, that daemon-lifecycle
-policy should be designed intentionally in a later phase rather than emerging
-implicitly from wrappers.
+## Not promoted right now
+
+Some seams may still matter later, but they are not being promoted into new
+active phase docs in this cleanup:
+
+- deeper viewer UX
+- daemon discovery/autostart policy
+
+Those can return later if they become concrete enough to deserve their own
+narrowly-scoped follow-on docs.
 
 ## Testing expectation
 
-Future phases should continue to treat testing as first-class work:
+Future active phases should continue to leave behind:
 
 - unit tests for pure logic
 - integration tests for daemon/protocol/tmux behavior
-- cross-target compile checks
-- runnable examples/demos that users and contributors can use as living evidence
-
-## Agentic harness doctrine
-
-When an agent works from these phase files, it should prefer the smallest
-slice that closes one named gap and leaves behind all of:
-
-- code or doc changes that close the named gap
-- updated verification instructions or automated coverage
-- repo-visible evidence in docs/examples/tests rather than private notes
-
-When a phase starts with a framing or discoverability slice, keep that slice
-short and use it to make the first substantive implementation tranche obvious.
-Do not spend multiple rounds polishing docs if the real blocker is still an
-implementation split elsewhere in the repo.
-
-When later slices depend on a stable shared surface, sequence them after that
-surface is clarified. Do not expand examples, bindings, or convenience layers
-against a contract that the preceding implementation slice is still defining.
-
-Do not mark a phase complete because the implementation "feels close". A phase
-should close only when the acceptance criteria and verification steps are true in the
-repository as checked-in artifacts.
+- runnable examples or demos when they materially prove the claimed behavior
 
 ## Why this exists
 
-Smaller phase files are easier to keep accurate than one large catch-all
-roadmap.
+A smaller and harsher roadmap is easier to keep honest than a long list of
+future intentions.

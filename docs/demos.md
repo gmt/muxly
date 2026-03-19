@@ -97,8 +97,8 @@ zig build
 python3 tests/integration/tmux_adapter_test.py
 ```
 
-This is the current authoritative tmux-backend verification path while the backend
-remains a command-backed/control-invalidating hybrid.
+This is the current authoritative tmux-backend verification path while the
+backend remains at the current `hybrid-control-invalidation` cutline.
 
 That flow now also exercises the current projected tmux shape:
 
@@ -106,9 +106,10 @@ That flow now also exercises the current projected tmux shape:
 - tmux window -> nested `subdocument`
 - tmux pane -> nested `tty_leaf`
 
-The next substantive phase-4 tranche is no longer "make control mode exist."
-That groundwork is in place. The remaining backend work is live event
-application, drift handling, and reconnect.
+The active phase-4 follow-on is no longer "make control mode exist." That
+groundwork is in place. The remaining backend work is default-path credibility,
+projected identity cleanup, narrow incremental event application, and explicit
+reconnect/fallback truthfulness.
 
 Hello TOM example flow:
 
@@ -131,7 +132,7 @@ python3 scripts/run_binding_examples.py
 
 Artifact freeze demo:
 
-The first public Phase 6 seam is now runnable as a playbook too:
+The archived first-pass terminal artifact seam is runnable as a playbook too:
 
 ```sh
 ./examples/artifacts/freeze-demo/run.sh
@@ -139,6 +140,8 @@ The first public Phase 6 seam is now runnable as a playbook too:
 
 That flow creates one transcript-like TTY and one surface-like TTY, freezes
 them through `node.freeze`, and prints the resulting frozen artifact nodes.
+It now serves as closure evidence for the archived first-pass artifact contract
+rather than as an active roadmap phase kickoff.
 
 Basic live viewer stage:
 

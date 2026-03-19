@@ -106,13 +106,18 @@ They are installed under `zig-out/docs/api/`.
 
 ## Roadmap
 
-Milestones and remaining major work live in `phased-planning/`:
+Milestones and roadmap follow-ons live in `phased-planning/`, which now
+distinguishes active work from deferred backlog and archived implemented
+material:
 
-- `changelog.md` summarizes completed phase 1, 2, and 3 work
-- `phase-4-control-mode-and-state-recovery.md` covers the tmux backend upgrade
-- `phase-5-keybindings-menu-nvim.md` covers deferred UX and integration work
-- `phase-6-terminal-capture-and-persistence.md` covers durable terminal
-  artifact semantics
+- `changelog.md` summarizes completed phase work plus archived first-pass
+  completions
+- `phase-4-control-mode-and-state-recovery.md` is the current active follow-on
+  for the remaining tmux backend work
+- `phase-5-keybindings-menu-nvim.md` is a deferred backlog/reference doc for
+  bindings, menu/modeline, and Neovim ideas
+- `phase-6-terminal-capture-and-persistence.md` is archived first-pass-complete
+  material for the terminal artifact contract and `node.freeze`
 
 ## Examples
 

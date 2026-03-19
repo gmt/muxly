@@ -1,15 +1,21 @@
 # tmux backend
 
-The current muxly tmux integration is intentionally thin and still
-command-backed for mutations/capture, but it now has the first control-mode
-notification path for invalidation and snapshot-backed rebuild.
+The current muxly tmux integration is a hybrid backend:
+
+- command-backed for mutations and direct capture
+- control-mode-backed for notification-driven invalidation
+- snapshot-backed for projected state rebuild
+- best-effort live append for known follow-tail panes
+
+That is materially beyond the old "one-shot tmux subprocesses only" cutline,
+but it is still not a fully event-driven tmux mirror.
 
 ## Current state
 
 - session creation via `tmux new-session`
 - pane splitting via `tmux split-window`
 - pane capture via `tmux capture-pane`
-- tty-backed content refreshed from pane output
+- request-time tty-backed content refresh from pane output
 - public mutations/capture flow exposed through JSON-RPC/CLI/library helpers
 - follow-tail stored as document/view metadata rather than a control-mode cursor
 - tmux mutations now project into TOM subtrees instead of only attaching loose
@@ -36,29 +42,31 @@ notification path for invalidation and snapshot-backed rebuild.
 - focused control-mode verification now covers reattaching to surviving tmux state
   after the originally attached session exits
 
-## Planned evolution
+## Current cutline
 
-Later iterations should move toward a richer control-mode-backed adapter with:
+The repo currently reports this backend mode as
+`hybrid-control-invalidation`.
 
-- event parsing
-- refresh/reconnect handling
-- normalized pane/window/session state snapshots
-- lower-latency change observation than ad hoc command refreshes
-- incremental event application on top of the current snapshot/reconcile path
-- better confidence rules for when best-effort live append should be trusted
-  versus discarded in favor of rebuild
+That should be read as:
 
-Until the richer path is the default, this backend should still be described
-plainly as **command-backed with early control-mode invalidation** rather than
-as a fully event-driven tmux mirror.
+- tmux mutations and explicit capture still go through tmux commands
+- control mode is real and long-lived enough to notice drift and output
+- known tmux projections can be invalidated and rebuilt intentionally
+- some output can append live for follow-tail panes before rebuild catches up
+
+That should **not** be read as:
+
+- every tmux change is applied incrementally into the TOM
+- every control-mode event is trusted as final truth
+- muxly is already a perfect event-driven mirror of tmux
 
 This document exists to make the current cutline explicit rather than
 overstating backend sophistication.
 
 ## Initial backend-to-TOM contract
 
-As phase 4 grows beyond one-shot command calls, tmux should project into the
-TOM according to a small explicit contract rather than through ad hoc
+As the tmux backend grows beyond one-shot command calls, tmux should project
+into the TOM according to a small explicit contract rather than through ad hoc
 attachment shortcuts:
 
 - a tmux session projects to a TOM `subdocument`
@@ -79,6 +87,10 @@ Identity should also stay explicit:
 - muxly node ids remain muxly-local, but reconciliation should preserve them
   when the same tmux object is still present across rebuild
 
+The current implementation still carries one temporary seam here: projected
+session/window identity is preserved with synthetic marker strings stored in
+node content. Cleaning that up is part of the active phase-4 follow-on work.
+
 This keeps tmux useful as a source of truth without letting tmux's internal
 layout ontology become muxly's constitution by accident.
 
@@ -93,9 +105,19 @@ The current repo-local verification path for tmux-backed behavior is:
   flow
 - `./examples/tty/basic-nesting/run.sh` for one small nested live-TTY demo
 
-## Next implementation tranche
+## Active follow-on
 
 The next substantive tranche is no longer "make control mode exist at all."
-That groundwork now exists, along with early invalidation/rebuild/reconnect
-behavior. The remaining work is to move from that coarse path toward more
-incremental live event application and stronger default-backend credibility.
+That groundwork already exists. The remaining phase-4 work is narrower:
+
+- make the default-backend cutline explicit and consistent across docs and
+  capabilities
+- remove the synthetic marker-content identity seam for projected tmux
+  containers
+- add one narrow family of incremental topology or metadata updates on top of
+  the rebuild path
+- make confidence rules clearer for when to trust live events versus rebuild
+
+In other words, the current work is about default-path credibility and cleaner
+identity/recovery semantics, not about pretending the daemon must immediately
+become a perfect event-by-event tmux replica.

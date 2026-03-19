@@ -1,199 +1,78 @@
-# phase 6 — terminal capture, scrollback, and durable artifacts
+# phase 6 - archived: first-pass terminal artifact contract and freeze seam
 
-## Goal
+## Status
 
-Define the durable TOM/muxml contract for terminal-backed nodes so muxly does
-not get trapped into "tmux scrollback forever" as an accidental permanent
-policy.
+Archived implemented material. This phase is no longer open roadmap work.
 
-This phase exists to answer a structural question before persistence/export
-semantics harden too far:
+The named scope in the original phase did land: the repo has an explicit
+terminal artifact contract, a first-pass `terminal_artifact` source family, a
+public `node.freeze` seam, and matching examples/tests. Leaving the phase
+"open" was muddying the difference between future persistence work and the
+contract that already shipped.
 
-- when a live TTY source is frozen, serialized, detached, or dies, what exactly
-  should remain in the TOM?
+## What shipped
 
-## In scope
+The repo now has all of the following:
 
-- distinction between:
-  - live TTY-backed nodes
-  - captured text/history artifacts
-  - captured terminal-surface artifacts
-- relationship between:
-  - process/pty truth
-  - tmux-provided scrollback/history
-  - alternate-screen / raw-mode surface state
-  - durable muxml payload
-- lifecycle policy for:
-  - process death
-  - explicit freeze/export
-  - detach/reconnect boundaries
-- whether these transitions are represented as:
-  - new node kinds
-  - source-kind transitions
-  - lifecycle-state transitions
-  - or some combination
-
-## Out of scope
-
-- full implementation of a replacement terminal backend
-- pretending tmux's current history model is the final truth
-- UI polish unrelated to capture/persistence semantics
-
-## Acceptance criteria
-
-- one explicit written contract exists for how terminal-backed TOM nodes
-  persist into durable artifacts
-- the contract distinguishes append-ish/history-oriented cases from
-  fullscreen/raw/surface-oriented cases
-- docs stop leaving it ambiguous whether muxml persists tmux scrollback,
-  terminal surface state, or both
-- at least one concrete example or verification path exists for each durable artifact family
-
-## Repo baseline
-
-Right now muxly treats TTYs primarily as live sources:
-
-- tmux-backed panes project into TOM `tty_leaf` nodes
-- pane content is currently refreshed/captured through tmux
-- muxml persists the current TOM/document state
-- the repo does **not** yet define a final durable contract for what a dead or
-  frozen terminal-backed node should become
-
-## Remaining gaps
-
-What still needs to be designed before this area feels safe:
-
-- whether dead/frozen TTY nodes collapse into plain UTF-8 blobs, surface
-  snapshots, or different artifact families depending on mode
-- how much trust muxly places in tmux scrollback/history as a durable source
-- how alternate screen/raw-mode applications should serialize honestly
-- how reconnect/recoverable live nodes differ from irreversibly captured ones
-
-## Agentic-harness starting point
-
-Start this phase as a design-contract pass, not as an implementation binge.
-
-The first useful move is to write down:
-
-1. the artifact families muxly wants
-2. the transitions that create them
-3. the minimum examples that make the distinctions concrete and reviewable
-
-First-pass Slice 1 contract:
-
-- [`docs/terminal-artifacts.md`](/home/greg/src/muxly/docs/terminal-artifacts.md)
-  now defines the initial artifact families and transition posture
-
-## Execution order
-
-### Slice 1 — terminology and artifact contract
-
-Name the durable artifact families clearly and define when a live TTY-backed
-node stays live, becomes recoverable-but-detached, or becomes a durable
-captured artifact.
-
-Current status:
-
-- first-pass complete
-- the first-pass contract distinguishes:
+- `docs/terminal-artifacts.md` defines:
   - live tty source
   - detached but recoverable tty source
   - captured text artifact
   - captured surface artifact
-- the contract also says explicitly that tmux scrollback is useful backend
-  evidence but not the final durable policy on its own
+- the core model preserves node identity and tty provenance across freeze into
+  captured text/surface artifacts
+- JSON-RPC, Zig API, CLI, and C ABI expose `node.freeze <node-id> <text|surface>`
+- `examples/artifacts/` contains checked-in witness artifacts for the text and
+  surface payload families
+- `examples/artifacts/freeze-demo/` and `scripts/run_artifact_examples.py`
+  provide runnable verification
+- unit and integration coverage exercise both public freeze branches
 
-### Slice 2 — append/history vs surface/raw distinction
+## Closure evidence
 
-Decide how muxly distinguishes append-ish text/history cases from
-fullscreen/raw/alternate-screen surface cases and what each should serialize
-into.
+The repo-local closure path for this archived phase is:
 
-Current status:
+- `zig build`
+- `zig build test`
+- `python3 tests/integration/tmux_adapter_test.py`
+- `./examples/artifacts/freeze-demo/run.sh`
+- `python3 scripts/run_artifact_examples.py`
 
-- first-pass complete
-- the contract now names concrete example classes for both families:
-  - shell/log/transcript cases bias toward captured text artifacts
-  - fullscreen/raw/alternate-screen cases bias toward captured surface
-    artifacts
-- alternate-screen behavior is now called out explicitly as a surface-biased
-  durable case even when tmux history exists
+## Why archived instead of active
 
-### Slice 3 — muxml/TOM representation
+This phase is archived because:
 
-Choose whether the durable forms are represented by new node kinds, source
-transitions, lifecycle states, or some hybrid.
+- the original goal was to define the terminal-artifact contract and land a
+  first public seam, and that goal is already satisfied
+- the repo now explicitly distinguishes captured text versus captured surface
+  payloads instead of leaving the durable story completely ambiguous
+- the remaining future work is different in shape from the closed phase and
+  should not inherit the old acceptance criteria by inertia
 
-Current status:
+## What this file is still useful for
 
-- first-pass complete
-- the current chosen posture is a conservative hybrid:
-  - preserve node identity and tree position across live/detached/captured
-    transitions
-  - prefer `lifecycle` plus `source` transitions before adding a large new
-    node-kind taxonomy
-  - keep room for richer capture metadata or dedicated artifact kinds later if
-    the simple posture becomes too cramped
-- the first implementation seam now exists in the core model:
-  - captured terminal artifacts use a dedicated `terminal_artifact` source
-    family
-  - document-side transition helpers can freeze a tty-backed node into a
-    captured text or surface artifact while preserving provenance
-- the first public seam now exists through `node.freeze`
-- integration coverage now covers both public artifact kinds:
-  - `text`
-  - `surface`
-- current capture posture is now explicit:
-  - `text` uses tmux history + visible capture
-  - `surface` uses visible surface capture and includes alternate-screen
-    capture when available
-- terminal artifact payloads now also describe their shape explicitly:
-  - `text` currently uses `contentFormat = plain_text`
-  - `surface` currently uses `contentFormat = sectioned_text`
-- terminal artifacts now also expose first-pass `sections` metadata:
-  - `text` currently reports `sections = []`
-  - `surface` currently reports at least `sections = ["surface"]`
-  - `alternate` appears when tmux exposes alternate-screen capture at freeze time
+This file is now a historical and navigational pointer:
 
-### Slice 4 — examples and verification paths
+- it points roadmap readers at `docs/terminal-artifacts.md`
+- it records what the old phase actually closed
+- it reminds future contributors that muxly intentionally separated tty
+  provenance from "tmux scrollback forever" as the durable policy
 
-Add small checked-in examples and verification paths for the chosen durable forms so the
-contract is not purely theoretical.
+## Not covered by this archived phase
 
-Current status:
+This archived phase does not claim to solve:
 
-- first-pass complete
-- the repo now includes small checked-in witness artifacts for both durable
-  families under [`examples/artifacts/`](/home/greg/src/muxly/examples/artifacts)
-- these are contract examples rather than daemon-emitted fixtures, but they
-  make the text-versus-surface distinction concrete and reviewable
-- the repo now also includes a runnable public-seam playbook under
-  [`examples/artifacts/freeze-demo/`](/home/greg/src/muxly/examples/artifacts/freeze-demo)
-  that exercises both `node.freeze ... text` and `node.freeze ... surface`
+- rehydrate semantics
+- export/import or durable daemon-store strategy
+- richer detached-node behavior beyond the current first-pass contract
+- backend-independent persistence beyond the current `node.freeze` seam
 
-## Per-slice verification
+If any of that becomes active later, write a new narrower follow-on doc instead
+of reopening phase 6.
 
-- Slice 1:
-  design doc / roadmap contract only
-- Slice 2:
-  concrete example cases that demonstrate why the distinction matters
-- Slice 3:
-  docs/tests that show the chosen TOM/muxml representation
-- Slice 4:
-  repo-local example or verification path for durable capture behavior
+## Current status
 
-## Exit condition
-
-This phase closes when muxly has an explicit durable terminal-artifact story
-that does not accidentally reduce to "whatever tmux scrollback happened to be."
-
-Current phase status:
-
-- Slice 1: first-pass complete
-- Slice 2: first-pass complete
-- Slice 3: first-pass complete
-- Slice 4: first-pass complete
-- Phase 6 overall: first-pass contract complete, implementation still open
-- the completed first-pass contract and initial public freeze seam are
-  summarized in
-  [phased-planning/changelog.md](/home/greg/src/muxly/phased-planning/changelog.md)
+- terminal artifact contract: archived implemented
+- `node.freeze` public seam: archived implemented
+- future persistence/rehydrate ideas: not active roadmap material here
+- Phase 6 overall: archived first-pass complete

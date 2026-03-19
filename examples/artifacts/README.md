@@ -4,7 +4,8 @@ This family holds small checked-in witness artifacts for muxly's durable
 terminal-artifact contract.
 
 These are intentionally **not** emitted by the daemon yet. They exist to keep
-Phase 6 grounded in concrete payload shapes before implementation hardens.
+the now-archived first-pass artifact contract grounded in concrete payload
+shapes rather than vague future intent.
 
 ## Current witnesses
 
@@ -28,6 +29,9 @@ Phase 6 grounded in concrete payload shapes before implementation hardens.
 ## Intent
 
 - make the text-versus-surface distinction concrete in the repo
-- give later TOM/muxml representation work something specific to point at
+- preserve closure evidence for the archived first-pass `node.freeze` /
+  terminal-artifact work
+- give later TOM/muxml representation or persistence follow-ons something
+  specific to point at
 - avoid letting "whatever tmux scrollback happened to be" become the only
   durable example anyone has seen

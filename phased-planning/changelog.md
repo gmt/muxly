@@ -1,7 +1,8 @@
 # changelog
 
-This file summarizes completed milestones so the remaining phase files can stay
-focused on open work.
+This file summarizes completed milestones and archived first-pass completions so
+the remaining roadmap docs can stay honest about what is still active versus
+merely deferred.
 
 ## phase 1 — foundation and protocol
 
@@ -112,6 +113,20 @@ Closure evidence:
 - `zig build example-deps`
 - `python3 scripts/run_binding_examples.py`
 - `python3 tests/integration/tmux_adapter_test.py`
+
+## phase 4 slice 2 — control-mode attachment and parser isolation
+
+Completed work:
+
+- long-lived tmux control-mode attachment path
+- parser isolation for line-oriented control-mode output
+- typed command-block handling and normalized parser coverage
+- focused verification around attachment and parser behavior
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
 
 ## phase 4 slice 3 — snapshot rebuild and TOM reconciliation
 
@@ -233,12 +248,20 @@ Closure evidence:
 - `./examples/artifacts/freeze-demo/run.sh`
 - `python3 scripts/run_artifact_examples.py`
 
-## next major work
+## roadmap status after cleanup
 
-Work that is still important but **not** part of completed phase 1/2/3 work or
-completed phase-4 slice work is
-tracked in later phase files, especially:
+Active follow-on work:
 
-- phase 4 — tmux control-mode/state recovery
-- phase 5 — keybindings, menu/modeline projection, Neovim integration
-- phase 6 — terminal capture, scrollback, and durable artifacts
+- phase 4 — tmux backend credibility and recovery:
+  default-path definition, projected identity cleanup, narrow incremental event
+  application, and reconnect truthfulness
+
+Deferred backlog/reference:
+
+- phase 5 — bindings analysis, menu/modeline work, and Neovim integration stay
+  deferred and should only be reactivated as separate threads
+
+Archived implemented reference:
+
+- phase 6 — first-pass terminal artifact contract and freeze seam is archived
+  implemented material, not active roadmap work
