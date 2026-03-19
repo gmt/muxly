@@ -64,8 +64,10 @@ pub const Store = struct {
                             };
                         },
                         .notification => |notification| {
-                            if (isStateInvalidatingNotification(notification.name)) {
-                                store.invalidateTmuxProjection(.invalidated_by_notification);
+                            if (!store.tryApplyIncrementalNotification(notification)) {
+                                if (isStateInvalidatingNotification(notification.name)) {
+                                    store.invalidateTmuxProjection(.invalidated_by_notification);
+                                }
                             }
                         },
                         .exit => {
@@ -450,6 +452,60 @@ pub const Store = struct {
         if (self.tmux_projection_state == .clean) {
             self.tmux_projection_state = state;
         }
+    }
+
+    fn tryApplyIncrementalNotification(self: *Store, notification: tmux_events.Notification) bool {
+        if (std.mem.eql(u8, notification.name, "window-renamed")) {
+            return self.tryApplyWindowRenamed(notification.payload);
+        }
+        if (std.mem.eql(u8, notification.name, "window-close")) {
+            self.tryApplyWindowClose(notification.payload);
+            return false;
+        }
+        return false;
+    }
+
+    fn tryApplyWindowRenamed(self: *Store, payload: []const u8) bool {
+        const parsed = parseWindowNotificationPayload(payload) orelse return false;
+        const bid_buf: [64]u8 = undefined;
+        _ = bid_buf;
+        const bid = std.fmt.allocPrint(self.allocator, "tmux-window:{s}", .{parsed.window_id}) catch return false;
+        defer self.allocator.free(bid);
+
+        const node = self.document.findNodeByBackendId(bid) orelse return false;
+        node.setTitle(self.allocator, parsed.name) catch return false;
+        return true;
+    }
+
+    fn tryApplyWindowClose(self: *Store, payload: []const u8) void {
+        const parsed = parseWindowNotificationPayload(payload) orelse return;
+        const bid = std.fmt.allocPrint(self.allocator, "tmux-window:{s}", .{parsed.window_id}) catch return;
+        defer self.allocator.free(bid);
+
+        const node = self.document.findNodeByBackendId(bid) orelse return;
+        const node_id = node.id;
+        const child_ids = self.allocator.dupe(ids.NodeId, node.children.items) catch return;
+        defer self.allocator.free(child_ids);
+        for (child_ids) |child_id| {
+            self.document.removeNode(child_id) catch {};
+        }
+        self.document.removeNode(node_id) catch {};
+    }
+
+    const WindowNotification = struct {
+        window_id: []const u8,
+        name: []const u8,
+    };
+
+    fn parseWindowNotificationPayload(payload: []const u8) ?WindowNotification {
+        if (payload.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, payload, ' ')) |space| {
+            if (space + 1 < payload.len) {
+                return .{ .window_id = payload[0..space], .name = payload[space + 1 ..] };
+            }
+            return .{ .window_id = payload[0..space], .name = "" };
+        }
+        return .{ .window_id = payload, .name = "" };
     }
 
     fn isStateInvalidatingNotification(name: []const u8) bool {

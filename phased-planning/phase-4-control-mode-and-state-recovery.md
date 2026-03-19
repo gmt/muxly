@@ -210,4 +210,17 @@ live backend because:
 
 - earlier bring-up work is archived in `changelog.md`
 - this file tracks only the remaining active follow-on
-- Phase 4 overall: active, but much smaller than the original control-mode plan
+- Phase 4 overall: substantially complete
+
+## Completed work (this follow-on)
+
+- projected session/window identity now uses `backendId` on TOM nodes instead
+  of synthetic marker strings in renderable `content`
+- no projection or rendering code needs to hide synthetic markers
+- `window-renamed` notifications are applied incrementally when confidence is
+  high, avoiding full rebuild for title-only changes
+- `window-close` notifications trigger targeted subtree removal
+- rebuild remains the explicit correctness backstop for all other topology
+  changes and low-confidence cases
+- docs, capabilities, and backend description all describe the same
+  `hybrid-control-invalidation` cutline with incremental event support

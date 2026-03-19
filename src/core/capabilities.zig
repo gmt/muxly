@@ -21,7 +21,7 @@ pub const Capabilities = struct {
     supports_tmux_backend: bool = builtin.os.tag != .windows,
     supports_unix_socket: bool = builtin.os.tag != .windows,
     supports_named_pipes: bool = false,
-    supports_mouse: bool = false,
+    supports_mouse: bool = true,
     supports_menu_projection: bool = false,
     supports_nvim_integration: bool = false,
 

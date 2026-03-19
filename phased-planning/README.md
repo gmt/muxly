@@ -57,8 +57,9 @@ Every active phase should preserve the project-wide rules documented in
 
 - `changelog.md` records completed milestones and archived first-pass
   completions
-- `phase-4-control-mode-and-state-recovery.md` is the only active follow-on
-  phase right now
+- `phase-4-control-mode-and-state-recovery.md` is substantially complete:
+  projected identity uses `backendId`, one incremental event family is shipped,
+  and rebuild remains the correctness backstop
 - `phase-5-keybindings-menu-nvim.md` is a deferred backlog/reference document,
   not an execution target as one umbrella
 - `phase-6-terminal-capture-and-persistence.md` is archived first-pass-complete
@@ -66,12 +67,21 @@ Every active phase should preserve the project-wide rules documented in
 
 ## Current status snapshot
 
-Active work is currently concentrated in one area:
+Phase 4 work is substantially complete:
 
-- tmux backend default-path credibility
-- narrow incremental event application where confidence is high
-- explicit reconnect/drift fallback rules
-- cleanup of projected tmux identity hacks
+- projected tmux identity uses `backendId` instead of marker-content
+- `window-renamed` notifications apply incrementally when confidence is high
+- `window-close` notifications trigger targeted subtree removal
+- rebuild remains the correctness backstop for everything else
+- docs, capabilities, and backend description all agree
+
+Interactive viewer work has landed:
+
+- `muxview` now provides keyboard-driven hierarchy traversal
+- region selection, drill-in/back-out, elide/expand, follow-tail toggling
+- focused tty interaction mode that forwards input to the selected pane
+- mouse-driven region targeting via SGR mouse protocol
+- viewer-owned status bar with mode, selection, and scope indicators
 
 Deferred work remains documented, but not active:
 
@@ -91,8 +101,9 @@ Archived implemented material:
 Some seams may still matter later, but they are not being promoted into new
 active phase docs in this cleanup:
 
-- deeper viewer UX
+- deeper per-viewer local view state (currently shared document state)
 - daemon discovery/autostart policy
+- cross-platform Windows transport
 
 Those can return later if they become concrete enough to deserve their own
 narrowly-scoped follow-on docs.

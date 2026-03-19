@@ -1,6 +1,7 @@
 const std = @import("std");
 const muxly = @import("muxly");
 const viewer_app = muxly.viewer_app;
+const viewer_state = @import("state.zig");
 
 const Viewport = struct {
     rows: u16 = 24,
@@ -31,10 +32,12 @@ const TerminalGuard = struct {
         }
 
         try stdout_file.writeAll("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
+        enableMouseTracking(stdout_file);
         return guard;
     }
 
     fn deinit(self: *TerminalGuard) void {
+        disableMouseTracking(self.stdout_file);
         if (self.saved_termios) |termios| {
             std.posix.tcsetattr(self.stdin_file.handle, .NOW, termios) catch {};
         }
@@ -81,10 +84,18 @@ fn handleSignal(signal: i32) callconv(.c) void {
     }
 }
 
-const InputState = enum {
-    idle,
+const InputAction = enum {
+    none,
     quit,
     closed,
+    select_next,
+    select_prev,
+    drill_in,
+    back_out,
+    toggle_elide,
+    toggle_follow_tail,
+    reset_view,
+    pane_input,
 };
 
 pub fn main() !void {
@@ -140,6 +151,9 @@ fn runLiveViewer(
     var terminal_guard = try TerminalGuard.init(stdin_file, stdout_file);
     defer terminal_guard.deinit();
 
+    var session = viewer_state.ViewerSession.init(allocator, socket_path);
+    defer session.deinit();
+
     var viewport = readViewport(stdout_file);
     var force_redraw = true;
     var previous_frame: ?[]u8 = null;
@@ -154,7 +168,39 @@ fn runLiveViewer(
             force_redraw = true;
         }
 
-        const frame = try buildFrame(allocator, socket_path, viewport);
+        const chrome_rows: u16 = 2;
+        const content_rows = if (viewport.rows > chrome_rows) viewport.rows - chrome_rows else 1;
+
+        const selected_region = session.selectedRegion();
+        const focused_id: ?u64 = if (selected_region) |r| r.node_id else null;
+
+        const response = muxly.api.projectionGet(allocator, socket_path, .{
+            .rows = content_rows,
+            .cols = viewport.cols,
+            .local_state = .{ .focused_node_id = focused_id },
+        }) catch {
+            std.Thread.sleep(@as(u64, refresh_ms) * 1_000_000);
+            continue;
+        };
+        defer allocator.free(response);
+
+        const parsed_response = std.json.parseFromSlice(std.json.Value, allocator, response, .{
+            .allocate = .alloc_always,
+        }) catch continue;
+        defer parsed_response.deinit();
+
+        if (parsed_response.value != .object) continue;
+        const result = parsed_response.value.object.get("result") orelse continue;
+
+        session.refreshRegions(result);
+
+        var rendered = std.array_list.Managed(u8).init(allocator);
+        defer rendered.deinit();
+        muxly.viewer_render.renderProjectionValue(allocator, result, rendered.writer()) catch continue;
+
+        writeStatusBar(&rendered, &session, viewport.cols) catch {};
+
+        const frame = rendered.toOwnedSlice() catch continue;
         defer allocator.free(frame);
 
         if (force_redraw or previous_frame == null or !std.mem.eql(u8, previous_frame.?, frame)) {
@@ -162,15 +208,58 @@ fn runLiveViewer(
             try stdout_file.writeAll(frame);
 
             if (previous_frame) |previous| allocator.free(previous);
-            previous_frame = try allocator.dupe(u8, frame);
+            previous_frame = allocator.dupe(u8, frame) catch null;
             force_redraw = false;
         }
 
-        switch (try pollInput(stdin_file, @intCast(refresh_ms))) {
-            .idle => {},
+        const action = pollInput(stdin_file, &session, @intCast(refresh_ms)) catch .none;
+        switch (action) {
             .quit, .closed => break,
+            .select_next => session.selectNext(),
+            .select_prev => session.selectPrev(),
+            .drill_in => session.drillIn(),
+            .back_out => session.backOut(),
+            .toggle_elide => session.toggleElide(),
+            .toggle_follow_tail => session.toggleFollowTail(),
+            .reset_view => session.resetView(),
+            .pane_input, .none => {},
         }
     }
+}
+
+fn writeStatusBar(buffer: *std.array_list.Managed(u8), session: *const viewer_state.ViewerSession, cols: u16) !void {
+    const writer = buffer.writer();
+    const mode_label: []const u8 = switch (session.mode) {
+        .navigate => "NAV",
+        .focused_pane => "TTY",
+    };
+
+    var sel_label_buf: [128]u8 = undefined;
+    const sel_label = if (session.selectedRegion()) |region|
+        std.fmt.bufPrint(&sel_label_buf, "{s}", .{region.title}) catch "?"
+    else
+        "-";
+
+    const scope_label: []const u8 = if (session.view_root_node_id != null) "scoped" else "root";
+
+    try writer.print("\x1b[7m [{s}] {s} | {s}", .{ mode_label, sel_label, scope_label });
+
+    if (session.status_message.len > 0) {
+        try writer.print(" | {s}", .{session.status_message});
+    }
+
+    var wrote: usize = 10 + mode_label.len + sel_label.len + scope_label.len + session.status_message.len;
+    while (wrote < cols) : (wrote += 1) {
+        try writer.writeByte(' ');
+    }
+    try writer.writeAll("\x1b[0m\n");
+
+    try writer.writeAll("\x1b[7m j/k:nav Enter:drill Esc:back e:elide t:tail r:reset q:quit ");
+    wrote = 60;
+    while (wrote < cols) : (wrote += 1) {
+        try writer.writeByte(' ');
+    }
+    try writer.writeAll("\x1b[0m");
 }
 
 fn buildFrame(allocator: std.mem.Allocator, socket_path: []const u8, viewport: Viewport) ![]u8 {
@@ -214,7 +303,7 @@ fn readViewport(file: std.fs.File) Viewport {
     return .{};
 }
 
-fn pollInput(stdin_file: std.fs.File, timeout_ms: i32) !InputState {
+fn pollInput(stdin_file: std.fs.File, session: *viewer_state.ViewerSession, timeout_ms: i32) !InputAction {
     var pollfds = [_]std.posix.pollfd{
         .{
             .fd = stdin_file.handle,
@@ -224,20 +313,165 @@ fn pollInput(stdin_file: std.fs.File, timeout_ms: i32) !InputState {
     };
 
     const ready = try std.posix.poll(&pollfds, timeout_ms);
-    if (ready == 0) return .idle;
+    if (ready == 0) return .none;
 
     const revents = pollfds[0].revents;
     if ((revents & (std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL)) != 0) {
         return .closed;
     }
-    if ((revents & std.posix.POLL.IN) == 0) return .idle;
+    if ((revents & std.posix.POLL.IN) == 0) return .none;
 
     var input_buffer: [64]u8 = undefined;
     const bytes_read = try stdin_file.read(&input_buffer);
     if (bytes_read == 0) return .closed;
 
-    for (input_buffer[0..bytes_read]) |byte| {
-        if (byte == 'q' or byte == 'Q') return .quit;
+    const input = input_buffer[0..bytes_read];
+
+    if (session.mode == .focused_pane) {
+        if (bytes_read == 1 and input[0] == 0x1b) return .back_out;
+        if (bytes_read >= 3 and input[0] == 0x1b and input[1] == '[') {
+            if (bytes_read >= 4 and input[2] == '1' and input[3] == '~') return .back_out;
+        }
+        forwardInputToPane(session, input);
+        return .pane_input;
     }
-    return .idle;
+
+    if (bytes_read >= 3 and input[0] == 0x1b and input[1] == '[') {
+        if (input[2] == '<') {
+            if (parseMouseClick(input)) |click| {
+                selectRegionByPosition(session, click.x, click.y);
+                return .none;
+            }
+        }
+        return switch (input[2]) {
+            'A' => .select_prev,
+            'B' => .select_next,
+            'C' => .drill_in,
+            'D' => .back_out,
+            else => .none,
+        };
+    }
+
+    if (bytes_read == 1) {
+        return switch (input[0]) {
+            'q', 'Q' => .quit,
+            'j' => .select_next,
+            'k' => .select_prev,
+            '\r', '\n' => .drill_in,
+            0x1b => .back_out,
+            'e' => .toggle_elide,
+            't' => .toggle_follow_tail,
+            'r' => .reset_view,
+            else => .none,
+        };
+    }
+
+    return .none;
+}
+
+fn forwardInputToPane(session: *viewer_state.ViewerSession, input: []const u8) void {
+    const region = session.selectedRegion() orelse return;
+    if (!region.is_tty) return;
+
+    var escaped: [256]u8 = undefined;
+    var escaped_len: usize = 0;
+    for (input) |byte| {
+        if (byte == '"' or byte == '\\') {
+            if (escaped_len + 2 > escaped.len) break;
+            escaped[escaped_len] = '\\';
+            escaped_len += 1;
+            escaped[escaped_len] = byte;
+            escaped_len += 1;
+        } else if (byte < 0x20) {
+            if (escaped_len + 6 > escaped.len) break;
+            const hex = std.fmt.bufPrint(escaped[escaped_len..], "\\u{x:0>4}", .{byte}) catch break;
+            escaped_len += hex.len;
+        } else {
+            if (escaped_len + 1 > escaped.len) break;
+            escaped[escaped_len] = byte;
+            escaped_len += 1;
+        }
+    }
+
+    var params_buf: [512]u8 = undefined;
+    const params = std.fmt.bufPrint(&params_buf, "{{\"paneId\":\"{s}\",\"keys\":\"{s}\"}}", .{
+        findPaneIdForNode(session, region.node_id),
+        escaped[0..escaped_len],
+    }) catch return;
+
+    const response = muxly.api.request(session.allocator, session.socket_path, "pane.sendKeys", params) catch return;
+    session.allocator.free(response);
+}
+
+fn findPaneIdForNode(session: *viewer_state.ViewerSession, node_id: u64) []const u8 {
+    const response = muxly.api.nodeGet(session.allocator, session.socket_path, node_id) catch return "";
+    defer session.allocator.free(response);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, session.allocator, response, .{
+        .allocate = .alloc_always,
+    }) catch return "";
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return "";
+    const result = parsed.value.object.get("result") orelse return "";
+    if (result != .object) return "";
+    const source = result.object.get("source") orelse return "";
+    if (source != .object) return "";
+    const pane_id = source.object.get("paneId") orelse return "";
+    if (pane_id != .string) return "";
+    return pane_id.string;
+}
+
+fn enableMouseTracking(stdout_file: std.fs.File) void {
+    stdout_file.writeAll("\x1b[?1000h\x1b[?1006h") catch {};
+}
+
+fn disableMouseTracking(stdout_file: std.fs.File) void {
+    stdout_file.writeAll("\x1b[?1006l\x1b[?1000l") catch {};
+}
+
+fn parseMouseClick(input: []const u8) ?struct { x: u16, y: u16 } {
+    if (input.len < 6) return null;
+    if (input[0] != 0x1b or input[1] != '[' or input[2] != '<') return null;
+
+    var parts = std.mem.splitScalar(u8, input[3..], ';');
+    const button_str = parts.next() orelse return null;
+    const x_str = parts.next() orelse return null;
+    const rest = parts.rest();
+
+    const button = std.fmt.parseInt(u8, button_str, 10) catch return null;
+    if (button & 0x03 != 0) return null;
+
+    const x = std.fmt.parseInt(u16, x_str, 10) catch return null;
+
+    var y_end: usize = 0;
+    while (y_end < rest.len and rest[y_end] >= '0' and rest[y_end] <= '9') : (y_end += 1) {}
+    if (y_end == 0) return null;
+    const y = std.fmt.parseInt(u16, rest[0..y_end], 10) catch return null;
+
+    if (y_end < rest.len and rest[y_end] == 'M') {
+        return .{ .x = x -| 1, .y = y -| 1 };
+    }
+    return null;
+}
+
+fn selectRegionByPosition(session: *viewer_state.ViewerSession, x: u16, y: u16) void {
+    var best_index: ?usize = null;
+    var best_area: u32 = std.math.maxInt(u32);
+
+    for (session.regions.items, 0..) |region, index| {
+        if (x >= region.x and x < region.x + region.width and
+            y >= region.y and y < region.y + region.height)
+        {
+            const area: u32 = @as(u32, region.width) * @as(u32, region.height);
+            if (area < best_area) {
+                best_area = area;
+                best_index = index;
+            }
+        }
+    }
+
+    if (best_index) |index| {
+        session.selected_index = index;
+    }
 }

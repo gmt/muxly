@@ -88,6 +88,72 @@ test "tmux snapshot reconcile builds and updates one session subtree determinist
     try std.testing.expectEqualStrings("left-renamed", preserved_pane.title);
 }
 
+test "projected tmux identity uses backend_id and does not leak into content" {
+    var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const snapshots = [_]events.PaneSnapshot{
+        .{
+            .session_name = "test-session",
+            .session_id = "$5",
+            .window_id = "@10",
+            .window_name = "main",
+            .pane_id = "%20",
+            .pane_title = "shell",
+            .pane_active = true,
+        },
+    };
+
+    const session_node_id = try reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &snapshots);
+    const session_node = document.findNode(session_node_id) orelse return error.TestExpectedEqual;
+
+    try std.testing.expectEqualStrings("", session_node.content);
+    try std.testing.expect(session_node.backend_id != null);
+    try std.testing.expectEqualStrings("tmux-session:$5", session_node.backend_id.?);
+
+    const window_node_id = session_node.children.items[0];
+    const window_node = document.findNode(window_node_id) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("", window_node.content);
+    try std.testing.expect(window_node.backend_id != null);
+    try std.testing.expectEqualStrings("tmux-window:@10", window_node.backend_id.?);
+
+    var json = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer json.deinit();
+    try session_node.writeJson(json.writer());
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"backendId\":\"tmux-session:$5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"content\":\"\"") != null);
+
+    const session_node_id_again = try reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &snapshots);
+    try std.testing.expectEqual(session_node_id, session_node_id_again);
+}
+
+test "findChildByBackendId matches projected window nodes" {
+    var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const snapshots = [_]events.PaneSnapshot{
+        .{
+            .session_name = "s",
+            .session_id = "$0",
+            .window_id = "@1",
+            .window_name = "win",
+            .pane_id = "%1",
+            .pane_title = "p",
+            .pane_active = true,
+        },
+    };
+
+    const session_id = try reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &snapshots);
+    const found = document.findChildByBackendId(session_id, .subdocument, "tmux-window:@1");
+    try std.testing.expect(found != null);
+    const node = document.findNode(found.?) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("win", node.title);
+
+    try node.setTitle(std.testing.allocator, "renamed-win");
+    try std.testing.expectEqualStrings("renamed-win", node.title);
+    try std.testing.expectEqualStrings("", node.content);
+}
+
 test "tmux snapshot reconcile rejects empty snapshots" {
     var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
     defer document.deinit();

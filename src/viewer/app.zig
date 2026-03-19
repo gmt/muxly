@@ -25,6 +25,15 @@ pub const usage =
     \\  --socket      connect to an explicit muxly socket
     \\  --help        show this help text
     \\
+    \\interactive keys (live mode):
+    \\  j/k, arrows   select region
+    \\  Enter, right   drill into selected region
+    \\  Esc, left      back out / exit focused mode
+    \\  e              toggle elide on selected region
+    \\  t              toggle follow-tail on tty region
+    \\  r              reset view (clear root and elision)
+    \\  q              quit
+    \\
 ;
 
 pub fn parseArgs(default_socket_path: []const u8, args: []const []const u8) ParseError!Config {

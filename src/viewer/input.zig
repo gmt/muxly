@@ -1,4 +1,4 @@
 pub const InputMode = enum {
-    normal,
-    inspect,
+    navigate,
+    focused_pane,
 };

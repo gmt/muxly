@@ -78,8 +78,19 @@ Then, in another shell:
 ./zig-out/bin/muxguide --snapshot --step 2
 ```
 
-When launched in a terminal, `muxview` now attaches live by default. Press `q`
-to leave the attached viewer session.
+When launched in a terminal, `muxview` now attaches live by default with
+interactive navigation. Press `q` to leave the attached viewer session.
+
+### Viewer keys
+
+- `j`/`k` or up/down arrows: select region
+- `Enter` or right arrow: drill into selected region / enter focused pane mode
+- `Escape` or left arrow: back out / exit focused mode
+- `e`: toggle elide on selected region
+- `t`: toggle follow-tail on tty region
+- `r`: reset view (clear root and elision state)
+- `q`: quit
+- mouse click: select region by position
 
 ## Documentation
 
@@ -112,8 +123,10 @@ material:
 
 - `changelog.md` summarizes completed phase work plus archived first-pass
   completions
-- `phase-4-control-mode-and-state-recovery.md` is the current active follow-on
-  for the remaining tmux backend work
+- `phase-4-control-mode-and-state-recovery.md` has been substantially completed:
+  projected tmux identity uses `backendId` instead of marker content, one
+  incremental event family is shipped, and rebuild remains the correctness
+  backstop
 - `phase-5-keybindings-menu-nvim.md` is a deferred backlog/reference doc for
   bindings, menu/modeline, and Neovim ideas
 - `phase-6-terminal-capture-and-persistence.md` is archived first-pass-complete

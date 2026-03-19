@@ -252,9 +252,18 @@ Closure evidence:
 
 Active follow-on work:
 
-- phase 4 — tmux backend credibility and recovery:
-  default-path definition, projected identity cleanup, narrow incremental event
-  application, and reconnect truthfulness
+- phase 4 — tmux backend credibility and recovery: substantially complete.
+  Projected identity uses `backendId`, one incremental event family is shipped,
+  rebuild remains the correctness backstop.
+
+Interactive viewer ship slice (post-phase work):
+
+- `muxview` is now a retained interactive viewer with keyboard-driven hierarchy
+  traversal, drill-in/back-out navigation, elide/expand, follow-tail toggling,
+  focused tty interaction mode, mouse-driven region targeting, and a
+  viewer-owned status bar
+- mouse policy is viewer-owned region targeting (SGR mouse protocol)
+- capabilities report `supportsMouse: true`
 
 Deferred backlog/reference:
 
@@ -265,3 +274,48 @@ Archived implemented reference:
 
 - phase 6 — first-pass terminal artifact contract and freeze seam is archived
   implemented material, not active roadmap work
+
+## phase 4 follow-on — projected identity and incremental events
+
+Completed work:
+
+- projected session/window identity now uses `backendId` on TOM nodes instead
+  of synthetic `tmux-session:` / `tmux-window:` marker strings in renderable
+  node content
+- the `isProjectionMarker` rendering workaround has been removed from the
+  projection module
+- `window-renamed` control-mode notifications are applied incrementally into
+  the TOM when confidence is high
+- `window-close` control-mode notifications trigger targeted subtree removal
+- rebuild remains the explicit correctness backstop for all other topology
+  changes and for low-confidence cases
+- JSON and XML serialization include `backendId` when present
+- unit tests verify identity survives rebuild without marker-content leakage
+- unit tests verify `backendId` round-trips through JSON serialization
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`
+
+## interactive viewer ship slice
+
+Completed work:
+
+- `muxview` refactored from a poll-and-repaint loop into a retained
+  `ViewerSession` with selection, mode, and region tracking
+- keyboard-driven region selection (`j`/`k`, arrow keys)
+- drill-in navigation via `view.setRoot` and back-out via `view.clearRoot`
+- elide/expand toggling via `view.elide` / `view.expand`
+- follow-tail toggling for tty-backed regions
+- focused tty interaction mode that forwards keystrokes to the selected pane
+  via `pane.sendKeys`
+- mouse-driven region targeting via SGR mouse protocol
+- viewer-owned status bar showing mode, selected region, scope, and status
+- mouse policy is viewer-owned with no pointer passthrough to nested panes
+- all viewer interactions go through the public API surface
+
+Closure evidence:
+
+- `zig build`
+- `zig build test`

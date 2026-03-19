@@ -48,6 +48,7 @@ explicit, testable, and debuggable.
 - `view.elide`
 - `view.expand`
 - `view.reset`
+- `mouse.set`
 
 ### Leaf/source operations
 
@@ -105,6 +106,17 @@ explicit, testable, and debuggable.
   - `followTailSemantics: "stored-node-preference"`
   - `viewStateScope: "shared-document"`
   - `tmuxBackendMode: "hybrid-control-invalidation"`
+  - `supportsMouse: true`
+- the current `muxview` is an interactive viewer with keyboard-driven hierarchy
+  traversal, region selection, drill-in/back-out navigation, elide/expand
+  toggling, follow-tail toggling, mouse-driven region targeting, and a focused
+  tty interaction mode that forwards input to the selected pane
+- nodes carry an optional `backendId` field for non-renderable projected
+  identity; this replaces the old marker-content trick that leaked tmux
+  session/window IDs into renderable `content`
+- the tmux backend now applies incremental `window-renamed` updates directly
+  from control-mode notifications when confidence is high, falling back to
+  snapshot-backed rebuild when confidence is low
 - TTY-backed leaves serialize **derived muxml/view state**, not underlying
   process runtime state
 

@@ -53,6 +53,12 @@ That should be read as:
 - control mode is real and long-lived enough to notice drift and output
 - known tmux projections can be invalidated and rebuilt intentionally
 - some output can append live for follow-tail panes before rebuild catches up
+- `window-renamed` notifications are applied incrementally when confidence is
+  high, avoiding a full rebuild for title-only metadata changes
+- `window-close` notifications trigger targeted subtree removal before the
+  rebuild path catches up
+- rebuild remains the explicit correctness backstop for all other topology
+  changes and for cases where incremental application fails
 
 That should **not** be read as:
 
@@ -86,10 +92,9 @@ Identity should also stay explicit:
 - tmux `pane_id` is the backend identity anchor for pane projection
 - muxly node ids remain muxly-local, but reconciliation should preserve them
   when the same tmux object is still present across rebuild
-
-The current implementation still carries one temporary seam here: projected
-session/window identity is preserved with synthetic marker strings stored in
-node content. Cleaning that up is part of the active phase-4 follow-on work.
+- projected session and window identity is carried in the non-renderable
+  `backendId` field on TOM nodes, keeping backend bookkeeping out of
+  user-visible content and rendering
 
 This keeps tmux useful as a source of truth without letting tmux's internal
 layout ontology become muxly's constitution by accident.
@@ -112,8 +117,6 @@ That groundwork already exists. The remaining phase-4 work is narrower:
 
 - make the default-backend cutline explicit and consistent across docs and
   capabilities
-- remove the synthetic marker-content identity seam for projected tmux
-  containers
 - add one narrow family of incremental topology or metadata updates on top of
   the rebuild path
 - make confidence rules clearer for when to trust live events versus rebuild
@@ -121,3 +124,11 @@ That groundwork already exists. The remaining phase-4 work is narrower:
 In other words, the current work is about default-path credibility and cleaner
 identity/recovery semantics, not about pretending the daemon must immediately
 become a perfect event-by-event tmux replica.
+
+The following phase-4 items have been completed:
+
+- projected tmux identity now uses `backendId` instead of marker strings in
+  node content
+- `window-renamed` notifications are applied incrementally when possible
+- `window-close` notifications trigger targeted subtree removal
+- rebuild remains the correctness backstop for everything else

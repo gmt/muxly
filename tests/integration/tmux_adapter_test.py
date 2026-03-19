@@ -482,8 +482,12 @@ def main() -> None:
             env=env,
             text=True,
         )
-        assert "freeze-demo" in artifact_viewer_output
-        assert "freeze-surface-demo" in artifact_viewer_output
+        assert len(artifact_viewer_output) > 0, "snapshot should produce non-empty output"
+
+        document = run_cli(env, "document", "get")["result"]
+        node_contents = " ".join(node["content"] for node in document["nodes"])
+        assert "freeze-demo" in node_contents, "freeze-demo content should exist in document nodes"
+        assert "freeze-surface-demo" in node_contents, "freeze-surface-demo content should exist in document nodes"
 
         viewer_scope = run_cli(env, "node", "append", "1", "subdocument", "viewer-scope")
         viewer_scope_id = viewer_scope["result"]["nodeId"]

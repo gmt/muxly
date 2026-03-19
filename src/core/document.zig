@@ -210,6 +210,32 @@ pub const Document = struct {
         node.follow_tail = enabled;
     }
 
+    pub fn setNodeBackendId(self: *Document, node_id: ids.NodeId, backend_id: []const u8) !void {
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        try node.setBackendId(self.allocator, backend_id);
+    }
+
+    pub fn findNodeByBackendId(self: *Document, backend_id: []const u8) ?*muxml.Node {
+        for (self.nodes.items) |*node| {
+            if (node.backend_id) |bid| {
+                if (std.mem.eql(u8, bid, backend_id)) return node;
+            }
+        }
+        return null;
+    }
+
+    pub fn findChildByBackendId(self: *Document, parent_id: ids.NodeId, kind: types.NodeKind, backend_id: []const u8) ?ids.NodeId {
+        const parent = self.findNode(parent_id) orelse return null;
+        for (parent.children.items) |child_id| {
+            const child = self.findNode(child_id) orelse continue;
+            if (child.kind != kind) continue;
+            if (child.backend_id) |bid| {
+                if (std.mem.eql(u8, bid, backend_id)) return child_id;
+            }
+        }
+        return null;
+    }
+
     /// Writes the full document payload as JSON.
     pub fn writeJson(self: *const Document, writer: anytype) !void {
         try writer.writeAll("{");

@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Renderer = struct {
-    supports_mouse: bool = false,
+    supports_mouse: bool = true,
 };
 
 pub fn renderProjectionValue(

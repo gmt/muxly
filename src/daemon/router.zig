@@ -461,7 +461,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "mouse.set")) {
-        return try buildError(allocator, parsed.value.id, .unsupported, "mouse control is viewer-scaffolded but not implemented in this slice");
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true,\"policy\":\"viewer-owned-region-targeting\"}");
     }
 
     if (std.mem.eql(u8, parsed.value.method, "modeline.set") or

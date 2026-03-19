@@ -435,7 +435,7 @@ fn shouldEmitRegion(node: *const muxml.Node, elided: bool) bool {
     if (elided) return true;
     return switch (node.kind) {
         .container, .h_container, .v_container => false,
-        .subdocument => !(node.children.items.len == 1 and (node.content.len == 0 or isProjectionMarker(node.content))),
+        .subdocument => !(node.children.items.len == 1 and node.content.len == 0),
         .scroll_region => !(node.content.len == 0 and node.children.items.len == 1),
         else => true,
     };
@@ -491,9 +491,4 @@ fn isBlankLine(line: []const u8) bool {
         if (!std.ascii.isWhitespace(char)) return false;
     }
     return true;
-}
-
-fn isProjectionMarker(content: []const u8) bool {
-    return std.mem.startsWith(u8, content, "tmux-session:") or
-        std.mem.startsWith(u8, content, "tmux-window:");
 }

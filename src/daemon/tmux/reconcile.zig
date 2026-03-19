@@ -6,8 +6,8 @@ const source_mod = @import("../../core/source.zig");
 const types = @import("../../core/types.zig");
 const events = @import("events.zig");
 
-const session_marker_prefix = "tmux-session:";
-const window_marker_prefix = "tmux-window:";
+const session_backend_prefix = "tmux-session:";
+const window_backend_prefix = "tmux-window:";
 
 pub const SessionProjectionRef = struct {
     node_id: ids.NodeId,
@@ -52,8 +52,8 @@ pub fn reconcileSessionSnapshots(
         const window_node = document.findNode(window_node_id) orelse continue;
         if (!isWindowProjection(window_node)) continue;
 
-        const window_marker = markerSuffix(window_node.content, window_marker_prefix) orelse continue;
-        if (!containsString(desired_window_ids.items, window_marker)) {
+        const window_bid = backendSuffix(window_node.backend_id, window_backend_prefix) orelse continue;
+        if (!containsString(desired_window_ids.items, window_bid)) {
             try removeSubtree(document, window_node_id);
             continue;
         }
@@ -68,13 +68,14 @@ pub fn findSessionProjectionNode(
     document: *document_mod.Document,
     session_id: []const u8,
 ) ?ids.NodeId {
-    return findProjectedChild(document, document.root_node_id, .subdocument, session_marker_prefix, session_id) orelse blk: {
-        for (document.nodes.items) |node| {
-            if (node.kind != .subdocument) continue;
-            if (markerMatches(node.content, session_marker_prefix, session_id)) break :blk node.id;
-        }
-        break :blk null;
-    };
+    const bid = formatBackendId(document.allocator, session_backend_prefix, session_id) catch return null;
+    defer document.allocator.free(bid);
+    if (document.findChildByBackendId(document.root_node_id, .subdocument, bid)) |node_id| return node_id;
+    for (document.nodes.items) |node| {
+        if (node.kind != .subdocument) continue;
+        if (backendIdMatches(node.backend_id, session_backend_prefix, session_id)) return node.id;
+    }
+    return null;
 }
 
 pub fn removeSessionProjection(
@@ -98,7 +99,7 @@ pub fn listSessionProjections(
 
     for (document.nodes.items) |node| {
         if (node.kind != .subdocument) continue;
-        const session_id = markerSuffix(node.content, session_marker_prefix) orelse continue;
+        const session_id = backendSuffix(node.backend_id, session_backend_prefix) orelse continue;
         const parent_id = node.parent_id orelse continue;
         try projections.append(.{
             .node_id = node.id,
@@ -117,7 +118,7 @@ pub fn findSessionIdForPaneNode(
     var cursor = pane_node_id;
     while (true) {
         const node = document.findNode(cursor) orelse return null;
-        if (markerSuffix(node.content, session_marker_prefix)) |session_id| return session_id;
+        if (backendSuffix(node.backend_id, session_backend_prefix)) |session_id| return session_id;
         cursor = node.parent_id orelse return null;
     }
 }
@@ -127,15 +128,17 @@ fn ensureSessionNode(
     parent_id: ids.NodeId,
     snapshot: events.PaneSnapshot,
 ) !ids.NodeId {
-    if (findProjectedChild(document, parent_id, .subdocument, session_marker_prefix, snapshot.session_id)) |node_id| {
+    const bid = try formatBackendId(document.allocator, session_backend_prefix, snapshot.session_id);
+    defer document.allocator.free(bid);
+
+    if (document.findChildByBackendId(parent_id, .subdocument, bid)) |node_id| {
         const node = document.findNode(node_id) orelse return error.UnknownNode;
         try node.setTitle(document.allocator, snapshot.session_name);
-        try setMarkerContent(document, node_id, session_marker_prefix, snapshot.session_id);
         return node_id;
     }
 
     const node_id = try document.appendNode(parent_id, .subdocument, snapshot.session_name, .{ .none = {} });
-    try setMarkerContent(document, node_id, session_marker_prefix, snapshot.session_id);
+    try document.setNodeBackendId(node_id, bid);
     return node_id;
 }
 
@@ -145,15 +148,17 @@ fn ensureWindowNode(
     snapshot: events.PaneSnapshot,
 ) !ids.NodeId {
     const window_title = if (snapshot.window_name.len != 0) snapshot.window_name else snapshot.window_id;
-    if (findProjectedChild(document, session_node_id, .subdocument, window_marker_prefix, snapshot.window_id)) |node_id| {
+    const bid = try formatBackendId(document.allocator, window_backend_prefix, snapshot.window_id);
+    defer document.allocator.free(bid);
+
+    if (document.findChildByBackendId(session_node_id, .subdocument, bid)) |node_id| {
         const node = document.findNode(node_id) orelse return error.UnknownNode;
         try node.setTitle(document.allocator, window_title);
-        try setMarkerContent(document, node_id, window_marker_prefix, snapshot.window_id);
         return node_id;
     }
 
     const node_id = try document.appendNode(session_node_id, .subdocument, window_title, .{ .none = {} });
-    try setMarkerContent(document, node_id, window_marker_prefix, snapshot.window_id);
+    try document.setNodeBackendId(node_id, bid);
     return node_id;
 }
 
@@ -216,22 +221,6 @@ fn setPaneSource(
     } };
 }
 
-fn findProjectedChild(
-    document: *document_mod.Document,
-    parent_id: ids.NodeId,
-    kind: types.NodeKind,
-    marker_prefix: []const u8,
-    marker_value: []const u8,
-) ?ids.NodeId {
-    const parent = document.findNode(parent_id) orelse return null;
-    for (parent.children.items) |child_id| {
-        const child = document.findNode(child_id) orelse continue;
-        if (child.kind != kind) continue;
-        if (markerMatches(child.content, marker_prefix, marker_value)) return child_id;
-    }
-    return null;
-}
-
 fn findPaneChild(
     document: *document_mod.Document,
     parent_id: ids.NodeId,
@@ -254,7 +243,8 @@ fn findPaneChild(
 }
 
 fn isWindowProjection(node: *const muxml.Node) bool {
-    return node.kind == .subdocument and std.mem.startsWith(u8, node.content, window_marker_prefix);
+    if (node.kind != .subdocument) return false;
+    return backendSuffix(node.backend_id, window_backend_prefix) != null;
 }
 
 fn removeSubtree(document: *document_mod.Document, node_id: ids.NodeId) !void {
@@ -266,26 +256,21 @@ fn removeSubtree(document: *document_mod.Document, node_id: ids.NodeId) !void {
     try document.removeNode(node_id);
 }
 
-fn setMarkerContent(
-    document: *document_mod.Document,
-    node_id: ids.NodeId,
-    marker_prefix: []const u8,
-    marker_value: []const u8,
-) !void {
-    const marker = try std.fmt.allocPrint(document.allocator, "{s}{s}", .{ marker_prefix, marker_value });
-    defer document.allocator.free(marker);
-    try document.setNodeContent(node_id, marker);
+fn formatBackendId(allocator: std.mem.Allocator, prefix: []const u8, value: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ prefix, value });
 }
 
-fn markerMatches(content: []const u8, marker_prefix: []const u8, marker_value: []const u8) bool {
-    return content.len == marker_prefix.len + marker_value.len and
-        std.mem.startsWith(u8, content, marker_prefix) and
-        std.mem.eql(u8, content[marker_prefix.len..], marker_value);
+fn backendIdMatches(backend_id: ?[]const u8, prefix: []const u8, value: []const u8) bool {
+    const bid = backend_id orelse return false;
+    return bid.len == prefix.len + value.len and
+        std.mem.startsWith(u8, bid, prefix) and
+        std.mem.eql(u8, bid[prefix.len..], value);
 }
 
-fn markerSuffix(content: []const u8, marker_prefix: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, content, marker_prefix)) return null;
-    return content[marker_prefix.len..];
+fn backendSuffix(backend_id: ?[]const u8, prefix: []const u8) ?[]const u8 {
+    const bid = backend_id orelse return null;
+    if (!std.mem.startsWith(u8, bid, prefix)) return null;
+    return bid[prefix.len..];
 }
 
 fn containsString(items: []const []const u8, target: []const u8) bool {

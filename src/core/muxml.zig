@@ -22,6 +22,7 @@ pub const Node = struct {
     source: source_mod.Source = .{ .none = {} },
     lifecycle: types.LifecycleState = .live,
     follow_tail: bool = true,
+    backend_id: ?[]u8 = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -46,6 +47,12 @@ pub const Node = struct {
         allocator.free(self.content);
         self.children.deinit(allocator);
         self.source.deinit(allocator);
+        if (self.backend_id) |bid| allocator.free(bid);
+    }
+
+    pub fn setBackendId(self: *Node, allocator: std.mem.Allocator, value: []const u8) !void {
+        if (self.backend_id) |bid| allocator.free(bid);
+        self.backend_id = try allocator.dupe(u8, value);
     }
 
     pub fn setContent(self: *Node, allocator: std.mem.Allocator, content: []const u8) !void {
@@ -88,16 +95,26 @@ pub const Node = struct {
         if (self.parent_id) |parent_id| {
             try writer.print(",\"parentId\":{d}", .{parent_id});
         }
+        if (self.backend_id) |bid| {
+            try writer.writeAll(",\"backendId\":");
+            try writeJsonString(writer, bid);
+        }
         try writer.writeAll("}");
     }
 
     pub fn writeXml(self: Node, writer: anytype) !void {
-        try writer.print("<node id=\"{d}\" kind=\"{s}\" lifecycle=\"{s}\" followTail=\"{s}\">", .{
+        try writer.print("<node id=\"{d}\" kind=\"{s}\" lifecycle=\"{s}\" followTail=\"{s}\"", .{
             self.id,
             @tagName(self.kind),
             @tagName(self.lifecycle),
             if (self.follow_tail) "true" else "false",
         });
+        if (self.backend_id) |bid| {
+            try writer.writeAll(" backendId=\"");
+            try escapeXml(bid, writer);
+            try writer.writeAll("\"");
+        }
+        try writer.writeAll(">");
         try writer.writeAll("<title>");
         try escapeXml(self.title, writer);
         try writer.writeAll("</title>");

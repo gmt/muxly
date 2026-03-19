@@ -83,22 +83,23 @@ The current cutline already supports that model in a first-pass way:
 
 ## Current cutline
 
-The current viewer is intentionally modest in interaction depth, but it should
-still make the public state model legible:
+The current viewer has moved beyond the initial passive display. It provides an
+interactive terminal session with:
 
-- it consumes the public `projection.get` surface for boxed frames while
-  leaving shared root/elision state on `view.*`
-- the first attached-viewer loop is still a text/ANSI boxed presentation of
-  that public projection rather than a richer tiled compositor
-- root/elision state is currently **shared document state**, not viewer-local
-  state
-- follow-tail is currently a **stored node preference**, not a private capture
-  cursor inside `muxview`
-- tmux interaction currently rides on the hybrid backend cutline:
-  command-backed mutation/capture plus control-mode invalidation/rebuild and
-  best-effort live append
-- the active phase-4 follow-on is backend credibility and recovery cleanup, not
-  a claim that the viewer already has rich in-place navigation
+- keyboard-driven region selection (`j`/`k`, arrow keys)
+- drill-in/back-out navigation (`Enter`/`Escape`, arrow right/left)
+- `view.setRoot`, `view.clearRoot`, `view.reset` through the public API
+- elide/expand toggling for per-region shared view state
+- follow-tail toggling for tty-backed regions
+- focused pane interaction mode that forwards input to the underlying tmux pane
+- mouse-driven region targeting via SGR mouse protocol
+- a viewer-owned status bar showing mode, selected region, and scope
+- the viewer still consumes only public surfaces: `projection.get` for boxed
+  rendering and `view.*`/`pane.*` for mutations
+
+Root/elision state is currently **shared document state**, not viewer-local
+state. Mouse policy is **viewer-owned region targeting** with no pointer
+passthrough to nested panes in this slice.
 
 ## Presentation substrate direction
 
@@ -143,16 +144,16 @@ depthwise traversal state concrete, public, and testable.
 It should be read as precursor architecture rather than as evidence that a
 fully interactive depthwise viewer UX is already a current execution phase.
 
-## Mouse policy direction
+## Mouse policy
 
-Mouse behavior in a recursive terminal framework is a deliberately open design
-problem. The current direction is:
+The current mouse policy is **viewer-owned region targeting**:
 
-- favor intuitive region targeting over purity of embedding boundaries
-- keep behavior predictable even when mouse-supporting and non-mouse-supporting
-  layers are nested
-- accept flattening or adapter logic if needed to make visible regions behave
-  the way users expect
+- mouse clicks select the smallest enclosing region at the click position
+- selection drives the status bar, keyboard actions, and focused-pane entry
+- no pointer events are passed through to nested tmux panes in this slice
+- the policy is intentionally narrow; per-container pointer passthrough may
+  come later when the contract is explicit enough to document and test
 
-The exact policy may evolve, but the project should behave according to an
-explicit declared policy rather than ad hoc accidents.
+`capabilities.get` reports `supportsMouse: true`. The daemon accepts
+`mouse.set` and reports the current policy, but the actual mouse protocol
+handling lives in the viewer, not the daemon.
