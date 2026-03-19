@@ -54,6 +54,7 @@ This repository has a working implementation centered on:
 ```sh
 zig build
 zig build test
+zig build docs
 zig build muxlyd
 zig build muxly
 zig build muxview
@@ -90,6 +91,14 @@ to leave the attached viewer session.
 - `docs/keybinding-model.md`
 - `docs/neovim-integration.md`
 - `docs/demos.md`
+
+Generated Zig API docs can be built with:
+
+```sh
+zig build docs
+```
+
+They are installed under `zig-out/docs/api/`.
 
 ## Roadmap
 

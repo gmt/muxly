@@ -1,3 +1,5 @@
+//! Shared JSON-RPC error code vocabulary.
+
 pub const RpcErrorCode = enum(i32) {
     parse_error = -32700,
     invalid_request = -32600,

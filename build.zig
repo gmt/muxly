@@ -71,6 +71,20 @@ pub fn build(b: *std.Build) void {
     const install_header = b.addInstallHeaderFile(b.path("include/muxly.h"), "muxly.h");
     b.getInstallStep().dependOn(&install_header.step);
 
+    const api_docs = b.addObject(.{
+        .name = "muxly-docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/muxly.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_api_docs = b.addInstallDirectory(.{
+        .source_dir = api_docs.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/api",
+    });
+
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/unit/all_tests.zig"),
@@ -103,4 +117,7 @@ pub fn build(b: *std.Build) void {
 
     const viewer_step = b.step("muxview", "Build muxview viewer");
     viewer_step.dependOn(&viewer.step);
+
+    const docs_step = b.step("docs", "Build generated Zig API documentation");
+    docs_step.dependOn(&install_api_docs.step);
 }

@@ -1,10 +1,20 @@
+//! Source metadata for TOM leaf content.
+//!
+//! Structure and source remain separate axes in muxly. A node kind describes
+//! where a region sits in the TOM; a source describes where a leaf's content
+//! comes from or what durable artifact it has become.
+
 const std = @import("std");
 
+/// File-backed leaf behavior.
 pub const FileMode = enum {
+    /// The daemon should monitor the file and refresh derived content over time.
     monitored,
+    /// The file is treated as static input.
     static,
 };
 
+/// Provenance for a live tty-backed leaf.
 pub const TtySource = struct {
     session_name: []u8,
     window_id: ?[]u8 = null,
@@ -25,16 +35,23 @@ pub const TtySource = struct {
     }
 };
 
+/// Durable terminal artifact family.
 pub const TerminalArtifactKind = enum {
+    /// Append/history-oriented transcript capture.
     text,
+    /// Visible surface-oriented capture for fullscreen/raw/alternate-screen cases.
     surface,
 };
 
+/// Payload shape used by a terminal artifact.
 pub const TerminalArtifactContentFormat = enum {
+    /// Plain text payload.
     plain_text,
+    /// Sectioned text payload with named regions such as `surface`.
     sectioned_text,
 };
 
+/// First-pass section flags carried by sectioned terminal-artifact payloads.
 pub const TerminalArtifactSections = struct {
     surface: bool = false,
     alternate: bool = false,
@@ -44,10 +61,12 @@ pub const TerminalArtifactSections = struct {
     }
 };
 
+/// Original source family from which a terminal artifact was captured.
 pub const TerminalArtifactOriginKind = enum {
     tty,
 };
 
+/// Durable metadata for a frozen terminal artifact.
 pub const TerminalArtifactSource = struct {
     artifact_kind: TerminalArtifactKind,
     content_format: TerminalArtifactContentFormat,
@@ -96,6 +115,7 @@ pub const TerminalArtifactSource = struct {
     }
 };
 
+/// File provenance for file-backed leaves.
 pub const FileSource = struct {
     path: []u8,
     mode: FileMode,
@@ -112,6 +132,7 @@ pub const FileSource = struct {
     }
 };
 
+/// Discriminator for leaf source metadata.
 pub const SourceKind = enum {
     none,
     tty,
@@ -119,6 +140,7 @@ pub const SourceKind = enum {
     file,
 };
 
+/// Leaf source metadata attached to TOM nodes.
 pub const Source = union(SourceKind) {
     none: void,
     tty: TtySource,

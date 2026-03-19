@@ -1,3 +1,5 @@
+//! Identifier helpers for documents and nodes.
+
 const std = @import("std");
 
 pub const DocumentId = u64;

@@ -1,3 +1,8 @@
+//! Serialization helpers for muxml, the durable representation of TOM state.
+//!
+//! This module defines how nodes and sources are written into JSON and XML
+//! forms. It does not own the live graph; `document.zig` does.
+
 const std = @import("std");
 const ids = @import("ids.zig");
 const source_mod = @import("source.zig");

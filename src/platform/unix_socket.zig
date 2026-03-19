@@ -1,9 +1,15 @@
+//! Unix-domain socket transport helpers used by the current daemon/client
+//! surface.
+
 const std = @import("std");
 
+/// Listener for the daemon's Unix-domain socket transport.
 pub const Listener = struct {
     socket_path: []const u8,
     server: std.net.Server,
 
+    /// Creates a listening Unix-domain socket, removing any stale socket file
+    /// first.
     pub fn init(socket_path: []const u8) !Listener {
         std.fs.deleteFileAbsolute(socket_path) catch |err| switch (err) {
             error.FileNotFound => {},
@@ -15,16 +21,19 @@ pub const Listener = struct {
         };
     }
 
+    /// Shuts down the listener and removes the socket file best-effort.
     pub fn deinit(self: *Listener) void {
         self.server.deinit();
         std.fs.deleteFileAbsolute(self.socket_path) catch {};
     }
 
+    /// Accepts one incoming client connection.
     pub fn accept(self: *Listener) !std.net.Server.Connection {
         return try self.server.accept();
     }
 };
 
+/// Connects to a daemon listening on a Unix-domain socket path.
 pub fn connect(socket_path: []const u8) !std.net.Stream {
     return std.net.connectUnixSocket(socket_path);
 }

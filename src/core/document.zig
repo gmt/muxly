@@ -1,9 +1,16 @@
+//! Live TOM document ownership and mutation helpers.
+//!
+//! A `Document` is the daemon-owned root of one live Terminal Object Model. It
+//! owns node identity, parent/child linkage, lifecycle, and the current
+//! document-scoped view state such as shared root and elision.
+
 const std = @import("std");
 const ids = @import("ids.zig");
 const muxml = @import("muxml.zig");
 const source_mod = @import("source.zig");
 const types = @import("types.zig");
 
+/// Daemon-owned live TOM document.
 pub const Document = struct {
     allocator: std.mem.Allocator,
     id: ids.DocumentId,
@@ -15,6 +22,7 @@ pub const Document = struct {
     elided_node_ids: std.ArrayListUnmanaged(ids.NodeId) = .{},
     next_node_id: ids.NodeId,
 
+    /// Initializes a new live document with a root `document` node.
     pub fn init(allocator: std.mem.Allocator, id: ids.DocumentId, title: []const u8) !Document {
         var document = Document{
             .allocator = allocator,
@@ -36,6 +44,7 @@ pub const Document = struct {
         return document;
     }
 
+    /// Releases all document-owned nodes and shared view state.
     pub fn deinit(self: *Document) void {
         for (self.nodes.items) |*node| node.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
@@ -43,6 +52,7 @@ pub const Document = struct {
         self.allocator.free(self.title);
     }
 
+    /// Appends a child node beneath `parent_id`.
     pub fn appendNode(
         self: *Document,
         parent_id: ids.NodeId,
@@ -59,26 +69,33 @@ pub const Document = struct {
         return node_id;
     }
 
+    /// Appends text to an existing node content buffer.
     pub fn appendTextToNode(self: *Document, node_id: ids.NodeId, chunk: []const u8) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         try self.nodes.items[index].appendContent(self.allocator, chunk);
     }
 
+    /// Replaces a node's content.
     pub fn setNodeContent(self: *Document, node_id: ids.NodeId, content: []const u8) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         try self.nodes.items[index].setContent(self.allocator, content);
     }
 
+    /// Replaces a node's title.
     pub fn setNodeTitle(self: *Document, node_id: ids.NodeId, title: []const u8) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         try self.nodes.items[index].setTitle(self.allocator, title);
     }
 
+    /// Finds a mutable node pointer by id.
     pub fn findNode(self: *Document, node_id: ids.NodeId) ?*muxml.Node {
         const index = self.findNodeIndex(node_id) orelse return null;
         return &self.nodes.items[index];
     }
 
+    /// Removes a leaf node from the document.
+    ///
+    /// Callers must remove descendants before removing a parent node.
     pub fn removeNode(self: *Document, node_id: ids.NodeId) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         if (self.nodes.items[index].children.items.len != 0) return error.NodeHasChildren;
@@ -112,10 +129,13 @@ pub const Document = struct {
         }
     }
 
+    /// Marks the entire document as frozen.
     pub fn freeze(self: *Document) void {
         self.lifecycle = .frozen;
     }
 
+    /// Converts a live tty-backed node into a terminal artifact while
+    /// preserving logical node identity and position in the tree.
     pub fn freezeTtyNodeAsArtifact(
         self: *Document,
         node_id: ids.NodeId,
@@ -132,24 +152,29 @@ pub const Document = struct {
         node.lifecycle = .frozen;
     }
 
+    /// Marks the document as detached from its live backend pump.
     pub fn thawDetached(self: *Document) void {
         self.lifecycle = .detached;
     }
 
+    /// Sets the shared document-scoped view root.
     pub fn setViewRoot(self: *Document, node_id: ids.NodeId) !void {
         _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         self.view_root_node_id = node_id;
     }
 
+    /// Clears the shared document-scoped view root.
     pub fn clearViewRoot(self: *Document) void {
         self.view_root_node_id = null;
     }
 
+    /// Clears the shared document-scoped root and elision state.
     pub fn resetView(self: *Document) void {
         self.view_root_node_id = null;
         self.elided_node_ids.clearRetainingCapacity();
     }
 
+    /// Toggles whether a node is hidden by shared document elision state.
     pub fn toggleElided(self: *Document, node_id: ids.NodeId) !void {
         _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         for (self.elided_node_ids.items, 0..) |existing, index| {
@@ -161,6 +186,7 @@ pub const Document = struct {
         try self.elided_node_ids.append(self.allocator, node_id);
     }
 
+    /// Sets whether a node is hidden by shared document elision state.
     pub fn setElided(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
         _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         for (self.elided_node_ids.items, 0..) |existing, index| {
@@ -172,11 +198,13 @@ pub const Document = struct {
         if (enabled) try self.elided_node_ids.append(self.allocator, node_id);
     }
 
+    /// Stores the follow-tail preference on one node.
     pub fn setFollowTail(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
         const node = self.findNode(node_id) orelse return error.UnknownNode;
         node.follow_tail = enabled;
     }
 
+    /// Writes the full document payload as JSON.
     pub fn writeJson(self: *const Document, writer: anytype) !void {
         try writer.writeAll("{");
         try writer.print("\"id\":{d},", .{self.id});
@@ -202,6 +230,7 @@ pub const Document = struct {
         try writer.writeAll("]}");
     }
 
+    /// Writes a smaller lifecycle/count-oriented status payload as JSON.
     pub fn writeStatusJson(self: *const Document, writer: anytype) !void {
         try writer.writeAll("{");
         try writer.print("\"id\":{d},", .{self.id});
@@ -217,6 +246,7 @@ pub const Document = struct {
         try writer.writeAll("}");
     }
 
+    /// Serializes the document as muxml/XML.
     pub fn writeXml(self: *const Document, writer: anytype) !void {
         try writer.print("<muxml id=\"{d}\" lifecycle=\"{s}\">", .{
             self.id,

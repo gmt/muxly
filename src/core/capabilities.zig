@@ -1,6 +1,10 @@
+//! Capability reporting for clients that need to adapt to platform and phase
+//! support.
+
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Public capability snapshot returned by `capabilities.get`.
 pub const Capabilities = struct {
     protocol_version: []const u8 = "muxly/0.1",
     append_mode_default: bool = true,
@@ -21,6 +25,7 @@ pub const Capabilities = struct {
     supports_menu_projection: bool = false,
     supports_nvim_integration: bool = false,
 
+    /// Writes the capability snapshot as JSON.
     pub fn writeJson(self: Capabilities, writer: anytype) !void {
         try writer.writeAll("{");
         try writer.print("\"protocolVersion\":\"{s}\",", .{self.protocol_version});
