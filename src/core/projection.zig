@@ -19,6 +19,8 @@ pub const ScrollOffset = struct {
 
 pub const LocalState = struct {
     focused_node_id: ?ids.NodeId = null,
+    /// Borrowed from the caller; keep this slice alive for any projection or
+    /// request write that uses the enclosing `LocalState`.
     scroll_offsets: []const ScrollOffset = &.{},
 
     pub fn scrollTop(self: LocalState, node_id: ids.NodeId) ?usize {

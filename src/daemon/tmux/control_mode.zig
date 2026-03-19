@@ -108,6 +108,8 @@ pub const ControlConnection = struct {
         }
     }
 
+    // Event slice fields borrow from the current control-mode line and are only
+    // valid for the duration of the handler call unless the handler copies them.
     pub fn drainEvents(self: *ControlConnection, initial_timeout_ms: i32, context: anytype, handler: anytype) !void {
         var timeout_ms = initial_timeout_ms;
         while (try stdoutReadable(self.stdout_file, timeout_ms)) {

@@ -163,6 +163,8 @@ pub fn closePane(allocator: std.mem.Allocator, pane_id: []const u8) !void {
     defer freeRunResult(allocator, result);
 }
 
+/// Returns owned pane snapshots. Callers must deinit each snapshot and then
+/// free the outer slice with the same allocator.
 pub fn listPaneSnapshots(allocator: std.mem.Allocator) ![]tmux_events.PaneSnapshot {
     const result = run(allocator, &.{ "tmux", "list-panes", "-a", "-F", tmux_commands.pane_snapshot_format }) catch |err| switch (err) {
         error.TmuxCommandFailed, error.FileNotFound => return try allocator.alloc(tmux_events.PaneSnapshot, 0),

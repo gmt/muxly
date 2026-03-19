@@ -48,6 +48,8 @@ pub fn writeError(
     try writer.writeAll("}}");
 }
 
+/// Returns a string borrowed from `params` and therefore from the owning parsed
+/// JSON tree; callers must not keep it past that parsed value's lifetime.
 pub fn getString(params: ?std.json.Value, field_name: []const u8) ?[]const u8 {
     const value = params orelse return null;
     if (value != .object) return null;

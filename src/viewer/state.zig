@@ -4,8 +4,8 @@ const input_mod = @import("input.zig");
 
 pub const RegionInfo = struct {
     node_id: u64,
-    kind: []const u8,
-    title: []const u8,
+    kind: []u8,
+    title: []u8,
     x: u16,
     y: u16,
     width: u16,
@@ -17,11 +17,16 @@ pub const RegionInfo = struct {
     scrollable: bool,
     scroll_top: usize,
     scroll_max: usize,
+
+    pub fn deinit(self: *RegionInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.kind);
+        allocator.free(self.title);
+    }
 };
 
 pub const ViewerSession = struct {
     allocator: std.mem.Allocator,
-    socket_path: []const u8,
+    socket_path: []u8,
     mode: input_mod.InputMode = .navigate,
     selected_index: usize = 0,
     regions: std.ArrayListUnmanaged(RegionInfo) = .{},
@@ -29,16 +34,17 @@ pub const ViewerSession = struct {
     status_message: []const u8 = "",
     status_owned: ?[]u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) ViewerSession {
+    pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) !ViewerSession {
         return .{
             .allocator = allocator,
-            .socket_path = socket_path,
+            .socket_path = try allocator.dupe(u8, socket_path),
         };
     }
 
     pub fn deinit(self: *ViewerSession) void {
         self.clearRegions();
         if (self.status_owned) |owned| self.allocator.free(owned);
+        self.allocator.free(self.socket_path);
     }
 
     pub fn refreshRegions(self: *ViewerSession, projection_value: std.json.Value) void {
@@ -59,8 +65,11 @@ pub const ViewerSession = struct {
 
         for (regions.array.items) |region| {
             if (region != .object) continue;
-            const info = parseRegionInfo(region) orelse continue;
-            self.regions.append(self.allocator, info) catch continue;
+            var info = parseRegionInfo(self.allocator, region) orelse continue;
+            self.regions.append(self.allocator, info) catch {
+                info.deinit(self.allocator);
+                continue;
+            };
         }
 
         if (self.selected_index >= self.regions.items.len and self.regions.items.len > 0) {
@@ -68,9 +77,11 @@ pub const ViewerSession = struct {
         }
     }
 
-    pub fn selectedRegion(self: *const ViewerSession) ?RegionInfo {
+    /// The returned pointer is borrowed from `self.regions` and is invalidated
+    /// by the next region refresh or any other mutation of that list.
+    pub fn selectedRegion(self: *const ViewerSession) ?*const RegionInfo {
         if (self.selected_index >= self.regions.items.len) return null;
-        return self.regions.items[self.selected_index];
+        return &self.regions.items[self.selected_index];
     }
 
     pub fn selectNext(self: *ViewerSession) void {
@@ -128,10 +139,12 @@ pub const ViewerSession = struct {
     pub fn toggleFollowTail(self: *ViewerSession) void {
         const region = self.selectedRegion() orelse return;
         if (!region.is_tty) return;
+        const pane_id = self.findPaneIdForNode(region.node_id) orelse return;
+        defer self.allocator.free(pane_id);
         const params = std.fmt.allocPrint(
             self.allocator,
-            "{{\"paneId\":\"{d}\",\"enabled\":{s}}}",
-            .{ region.node_id, if (region.follow_tail) "false" else "true" },
+            "{{\"paneId\":\"{s}\",\"enabled\":{s}}}",
+            .{ pane_id, if (region.follow_tail) "false" else "true" },
         ) catch return;
         defer self.allocator.free(params);
         self.callDaemon("pane.followTail", params);
@@ -141,6 +154,27 @@ pub const ViewerSession = struct {
         self.callDaemon("view.reset", "{}");
         self.selected_index = 0;
         self.setStatus("view reset");
+    }
+
+    /// Returns an owned pane id for `node_id`; the caller must free it with
+    /// this session's allocator.
+    pub fn findPaneIdForNode(self: *ViewerSession, node_id: u64) ?[]u8 {
+        const response = muxly.api.nodeGet(self.allocator, self.socket_path, node_id) catch return null;
+        defer self.allocator.free(response);
+
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{
+            .allocate = .alloc_always,
+        }) catch return null;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return null;
+        const result = parsed.value.object.get("result") orelse return null;
+        if (result != .object) return null;
+        const source = result.object.get("source") orelse return null;
+        if (source != .object) return null;
+        const pane_id = source.object.get("paneId") orelse return null;
+        if (pane_id != .string) return null;
+        return self.allocator.dupe(u8, pane_id.string) catch null;
     }
 
     fn callDaemon(self: *ViewerSession, method: []const u8, params: []const u8) void {
@@ -155,11 +189,12 @@ pub const ViewerSession = struct {
     }
 
     fn clearRegions(self: *ViewerSession) void {
+        for (self.regions.items) |*region| region.deinit(self.allocator);
         self.regions.deinit(self.allocator);
         self.regions = .{};
     }
 
-    fn parseRegionInfo(region: std.json.Value) ?RegionInfo {
+    fn parseRegionInfo(allocator: std.mem.Allocator, region: std.json.Value) ?RegionInfo {
         const node_id_val = region.object.get("nodeId") orelse return null;
         if (node_id_val != .integer) return null;
         const kind_val = region.object.get("kind") orelse return null;
@@ -167,20 +202,26 @@ pub const ViewerSession = struct {
         const title_val = region.object.get("title") orelse return null;
         if (title_val != .string) return null;
 
+        const kind = allocator.dupe(u8, kind_val.string) catch return null;
+        const title = allocator.dupe(u8, title_val.string) catch {
+            allocator.free(kind);
+            return null;
+        };
+
         return .{
             .node_id = @intCast(node_id_val.integer),
-            .kind = kind_val.string,
-            .title = title_val.string,
+            .kind = kind,
+            .title = title,
             .x = getU16(region, "x"),
             .y = getU16(region, "y"),
             .width = getU16(region, "width"),
             .height = getU16(region, "height"),
             .has_children = kind_val.string.len > 0 and
                 (std.mem.eql(u8, kind_val.string, "document") or
-                std.mem.eql(u8, kind_val.string, "subdocument") or
-                std.mem.eql(u8, kind_val.string, "container") or
-                std.mem.eql(u8, kind_val.string, "h_container") or
-                std.mem.eql(u8, kind_val.string, "v_container")),
+                    std.mem.eql(u8, kind_val.string, "subdocument") or
+                    std.mem.eql(u8, kind_val.string, "container") or
+                    std.mem.eql(u8, kind_val.string, "h_container") or
+                    std.mem.eql(u8, kind_val.string, "v_container")),
             .is_tty = std.mem.eql(u8, kind_val.string, "tty_leaf"),
             .elided = getBool(region, "elided"),
             .follow_tail = getBool(region, "followTail"),

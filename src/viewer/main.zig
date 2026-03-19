@@ -151,7 +151,7 @@ fn runLiveViewer(
     var terminal_guard = try TerminalGuard.init(stdin_file, stdout_file);
     defer terminal_guard.deinit();
 
-    var session = viewer_state.ViewerSession.init(allocator, socket_path);
+    var session = try viewer_state.ViewerSession.init(allocator, socket_path);
     defer session.deinit();
 
     var viewport = readViewport(stdout_file);
@@ -174,7 +174,7 @@ fn runLiveViewer(
         const selected_region = session.selectedRegion();
         const focused_id: ?u64 = if (selected_region) |r| r.node_id else null;
 
-        const response = muxly.api.projectionGet(allocator, socket_path, .{
+        const response = muxly.api.projectionGet(allocator, session.socket_path, .{
             .rows = content_rows,
             .cols = viewport.cols,
             .local_state = .{ .focused_node_id = focused_id },
@@ -393,33 +393,17 @@ fn forwardInputToPane(session: *viewer_state.ViewerSession, input: []const u8) v
         }
     }
 
+    const pane_id = session.findPaneIdForNode(region.node_id) orelse return;
+    defer session.allocator.free(pane_id);
+
     var params_buf: [512]u8 = undefined;
     const params = std.fmt.bufPrint(&params_buf, "{{\"paneId\":\"{s}\",\"keys\":\"{s}\"}}", .{
-        findPaneIdForNode(session, region.node_id),
+        pane_id,
         escaped[0..escaped_len],
     }) catch return;
 
     const response = muxly.api.request(session.allocator, session.socket_path, "pane.sendKeys", params) catch return;
     session.allocator.free(response);
-}
-
-fn findPaneIdForNode(session: *viewer_state.ViewerSession, node_id: u64) []const u8 {
-    const response = muxly.api.nodeGet(session.allocator, session.socket_path, node_id) catch return "";
-    defer session.allocator.free(response);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, session.allocator, response, .{
-        .allocate = .alloc_always,
-    }) catch return "";
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return "";
-    const result = parsed.value.object.get("result") orelse return "";
-    if (result != .object) return "";
-    const source = result.object.get("source") orelse return "";
-    if (source != .object) return "";
-    const pane_id = source.object.get("paneId") orelse return "";
-    if (pane_id != .string) return "";
-    return pane_id.string;
 }
 
 fn enableMouseTracking(stdout_file: std.fs.File) void {
@@ -440,7 +424,9 @@ fn parseMouseClick(input: []const u8) ?struct { x: u16, y: u16 } {
     const rest = parts.rest();
 
     const button = std.fmt.parseInt(u8, button_str, 10) catch return null;
-    if (button & 0x03 != 0) return null;
+    if ((button & 0x40) != 0 or (button & 0x20) != 0) return null;
+    const base_button = button & 0x03;
+    if (base_button > 2) return null;
 
     const x = std.fmt.parseInt(u16, x_str, 10) catch return null;
 
@@ -460,8 +446,15 @@ fn selectRegionByPosition(session: *viewer_state.ViewerSession, x: u16, y: u16) 
     var best_area: u32 = std.math.maxInt(u32);
 
     for (session.regions.items, 0..) |region, index| {
-        if (x >= region.x and x < region.x + region.width and
-            y >= region.y and y < region.y + region.height)
+        const x_u32: u32 = x;
+        const y_u32: u32 = y;
+        const region_left: u32 = region.x;
+        const region_top: u32 = region.y;
+        const region_right = region_left + region.width;
+        const region_bottom = region_top + region.height;
+
+        if (x_u32 >= region_left and x_u32 < region_right and
+            y_u32 >= region_top and y_u32 < region_bottom)
         {
             const area: u32 = @as(u32, region.width) * @as(u32, region.height);
             if (area < best_area) {

@@ -423,12 +423,14 @@ pub fn leafAttachFile(
     kind: []const u8,
     path: []const u8,
 ) ![]u8 {
+    const kind_json = try std.json.Stringify.valueAlloc(allocator, kind, .{});
+    defer allocator.free(kind_json);
     const path_json = try std.json.Stringify.valueAlloc(allocator, path, .{});
     defer allocator.free(path_json);
     const params_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"kind\":\"{s}\",\"path\":{s}}}",
-        .{ kind, path_json },
+        "{{\"kind\":{s},\"path\":{s}}}",
+        .{ kind_json, path_json },
     );
     defer allocator.free(params_json);
     return try request(allocator, socket_path, "leaf.source.attach", params_json);
@@ -483,6 +485,9 @@ pub fn nodeGet(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u
 }
 
 /// Sends one raw JSON-RPC request using a short-lived client handle.
+///
+/// The returned response is owned by the caller and must be freed with the
+/// same allocator passed to this function.
 pub fn request(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
@@ -496,6 +501,8 @@ pub fn request(
 
 /// Returns the daemon socket path from `MUXLY_SOCKET`, falling back to the
 /// platform default when unset.
+///
+/// The returned path is owned by the caller.
 pub fn socketPathFromEnv(allocator: std.mem.Allocator) ![]u8 {
     return std.process.getEnvVarOwned(allocator, "MUXLY_SOCKET") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try allocator.dupe(u8, defaultSocketPath()),

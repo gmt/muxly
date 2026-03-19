@@ -34,6 +34,8 @@ char *muxly_graph_get(const char *socket_path);
  * Handle-based client lifecycle.
  *
  * `socket_path` must be a non-null NUL-terminated string.
+ * Handles are not thread-safe; do not use one client concurrently from
+ * multiple threads without external synchronization.
  * muxly_client_create() returns NULL on allocation failure.
  * Destroying a NULL client is allowed.
  */
@@ -58,7 +60,8 @@ char *muxly_client_document_status(muxly_client *client);
  *
  * node ids are muxly node ids from earlier response payloads.
  * muxly_client_node_append() requires non-null `kind` and `title`.
- * muxly_client_node_update() requires at least one of `title` or `content`.
+ * muxly_client_node_update() requires at least one of `title` or `content`;
+ * either pointer may be NULL as long as the other is non-null.
  * muxly_client_node_freeze() currently supports tty-backed nodes only and
  * requires a non-null artifact kind string such as "text" or "surface".
  */
@@ -103,7 +106,8 @@ char *muxly_client_session_create(muxly_client *client, const char *session_name
 
 /*
  * Free any heap-allocated string returned by a muxly_* API above.
- * Passing NULL is allowed.
+ * Passing NULL is allowed. Do not free these strings with `free()`;
+ * always use muxly_string_free().
  */
 void muxly_string_free(char *value);
 

@@ -522,6 +522,7 @@ fn buildError(
 }
 
 fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
+    // `seen` borrows ids from `tmux_pane_snapshots`; this helper never mutates or refreshes snapshots while iterating.
     var seen = std.array_list.Managed([]const u8).init(store.allocator);
     defer seen.deinit();
     try writer.writeAll("[");
@@ -549,6 +550,7 @@ fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
 
 fn writeWindowList(store: *store_mod.Store, writer: anytype) !void {
     const WindowKey = struct { session: []const u8, window: []const u8 };
+    // `seen` borrows keys from `tmux_pane_snapshots`; this helper never mutates or refreshes snapshots while iterating.
     var seen = std.array_list.Managed(WindowKey).init(store.allocator);
     defer seen.deinit();
     try writer.writeAll("[");

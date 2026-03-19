@@ -460,6 +460,8 @@ pub const Store = struct {
         }
         if (std.mem.eql(u8, notification.name, "window-close")) {
             self.tryApplyWindowClose(notification.payload);
+            // Keep the invalidation path: a close can still require broader
+            // tmux topology cleanup than this local subtree removal handles.
             return false;
         }
         return false;
@@ -467,8 +469,6 @@ pub const Store = struct {
 
     fn tryApplyWindowRenamed(self: *Store, payload: []const u8) bool {
         const parsed = parseWindowNotificationPayload(payload) orelse return false;
-        const bid_buf: [64]u8 = undefined;
-        _ = bid_buf;
         const bid = std.fmt.allocPrint(self.allocator, "tmux-window:{s}", .{parsed.window_id}) catch return false;
         defer self.allocator.free(bid);
 
@@ -500,10 +500,7 @@ pub const Store = struct {
     fn parseWindowNotificationPayload(payload: []const u8) ?WindowNotification {
         if (payload.len == 0) return null;
         if (std.mem.indexOfScalar(u8, payload, ' ')) |space| {
-            if (space + 1 < payload.len) {
-                return .{ .window_id = payload[0..space], .name = payload[space + 1 ..] };
-            }
-            return .{ .window_id = payload[0..space], .name = "" };
+            return .{ .window_id = payload[0..space], .name = payload[space + 1 ..] };
         }
         return .{ .window_id = payload, .name = "" };
     }

@@ -88,12 +88,18 @@ pub const Document = struct {
     }
 
     /// Finds a mutable node pointer by id.
+    ///
+    /// The returned pointer borrows from `self.nodes` and must not be retained
+    /// across document mutations that can move or remove nodes.
     pub fn findNode(self: *Document, node_id: ids.NodeId) ?*muxml.Node {
         const index = self.findNodeIndex(node_id) orelse return null;
         return &self.nodes.items[index];
     }
 
     /// Finds an immutable node pointer by id.
+    ///
+    /// The returned pointer borrows from `self.nodes` and must not be retained
+    /// across document mutations that can move or remove nodes.
     pub fn findNodeConst(self: *const Document, node_id: ids.NodeId) ?*const muxml.Node {
         const index = self.findNodeIndexConst(node_id) orelse return null;
         return &self.nodes.items[index];
