@@ -79,6 +79,9 @@ explicit, testable, and debuggable.
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
+- the current attached `muxview` loop keeps using repeated `view.get` reads as
+  its public projection surface; snapshot mode uses that same payload for a
+  one-shot rendered frame
 - `node.remove` currently succeeds only for childless nodes; callers should
   remove descendants first when editing synthetic muxml structure
 - `node.freeze` currently supports tty-backed nodes only and accepts an

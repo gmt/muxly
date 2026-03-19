@@ -1,12 +1,15 @@
 # Basic TTY Nesting
 
-This example creates a small synthetic stage node, attaches a live tmux-backed
-TTY underneath it, scopes `muxview` to that stage, and prints the resulting
-viewer snapshot.
+This example creates a small synthetic stage node, attaches three live
+tmux-backed TTY regions underneath it, scopes `muxview` to that stage, and
+launches a live attached viewer by default.
 
-The live source is a tiny theorem-prover-style chatter generator, so the output
-shows a nested region that is both structurally scoped and actively changing.
-The tmux-backed part now appears as a projected subtree:
+The stage is intentionally a little theatrical: one region looks like an
+editor, one looks like a compile/error monitor, and one looks like a relay
+surface coordinating several workers. Together they show that a scoped viewer
+session can treat several active TTY-backed regions as one shared stage.
+
+Each tmux-backed region appears as a projected subtree:
 
 - stage `subdocument`
 - tmux session `subdocument`
@@ -26,10 +29,16 @@ The wrapper will:
 - run `zig build example-deps`
 - default to `/tmp/muxly-example-tty-basic.sock` unless `MUXLY_SOCKET` is set
 - start `muxlyd` if nothing is listening on that socket
-- create a synthetic TOM scope plus a nested live TTY child
-- project the tmux session/window/pane subtree underneath that scope
-- print the scoped `muxview` output
+- create a synthetic TOM scope plus one operator note and three live TTY stages
+- project each tmux session/window/pane subtree underneath that scope
+- attach `muxview` live so the stage keeps repainting until you press `q`
 - clean up the tmux session and view state afterward
+
+If you want a deterministic one-shot frame of the same stage, run:
+
+```sh
+./examples/tty/basic-nesting/run.sh --snapshot
+```
 
 ## Inputs
 
@@ -42,7 +51,8 @@ The wrapper will:
 If you want to reconstruct the shape by hand, the important ingredients are:
 
 - append a synthetic parent with `muxly node append`
-- attach a tmux session underneath it with `muxly session create-under`
-- observe the resulting `session -> window -> pane` projected subtree
+- attach several tmux sessions underneath it with `muxly session create-under`
+- observe the resulting `session -> window -> pane` projected subtrees
 - set the shared root with `muxly view set-root`
-- inspect the result with `muxview`
+- attach with `muxview` and watch the stage move
+- use `muxview --snapshot` when you want a single captured frame instead

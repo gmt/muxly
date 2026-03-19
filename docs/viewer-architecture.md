@@ -1,7 +1,7 @@
 # viewer architecture
 
 `muxview` is intended to be the reference implementation and universal viewer
-for muxly documents.
+for live muxly documents.
 
 ## Design rule
 
@@ -13,6 +13,7 @@ for muxly documents.
 
 ## Responsibilities
 
+- maintain a long-lived viewer attachment for one concrete viewport
 - render muxml trees and regions
 - provide drill-in/root/elision UX
 - support follow-tail inspection
@@ -20,40 +21,87 @@ for muxly documents.
 
 ## Projection model direction
 
-The current `muxview` implementation is still a modest screen-at-a-time
-reference viewer, but the architectural direction should stay clear:
+The architectural direction should stay clear and concrete:
 
 - a `muxview` attaches to one TOM node at a concrete `(rows, cols)` size
-- that attachment should produce a layout projection rather than mutating the
-  persistent TOM for every viewer-local size change
+- that attachment should maintain a layout projection over time rather than
+  mutating the persistent TOM for every viewer-local size change
 - the projection step assigns deterministic absolute quads to visible regions
 - rendering should flatten that projection into a paint list rather than depend
   on recursive hierarchy walking at paint time
 
-This keeps three concerns distinct:
+In practice, attachment should feel like joining a live shared stage:
+
+- an editor in one region and compile errors in another should keep updating as
+  one viewer session
+- a supervising agent can broadcast expensive reasoning into several worker TTY
+  conversations beneath it
+- a nested conversational stage can later be zoomed into without redefining the
+  TOM around one viewer's local camera move
+
+This keeps four concerns distinct:
 
 - TOM structure and policies
-- one concrete view/layout projection
+- one concrete viewer-local layout projection
+- the presentation substrate that repaints the attached session
 - the paint/composition pass for the current terminal frame
 
 Leaf content and viewport geometry also need to remain distinct. A live TTY,
 ANSI stream, or file-backed region may have content larger than its currently
 visible quad. Follow-tail, clipping, scrollback, and resize behavior should be
-treated as per-class policy decisions, not as proof that the TOM itself is a
+treated as per-class policy decisions, not as evidence that the TOM itself is a
 literal framebuffer.
+
+## Attachment and presentation
+
+Viewer attachment, layout projection, presentation substrate, and snapshot mode
+should each keep a clear job:
+
+- **viewer attachment** is the long-lived session that joins one TOM node
+  through a concrete viewport and local interaction state
+- **layout projection** is the continuously maintained mapping from
+  `TOM + viewer state + viewport size` to visible regions
+- **presentation substrate** is the mechanism that repaints that attached
+  session over time
+- **snapshot mode** is the explicit one-shot readout path for scripts,
+  deterministic checks, and debugging
+
+The current cutline already supports that model in a first-pass way:
+
+- `muxview` attaches live by default when stdout is a TTY
+- it enters the alternate screen, refreshes on a fixed cadence, and repaints
+  from the public `view.get` surface
+- `muxview --snapshot` keeps the one-shot textual readout available when a
+  deterministic frame is the right tool
+- tmux is the current likely first presentation substrate because it already
+  buys much of the terminal/session machinery, while remaining replaceable if
+  it later constrains the desired muxly experience
 
 ## Current phase-2 cutline
 
-The current viewer is intentionally modest, but it should still make the public
-state model legible:
+The current viewer is intentionally modest in interaction depth, but it should
+still make the public state model legible:
 
 - it consumes the public `view.get` surface, not a private daemon shortcut
+- the first attached-viewer loop is still a textual presentation of that public
+  projection rather than a richer tiled compositor
 - root/elision state is currently **shared document state**, not viewer-local
   state
 - follow-tail is currently a **stored node preference**, not a private capture
   cursor inside `muxview`
 - tmux interaction remains command-backed in this phase; richer control-mode
   behavior belongs to phase 4
+
+## Presentation substrate direction
+
+The next viewer slice should evaluate how far tmux can carry the first
+presentation substrate without distorting muxly semantics:
+
+- if tmux can host the attached viewer session cleanly, formalize it as the
+  first presentation substrate
+- if tmux starts imposing the wrong viewing semantics, keep the attachment and
+  projection model intact and move toward a vendored tmux path or a bespoke
+  ANSI-generation engine
 
 ## Depthwise traversal / drill-in
 

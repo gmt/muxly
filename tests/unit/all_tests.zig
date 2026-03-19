@@ -5,6 +5,7 @@ comptime {
     _ = @import("capabilities_test.zig");
     _ = @import("protocol_test.zig");
     _ = @import("view_test.zig");
+    _ = @import("viewer_app_test.zig");
     _ = @import("viewer_render_test.zig");
     _ = @import("keymap_test.zig");
     _ = @import("tmux_control_mode_test.zig");

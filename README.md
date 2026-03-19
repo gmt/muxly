@@ -38,7 +38,9 @@ This repository has a working implementation centered on:
   even though tmux session/window/pane projection and snapshot-backed list
   queries are now real inside the daemon.
 - **The reference viewer uses public surfaces.**
-  `muxview` should consume the same public surfaces as any third-party tool.
+  `muxview` should consume the same public surfaces as any third-party tool,
+  stay attached to a live TOM stage by default, and keep snapshot mode explicit
+  when a one-shot frame is the right tool.
 
 ## Binaries
 
@@ -68,7 +70,11 @@ Then, in another shell:
 ./zig-out/bin/muxly pane send-keys %0 "echo from-cli" --enter
 ./zig-out/bin/muxly pane scroll %0 -5 -1
 ./zig-out/bin/muxview
+./zig-out/bin/muxview --snapshot
 ```
+
+When launched in a terminal, `muxview` now attaches live by default. Press `q`
+to leave the attached viewer session.
 
 ## Documentation
 
@@ -105,7 +111,8 @@ Milestones and remaining major work live in `phased-planning/`:
 - `examples/tom/zig/` — Zig "hello TOM" playbook
 - `examples/tom/c/` — C "hello TOM" playbook
 - `examples/tom/python/` — Python "hello TOM" playbook
-- `examples/tty/basic-nesting/` — nested live-TTY theorem-stage demo
+- `examples/tty/basic-nesting/` — live attached stage with several active
+  tty-backed regions
 
 The playbook wrappers use dedicated example sockets by default so they can be
 run locally without colliding with a long-lived `muxlyd` on `/tmp/muxly.sock`.

@@ -15,7 +15,7 @@ Core demos:
    - one monitored text file
    - one static text file
 3. `muxview` consuming daemon state through the same public surfaces as other
-   clients
+   clients while staying attached to a live TOM stage
 
 Reference example locations:
 
@@ -53,11 +53,20 @@ printf 'tail-1\n' >/tmp/muxly-monitored.txt
 ./zig-out/bin/muxview
 ```
 
+`muxview` attaches live by default when launched in a terminal. Press `q` to
+leave the attached viewer session. When you want one deterministic rendered
+frame instead, use:
+
+```sh
+./zig-out/bin/muxview --snapshot
+```
+
 Artifact-aware `muxview` manual verification:
 
-Use this when you want to verify that `muxview` now distinguishes live,
-detached, and frozen terminal-backed nodes honestly through the same public
-surfaces used by the automated tests.
+Use this when you want to verify that `muxview` distinguishes live, detached,
+and frozen terminal-backed nodes honestly through the same public surfaces used
+by the automated tests. The snapshot form is handy here because the checks are
+textual and deterministic.
 
 ```sh
 zig build
@@ -69,7 +78,7 @@ zig build
 # note the tty leaf node ids for the three new sessions from the document payload
 ./zig-out/bin/muxly node freeze <freeze-text-node-id> text
 ./zig-out/bin/muxly node freeze <freeze-surface-node-id> surface
-./zig-out/bin/muxview
+./zig-out/bin/muxview --snapshot
 ```
 
 What to confirm in the viewer output:
@@ -130,6 +139,32 @@ The first public Phase 6 seam is now runnable as a playbook too:
 
 That flow creates one transcript-like TTY and one surface-like TTY, freezes
 them through `node.freeze`, and prints the resulting frozen artifact nodes.
+
+Basic live viewer stage:
+
+The `basic-nesting` playbook now launches a live attached `muxview` stage by
+default:
+
+```sh
+./examples/tty/basic-nesting/run.sh
+```
+
+That stage leaves behind:
+
+- one synthetic operator-note region
+- one editor-like tty surface
+- one compile/error-monitor tty surface
+- one relay/agent-coordination tty surface
+
+Use this when you want the quickest visual reminder of the intended viewer
+story: one shared stage with several active tty-backed regions moving at
+human-readable speed.
+
+For a deterministic single frame of the same demo, use:
+
+```sh
+./examples/tty/basic-nesting/run.sh --snapshot
+```
 
 Binding-level artifact freeze demo:
 

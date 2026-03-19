@@ -33,10 +33,12 @@ The daemon is responsible for durable/shared semantics such as:
 
 The viewer is responsible for local interaction and presentation:
 
+- maintaining the attached viewer session for one concrete viewport
 - rendering
 - drill-in navigation/orientation cues built on public view state
 - follow-tail inspection of the stored node preference
 - mouse/key UX
+- explicit snapshot mode for scripts and deterministic debugging
 
 This split is guidance, not dogma: if a behavior needs to survive outside one
 viewer process or be shared across clients, it belongs in the daemon/core.

@@ -11,8 +11,27 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 DEFAULT_SOCKET = "/tmp/muxly-example-tty-basic.sock"
-SESSION_NAME = "muxly-example-theorem-stage"
 CHATTER_SCRIPT = pathlib.Path(__file__).resolve().with_name("theorem_chatter.py")
+SESSION_SPECS = (
+    {
+        "session_name": "muxly-example-stage-editor",
+        "role": "editor",
+        "needle": "editor :: src/viewer/main.zig",
+        "node_title": "editor-surface",
+    },
+    {
+        "session_name": "muxly-example-stage-errors",
+        "role": "errors",
+        "needle": "errors :: zig build",
+        "node_title": "error-surface",
+    },
+    {
+        "session_name": "muxly-example-stage-relay",
+        "role": "relay",
+        "needle": "relay :: planner to workers",
+        "node_title": "relay-surface",
+    },
+)
 
 
 def run(env: dict[str, str], *args: str) -> None:
@@ -130,15 +149,34 @@ def cleanup_tmux_session(env: dict[str, str], session_name: str) -> None:
     )
 
 
-def wait_for_pane_content(env: dict[str, str], pane_id: str, needle: str, timeout: float = 3.0) -> dict:
+def wait_for_node_content(env: dict[str, str], node_id: int, needle: str, timeout: float = 3.0) -> dict:
     deadline = time.time() + timeout
-    last_capture: dict | None = None
+    last_node: dict | None = None
     while time.time() < deadline:
-        last_capture = run_cli(env, "pane", "capture", pane_id)
-        if needle in last_capture["result"]["content"]:
-            return last_capture
+        last_node = run_cli(env, "node", "get", str(node_id))
+        if "result" in last_node and needle in last_node["result"]["content"]:
+            return last_node
         time.sleep(0.1)
-    raise RuntimeError(f"timed out waiting for pane {pane_id} to contain {needle!r}: {last_capture!r}")
+    raise RuntimeError(f"timed out waiting for node {node_id} to contain {needle!r}: {last_node!r}")
+
+
+def wait_for_session_tty_node(env: dict[str, str], session_name: str, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last_document: dict | None = None
+    while time.time() < deadline:
+        last_document = run_cli(env, "document", "get")
+        if "result" not in last_document:
+            time.sleep(0.1)
+            continue
+        matches = [
+            node
+            for node in last_document["result"]["nodes"]
+            if node["kind"] == "tty_leaf" and node["source"].get("sessionName") == session_name
+        ]
+        if matches:
+            return matches[0]
+        time.sleep(0.1)
+    raise RuntimeError(f"timed out waiting for projected tty node for session {session_name!r}: {last_document!r}")
 
 
 def main() -> None:
@@ -149,10 +187,10 @@ def main() -> None:
     run(env, "zig", "build", "example-deps")
 
     daemon, stderr_path = ensure_daemon(env, socket_path)
-    cleanup_tmux_session(env, SESSION_NAME)
+    for session_spec in SESSION_SPECS:
+        cleanup_tmux_session(env, session_spec["session_name"])
 
-    command_body = f"{shlex.quote(sys.executable)} -u {shlex.quote(str(CHATTER_SCRIPT))}"
-    session_command = f"sh -lc {shlex.quote(command_body)}"
+    viewer_args = [str(REPO / "zig-out/bin/muxview"), *sys.argv[1:]]
 
     try:
         stage = run_cli(env, "node", "append", "1", "subdocument", "theorem-stage")
@@ -166,33 +204,50 @@ def main() -> None:
             "update",
             str(note_id),
             "content",
-            "live theorem chatter below\nscope is pinned to this stage\nshared view state stays explicit",
+            "attached theorem stage\neditor, error monitor, and relay surfaces stay live below\npress q to leave the attached viewer\nrun this playbook with --snapshot for a one-shot verification frame",
         )
 
-        tty_node = run_cli(
-            env,
-            "session",
-            "create-under",
-            str(stage_id),
-            SESSION_NAME,
-            session_command,
-        )
-        tty_node_id = tty_node["result"]["nodeId"]
-        tty_node_detail = run_cli(env, "node", "get", str(tty_node_id))
-        pane_id = tty_node_detail["result"]["source"]["paneId"]
-        wait_for_pane_content(env, pane_id, "goal:")
+        for session_spec in SESSION_SPECS:
+            command_body = (
+                f"{shlex.quote(sys.executable)} -u {shlex.quote(str(CHATTER_SCRIPT))}"
+                f" --role {shlex.quote(session_spec['role'])}"
+            )
+            session_command = f"sh -lc {shlex.quote(command_body)}"
+            tty_node = run_cli(
+                env,
+                "session",
+                "create-under",
+                str(stage_id),
+                session_spec["session_name"],
+                session_command,
+            )
+            _ = tty_node["result"]["nodeId"]
+            projected_tty = wait_for_session_tty_node(env, session_spec["session_name"])
+            pane_id = projected_tty["source"]["paneId"]
+            subprocess.run(
+                ["tmux", "select-pane", "-t", pane_id, "-T", session_spec["node_title"]],
+                cwd=REPO,
+                env=env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            run_cli(
+                env,
+                "node",
+                "update",
+                str(projected_tty["id"]),
+                "title",
+                session_spec["node_title"],
+            )
 
         run_cli(env, "view", "set-root", str(stage_id))
-
-        viewer_output = subprocess.check_output(
-            [str(REPO / "zig-out/bin/muxview")],
-            cwd=REPO,
-            env=env,
-            text=True,
-        )
-        print(viewer_output, end="")
+        run_cli(env, "document", "get")
+        time.sleep(0.8)
+        subprocess.run(viewer_args, cwd=REPO, env=env, check=True)
     finally:
-        cleanup_tmux_session(env, SESSION_NAME)
+        for session_spec in SESSION_SPECS:
+            cleanup_tmux_session(env, session_spec["session_name"])
         subprocess.run([str(REPO / "zig-out/bin/muxly"), "view", "reset"], cwd=REPO, env=env, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if daemon is not None:
             daemon.terminate()

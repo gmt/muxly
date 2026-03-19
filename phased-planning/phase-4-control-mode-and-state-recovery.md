@@ -69,8 +69,8 @@ Phase 4 starts from a working but intentionally thin tmux integration:
 - `session.list`, `window.list`, and `pane.list` now read from normalized tmux
   pane snapshots rather than from document-accidental tty leaves.
 - [examples/tty/basic-nesting/](/home/greg/src/muxly/examples/tty/basic-nesting)
-  now gives the repo one small nested live-TTY demo, but it still renders a
-  snapshot through the current screen-at-a-time `muxview`.
+  now gives the repo one small live attached TTY stage with several active
+  projected regions under one scoped viewer session.
 
 ## Remaining gaps
 

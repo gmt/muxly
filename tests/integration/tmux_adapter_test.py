@@ -1,6 +1,9 @@
+import errno
 import json
 import os
 import pathlib
+import pty
+import select
 import subprocess
 import tempfile
 import time
@@ -13,6 +16,7 @@ NESTED_SESSION_NAME = "muxly-integration-nested-demo"
 DRIFT_SESSION_NAME = "muxly-integration-drift-demo"
 FREEZE_SESSION_NAME = "muxly-integration-freeze-demo"
 FREEZE_SURFACE_SESSION_NAME = "muxly-integration-freeze-surface-demo"
+LIVE_VIEWER_SESSION_NAME = "muxly-integration-live-viewer-demo"
 
 
 def run_cli(env: dict[str, str], *args: str) -> dict:
@@ -112,6 +116,29 @@ def wait_for_node_content(env: dict[str, str], node_id: int, needle: str, timeou
     raise AssertionError(f"timed out waiting for node {node_id} to contain {needle!r}: {last_node!r}")
 
 
+def wait_for_pty_output(fd: int, needle: bytes, timeout: float = 5.0) -> bytes:
+    deadline = time.time() + timeout
+    buffer = bytearray()
+
+    while time.time() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        if not ready:
+            continue
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if needle in buffer:
+            return bytes(buffer)
+
+    raise AssertionError(f"timed out waiting for PTY output {needle!r}: {bytes(buffer)!r}")
+
+
 def main() -> None:
     env = os.environ.copy()
     env["MUXLY_SOCKET"] = SOCKET_PATH
@@ -126,6 +153,7 @@ def main() -> None:
     cleanup_tmux_session(env, DRIFT_SESSION_NAME)
     cleanup_tmux_session(env, FREEZE_SESSION_NAME)
     cleanup_tmux_session(env, FREEZE_SURFACE_SESSION_NAME)
+    cleanup_tmux_session(env, LIVE_VIEWER_SESSION_NAME)
 
     daemon = subprocess.Popen(
         [str(REPO / "zig-out/bin/muxlyd")],
@@ -449,7 +477,7 @@ def main() -> None:
         assert "after-surface-freeze" not in frozen_surface_node["content"]
 
         artifact_viewer_output = subprocess.check_output(
-            [str(REPO / "zig-out/bin/muxview")],
+            [str(REPO / "zig-out/bin/muxview"), "--snapshot"],
             cwd=REPO,
             env=env,
             text=True,
@@ -510,7 +538,7 @@ def main() -> None:
         assert elide["result"]["ok"] is True
 
         viewer_output = subprocess.check_output(
-            [str(REPO / "zig-out/bin/muxview")],
+            [str(REPO / "zig-out/bin/muxview"), "--snapshot"],
             cwd=REPO,
             env=env,
             text=True,
@@ -522,6 +550,52 @@ def main() -> None:
         assert "… elided by shared view state …" in viewer_output
         assert "lifecycle=live" in viewer_output
         assert "theorem-demo" in viewer_output
+
+        live_view = run_cli(
+            env,
+            "session",
+            "create-under",
+            str(viewer_scope_id),
+            LIVE_VIEWER_SESSION_NAME,
+            "sh",
+        )
+        live_view_node = run_cli(env, "node", "get", str(live_view["result"]["nodeId"]))
+        live_view_pane_id = live_view_node["result"]["source"]["paneId"]
+
+        master_fd, slave_fd = pty.openpty()
+        viewer = subprocess.Popen(
+            [str(REPO / "zig-out/bin/muxview")],
+            cwd=REPO,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            text=False,
+        )
+        os.close(slave_fd)
+        try:
+            live_output = wait_for_pty_output(master_fd, b"viewer-scope")
+            assert b"viewer-scope" in live_output
+
+            live_send_keys = run_cli(env, "pane", "send-keys", live_view_pane_id, "echo live-pty-refresh", "--enter")
+            assert live_send_keys["result"]["ok"] is True
+            wait_for_node_content(env, live_view["result"]["nodeId"], "live-pty-refresh")
+
+            refreshed_output = wait_for_pty_output(master_fd, b"live-pty-refresh")
+            assert b"live-pty-refresh" in refreshed_output
+
+            os.write(master_fd, b"q")
+            viewer.wait(timeout=5)
+            assert viewer.returncode == 0
+        finally:
+            if viewer.poll() is None:
+                viewer.terminate()
+                try:
+                    viewer.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    viewer.kill()
+                    viewer.wait(timeout=5)
+            os.close(master_fd)
 
         nested_split_close = run_cli(env, "pane", "close", nested_split_pane_id)
         assert nested_split_close["result"]["ok"] is True
@@ -548,6 +622,7 @@ def main() -> None:
         cleanup_tmux_session(env, DRIFT_SESSION_NAME)
         cleanup_tmux_session(env, FREEZE_SESSION_NAME)
         cleanup_tmux_session(env, FREEZE_SURFACE_SESSION_NAME)
+        cleanup_tmux_session(env, LIVE_VIEWER_SESSION_NAME)
         daemon.terminate()
         try:
             daemon.wait(timeout=5)

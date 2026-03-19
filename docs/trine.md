@@ -45,8 +45,8 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 ### Projection over mutation
 
 - the TOM is the persistent abstract structure, not a live framebuffer
-- a `muxview` should attach to one TOM node and produce a layout projection for
-  a concrete `(rows, cols)` viewport
+- a `muxview` should attach to one TOM node and maintain a layout projection
+  for a concrete `(rows, cols)` viewport
 - attaching a view should not casually mutate the TOM just because one viewer
   happened to be larger or smaller than another
 - visible geometry belongs to the projection: after layout, each visible node
@@ -54,6 +54,8 @@ necessary to preserve responsiveness, clarity, and control fidelity.
   view
 - paint should operate on a flattened list of visible regions rather than
   walking hierarchy ad hoc during every draw
+- snapshot mode remains useful for scripts and debugging, but viewer attachment
+  is the long-lived path that joins a live TOM session
 
 ### Structure and source are different axes
 
@@ -149,3 +151,7 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - resizing and focus semantics should feel predictable
 - mouse behavior should prioritize intuitive region targeting even when nested
   support combinations are messy
+- a viewer should be able to keep an editor in one region and compile errors in
+  another legible as one shared stage
+- a supervising agent should be able to fan work out into several tty-backed
+  conversations without those regions feeling like unrelated islands
