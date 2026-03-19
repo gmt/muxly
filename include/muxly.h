@@ -30,7 +30,9 @@ const char *muxly_version(void);
  * `socket_path` must be a non-null NUL-terminated string.
  * On success these functions return a heap-allocated UTF-8 JSON-RPC response
  * payload that must be released with muxly_string_free().
- * On failure they return NULL.
+ * A non-NULL return may still contain a JSON-RPC error payload from the
+ * daemon; callers must inspect the envelope.
+ * On failure before a response string can be returned, they return NULL.
  * @{
  */
 char *muxly_ping(const char *socket_path);
@@ -46,11 +48,27 @@ char *muxly_graph_get(const char *socket_path);
  * `socket_path` must be a non-null NUL-terminated string.
  * Handles are not thread-safe; do not use one client concurrently from
  * multiple threads without external synchronization.
+ * The handle stores a copied socket path, not a persistent daemon connection.
  * muxly_client_create() returns NULL on allocation failure.
  * Destroying a NULL client is allowed.
  * @{
  */
+/**
+ * @brief Create a handle bound to one daemon socket path.
+ *
+ * @param socket_path NUL-terminated daemon socket path to copy into the handle.
+ * @return A new handle on success, or NULL if allocation or socket-path copy
+ * fails.
+ */
 muxly_client *muxly_client_create(const char *socket_path);
+
+/**
+ * @brief Destroy a client handle created by muxly_client_create().
+ *
+ * Passing NULL is allowed. The handle must not be used again after this call.
+ *
+ * @param client Handle to destroy, or NULL.
+ */
 void muxly_client_destroy(muxly_client *client);
 /** @} */
 
@@ -62,7 +80,9 @@ void muxly_client_destroy(muxly_client *client);
  * Unless otherwise noted, `client` and any string arguments must be non-null.
  * On success each function returns a heap-allocated UTF-8 JSON-RPC response
  * payload that must be released with muxly_string_free().
- * On failure they return NULL.
+ * A non-NULL return may still contain a JSON-RPC error payload from the
+ * daemon; callers must inspect the envelope.
+ * On failure before a response string can be returned, they return NULL.
  * @{
  */
 char *muxly_client_ping(muxly_client *client);
@@ -90,6 +110,20 @@ char *muxly_client_node_append(
     const char *kind,
     const char *title
 );
+/**
+ * @brief Update one node title or content.
+ *
+ * Exactly one of `title` or `content` should normally be provided. Either may
+ * be NULL as long as the other is non-null. If both are NULL, libmuxly fails
+ * before sending a request and returns NULL.
+ *
+ * @param client Handle created by muxly_client_create().
+ * @param node_id muxly node id to update.
+ * @param title Optional replacement title, or NULL.
+ * @param content Optional replacement content, or NULL.
+ * @return Heap-allocated JSON-RPC response payload on transport success, or
+ * NULL if libmuxly fails before returning a response string.
+ */
 char *muxly_client_node_update(
     muxly_client *client,
     unsigned long long node_id,
@@ -139,6 +173,8 @@ char *muxly_client_session_create(muxly_client *client, const char *session_name
  *
  * Passing NULL is allowed. Do not free these strings with `free()`;
  * always use muxly_string_free().
+ *
+ * @param value String previously returned by a muxly_* API, or NULL.
  */
 void muxly_string_free(char *value);
 

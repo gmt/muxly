@@ -11,7 +11,8 @@ handling layer.
 - Successful `muxly_*` calls that return `char *` allocate a NUL-terminated
   UTF-8 response string.
 - Release returned strings only with `muxly_string_free()`.
-- `NULL` indicates failure.
+- Client handles own their copied `socket_path` and release it in
+  `muxly_client_destroy()`.
 
 ## Client handles
 
@@ -19,6 +20,23 @@ handling layer.
 - Destroy handles with `muxly_client_destroy()`.
 - Handles are not thread-safe; synchronize externally if a host language wants
   to share one across threads.
+- A handle stores configuration, not a persistent daemon-side session; each
+  request still performs its own transport round-trip.
+
+## Failure model
+
+- A non-`NULL` return is always a response buffer owned by the caller.
+- That response buffer may still contain a JSON-RPC error payload from the
+  daemon; callers should inspect the JSON-RPC envelope instead of treating
+  non-`NULL` as unconditional success.
+- `NULL` means `libmuxly` failed before it could return a response string.
+- Typical `NULL` causes include allocation failure inside `libmuxly`,
+  unsupported platform in the current transport layer, socket/transport
+  failures, or client-side validation failures such as calling
+  `muxly_client_node_update()` with both `title` and `content` set to `NULL`.
+- The C ABI does not currently expose structured error codes for `NULL`
+  failures, so bindings that need richer diagnostics must add their own wrapper
+  layer.
 
 ## Input strings
 
