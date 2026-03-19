@@ -107,13 +107,18 @@ interactive navigation. Press `q` to leave the attached viewer session.
 - `docs/neovim-integration.md`
 - `docs/demos.md`
 
-Generated Zig API docs can be built with:
+Generated API docs can be built with:
 
 ```sh
 zig build docs
 ```
 
-They are installed under `zig-out/docs/api/`.
+This installs:
+
+- Zig API docs under `zig-out/docs/api/`
+- C / FFI docs under `zig-out/docs/ffi/`
+
+The FFI docs require `doxygen` to be installed. `graphviz` is optional.
 
 ## Roadmap
 

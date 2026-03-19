@@ -99,6 +99,38 @@ pub fn build(b: *std.Build) void {
         .install_subdir = "docs/api",
     });
 
+    const ffi_docs_root = b.getInstallPath(.prefix, "docs");
+    const ffi_docs_files = b.addWriteFiles();
+    const ffi_doxyfile = ffi_docs_files.add("Doxyfile.ffi", b.fmt(
+        \\PROJECT_NAME = "libmuxly C API"
+        \\PROJECT_NUMBER = "0.1.0"
+        \\OUTPUT_DIRECTORY = "{s}"
+        \\HTML_OUTPUT = ffi
+        \\GENERATE_HTML = YES
+        \\GENERATE_LATEX = NO
+        \\GENERATE_MAN = NO
+        \\GENERATE_RTF = NO
+        \\GENERATE_XML = NO
+        \\GENERATE_DOCSET = NO
+        \\QUIET = YES
+        \\WARN_IF_UNDOCUMENTED = NO
+        \\WARN_IF_DOC_ERROR = YES
+        \\OPTIMIZE_OUTPUT_FOR_C = YES
+        \\EXTRACT_ALL = YES
+        \\EXTRACT_STATIC = NO
+        \\JAVADOC_AUTOBRIEF = YES
+        \\FULL_PATH_NAMES = NO
+        \\STRIP_FROM_PATH = include
+        \\INPUT = docs/ffi.md include/muxly.h
+        \\FILE_PATTERNS = *.md *.h
+        \\RECURSIVE = NO
+        \\USE_MDFILE_AS_MAINPAGE = docs/ffi.md
+        \\MARKDOWN_SUPPORT = YES
+    , .{ffi_docs_root}));
+    const build_ffi_docs = b.addSystemCommand(&.{"doxygen"});
+    build_ffi_docs.setCwd(b.path("."));
+    build_ffi_docs.addFileArg(ffi_doxyfile);
+
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/unit/all_tests.zig"),
@@ -135,6 +167,10 @@ pub fn build(b: *std.Build) void {
     const guided_tour_step = b.step("muxguide", "Build muxguide guided tour demo");
     guided_tour_step.dependOn(&install_guided_tour.step);
 
-    const docs_step = b.step("docs", "Build generated Zig API documentation");
+    const ffi_docs_step = b.step("docs-ffi", "Build generated C/FFI reference docs");
+    ffi_docs_step.dependOn(&build_ffi_docs.step);
+
+    const docs_step = b.step("docs", "Build generated Zig and C/FFI API documentation");
     docs_step.dependOn(&install_api_docs.step);
+    docs_step.dependOn(&build_ffi_docs.step);
 }
