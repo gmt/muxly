@@ -6,6 +6,9 @@ Some consumers may interact with it directly, but many should be able to work
 through library/client APIs without caring about the exact serialized muxml
 shape.
 
+For the live in-memory model that muxml represents, see
+[`docs/tom.md`](/home/greg/src/muxly/docs/tom.md).
+
 Within the daemon, muxly maintains a live **TOM**: a Terminal Object Model.
 `muxml` is the serializable representation of that live state, not the same
 thing as the live TOM itself.

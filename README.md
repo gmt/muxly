@@ -80,6 +80,7 @@ to leave the attached viewer session.
 
 - `docs/architecture.md`
 - `docs/trine.md`
+- `docs/tom.md`
 - `docs/platform-matrix.md`
 - `docs/muxml.md`
 - `docs/terminal-artifacts.md`
