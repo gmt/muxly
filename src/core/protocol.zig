@@ -8,6 +8,8 @@ pub const default_document_path = "/";
 
 pub const RequestTarget = struct {
     documentPath: ?[]const u8 = null,
+    nodeId: ?u64 = null,
+    selector: ?[]const u8 = null,
 };
 
 pub const RequestEnvelope = struct {
@@ -67,6 +69,18 @@ pub fn requestDocumentPath(request: RequestEnvelope) ![]const u8 {
     return document_path;
 }
 
+pub fn requestTargetNodeId(request: RequestEnvelope, params_field_name: []const u8) !i64 {
+    if (request.target) |target| {
+        if (target.nodeId) |value| {
+            if (value > std.math.maxInt(i64)) return error.InvalidNodeTarget;
+            return @intCast(value);
+        }
+        if (target.selector != null) return error.UnsupportedNodeSelector;
+    }
+
+    return getInteger(request.params, params_field_name) orelse error.MissingNodeTarget;
+}
+
 pub fn writeClientRequest(
     writer: anytype,
     request_id: u64,
@@ -74,6 +88,19 @@ pub fn writeClientRequest(
     method: []const u8,
     params_json: []const u8,
 ) !void {
+    return try writeClientRequestTarget(writer, request_id, .{
+        .documentPath = document_path,
+    }, method, params_json);
+}
+
+pub fn writeClientRequestTarget(
+    writer: anytype,
+    request_id: u64,
+    target: RequestTarget,
+    method: []const u8,
+    params_json: []const u8,
+) !void {
+    const document_path = target.documentPath orelse default_document_path;
     if (document_path.len == 0 or document_path[0] != '/') {
         return error.InvalidDocumentPath;
     }
@@ -82,6 +109,13 @@ pub fn writeClientRequest(
     try writer.print("{d}", .{request_id});
     try writer.writeAll(",\"target\":{\"documentPath\":");
     try writer.print("{f}", .{std.json.fmt(document_path, .{})});
+    if (target.nodeId) |node_id| {
+        try writer.print(",\"nodeId\":{d}", .{node_id});
+    }
+    if (target.selector) |selector| {
+        try writer.writeAll(",\"selector\":");
+        try writer.print("{f}", .{std.json.fmt(selector, .{})});
+    }
     try writer.writeAll("},\"method\":");
     try writer.print("{f}", .{std.json.fmt(method, .{})});
     try writer.writeAll(",\"params\":");

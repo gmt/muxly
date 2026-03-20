@@ -138,3 +138,42 @@ test "tmux methods reject non-root document targets until projections are genera
     try std.testing.expectEqual(@as(i64, -32001), err.get("code").?.integer);
     try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "root document target /") != null);
 }
+
+test "node-targeted methods accept target.nodeId and reject target.selector for now" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var appended = try call(
+        std.testing.allocator,
+        &store,
+        \\{"jsonrpc":"2.0","id":1,"method":"node.append","params":{"parentId":1,"kind":"scroll_region","title":"alpha"}}
+    );
+    defer appended.deinit();
+    const append_result = try resultObject(appended);
+    const node_id = append_result.get("nodeId").?.integer;
+
+    const via_target_payload = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/\",\"nodeId\":{d}}},\"method\":\"node.get\",\"params\":{{}}}}",
+        .{node_id},
+    );
+    defer std.testing.allocator.free(via_target_payload);
+    var via_target = try call(
+        std.testing.allocator,
+        &store,
+        via_target_payload,
+    );
+    defer via_target.deinit();
+    const target_result = try resultObject(via_target);
+    try std.testing.expectEqualStrings("alpha", target_result.get("title").?.string);
+
+    var selector_stub = try call(
+        std.testing.allocator,
+        &store,
+        \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/","selector":"alpha"},"method":"node.get","params":{}}
+    );
+    defer selector_stub.deinit();
+    const err = try errorObject(selector_stub);
+    try std.testing.expectEqual(@as(i64, -32001), err.get("code").?.integer);
+    try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "target.selector is not implemented yet") != null);
+}

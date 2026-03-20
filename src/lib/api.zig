@@ -158,22 +158,22 @@ pub fn nodeUpdateInDocument(
         defer allocator.free(title_json);
         const params_json = try std.fmt.allocPrint(
             allocator,
-            "{{\"nodeId\":{d},\"title\":{s}}}",
-            .{ node_id, title_json },
+            "{{\"title\":{s}}}",
+            .{title_json},
         );
         defer allocator.free(params_json);
-        return try requestInDocument(allocator, socket_path, document_path, "node.update", params_json);
+        return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "node.update", params_json);
     }
     if (content) |value| {
         const content_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
         defer allocator.free(content_json);
         const params_json = try std.fmt.allocPrint(
             allocator,
-            "{{\"nodeId\":{d},\"content\":{s}}}",
-            .{ node_id, content_json },
+            "{{\"content\":{s}}}",
+            .{content_json},
         );
         defer allocator.free(params_json);
-        return try requestInDocument(allocator, socket_path, document_path, "node.update", params_json);
+        return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "node.update", params_json);
     }
     return error.InvalidArguments;
 }
@@ -207,11 +207,11 @@ pub fn nodeFreezeInDocument(
     defer allocator.free(artifact_kind_json);
     const params_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"nodeId\":{d},\"artifactKind\":{s}}}",
-        .{ node_id, artifact_kind_json },
+        "{{\"artifactKind\":{s}}}",
+        .{artifact_kind_json},
     );
     defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "node.freeze", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "node.freeze", params_json);
 }
 
 /// Removes a leaf node from the document.
@@ -225,9 +225,7 @@ pub fn nodeRemoveInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "node.remove", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "node.remove", "{}");
 }
 
 /// Freezes the document lifecycle.
@@ -288,9 +286,7 @@ pub fn viewSetRootInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "view.setRoot", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "view.setRoot", "{}");
 }
 
 /// Hides a node through shared document elision state.
@@ -304,9 +300,7 @@ pub fn viewElideInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "view.elide", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "view.elide", "{}");
 }
 
 /// Removes one node from shared document elision state.
@@ -320,9 +314,7 @@ pub fn viewExpandInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "view.expand", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "view.expand", "{}");
 }
 
 /// Captures visible/history text for a tmux pane.
@@ -586,9 +578,7 @@ pub fn leafSourceGetInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "leaf.source.get", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "leaf.source.get", "{}");
 }
 
 /// Attaches a file-backed leaf source by kind and path.
@@ -635,9 +625,7 @@ pub fn fileCaptureInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "file.capture", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "file.capture", "{}");
 }
 
 /// Stores the follow-tail preference for a file-backed leaf.
@@ -654,11 +642,11 @@ pub fn fileFollowTailInDocument(
 ) ![]u8 {
     const params_json = try std.fmt.allocPrint(
         allocator,
-        "{{\"nodeId\":{d},\"enabled\":{s}}}",
-        .{ node_id, if (enabled) "true" else "false" },
+        "{{\"enabled\":{s}}}",
+        .{if (enabled) "true" else "false"},
     );
     defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "file.followTail", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "file.followTail", params_json);
 }
 
 /// Returns backend and phase capability flags.
@@ -682,9 +670,7 @@ pub fn nodeGetInDocument(
     document_path: []const u8,
     node_id: u64,
 ) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestInDocument(allocator, socket_path, document_path, "node.get", params_json);
+    return try requestForNodeInDocument(allocator, socket_path, document_path, node_id, "node.get", "{}");
 }
 
 /// Sends one raw JSON-RPC request using a short-lived client handle.
@@ -712,6 +698,22 @@ pub fn requestInDocument(
     return try client.request(method, params_json);
 }
 
+pub fn requestForNodeInDocument(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    document_path: []const u8,
+    node_id: u64,
+    method: []const u8,
+    params_json: []const u8,
+) ![]u8 {
+    var client = try client_mod.Client.initForDocument(allocator, socket_path, document_path);
+    defer client.deinit();
+    return try client.requestTarget(.{
+        .documentPath = document_path,
+        .nodeId = node_id,
+    }, method, params_json);
+}
+
 /// Sends one raw JSON-RPC request using an existing persistent client handle.
 pub fn requestWithClient(client: *client_mod.Client, method: []const u8, params_json: []const u8) ![]u8 {
     return try client.request(method, params_json);
@@ -719,9 +721,11 @@ pub fn requestWithClient(client: *client_mod.Client, method: []const u8, params_
 
 /// Returns one node payload by id using an existing persistent client handle.
 pub fn nodeGetWithClient(client: *client_mod.Client, allocator: std.mem.Allocator, node_id: u64) ![]u8 {
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
-    defer allocator.free(params_json);
-    return try requestWithClient(client, "node.get", params_json);
+    _ = allocator;
+    return try client.requestTarget(.{
+        .documentPath = client.document_path,
+        .nodeId = node_id,
+    }, "node.get", "{}");
 }
 
 /// Returns a boxed viewer projection using an existing persistent client handle.

@@ -49,13 +49,25 @@ pub const Client = struct {
     /// The returned slice is the raw UTF-8 response payload and is owned by the
     /// caller.
     pub fn request(self: *Client, method: []const u8, params_json: []const u8) ![]u8 {
+        return try self.requestTarget(.{
+            .documentPath = self.document_path,
+        }, method, params_json);
+    }
+
+    /// Sends one JSON-RPC request against an explicit request target.
+    pub fn requestTarget(
+        self: *Client,
+        target: protocol.RequestTarget,
+        method: []const u8,
+        params_json: []const u8,
+    ) ![]u8 {
         var request_json = std.array_list.Managed(u8).init(self.allocator);
         defer request_json.deinit();
 
-        try protocol.writeClientRequest(
+        try protocol.writeClientRequestTarget(
             request_json.writer(),
             self.next_request_id,
-            self.document_path,
+            target,
             method,
             params_json,
         );

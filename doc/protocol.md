@@ -88,6 +88,14 @@ explicit, testable, and debuggable.
   - optional `title`
 - `document.list` returns the daemon's registered document catalog, including
   each document's path, id, title, lifecycle, root node id, and node count
+- request `target` metadata now supports:
+  - `documentPath`
+  - optional `nodeId`
+  - optional `selector`
+- daemon-owned node-targeted methods currently prefer `target.nodeId` over
+  legacy `params.nodeId` when both are present
+- `target.selector` is parsed and reserved, but currently returns a structured
+  unsupported error until selector resolution is moved into the daemon
 - `projection.get` is the public boxed-view surface for one concrete viewport;
   it combines:
   - shared document state from the daemon-owned TOM

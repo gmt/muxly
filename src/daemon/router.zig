@@ -113,8 +113,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "node.get")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const node = document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         var result = std.array_list.Managed(u8).init(allocator);
@@ -184,8 +187,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "node.update")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const title = protocol.getString(parsed.value.params, "title");
         const content = protocol.getString(parsed.value.params, "content");
         store.updateNode(document, @intCast(node_id), title, content) catch |err| {
@@ -197,8 +203,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "node.freeze")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const artifact_kind_name = protocol.getString(parsed.value.params, "artifactKind") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "artifactKind is required");
         const artifact_kind = parseTerminalArtifactKind(artifact_kind_name) orelse
@@ -234,8 +243,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "node.remove")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         store.removeNode(document, @intCast(node_id)) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to remove node: {s}", .{@errorName(err)});
             defer allocator.free(message);
@@ -422,8 +434,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.setRoot")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         document.setViewRoot(@intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
@@ -435,16 +450,22 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.elide")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         document.toggleElided(@intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.expand")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         store.expandNode(document, @intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
@@ -480,8 +501,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "leaf.source.get")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const node = document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
 
@@ -494,8 +518,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "file.capture")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const capture = store.captureFileNode(document, @intCast(node_id)) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to capture file node: {s}", .{@errorName(err)});
             defer allocator.free(message);
@@ -511,8 +538,11 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "file.followTail")) {
-        const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
-            return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
+        const node_id = requestNodeIdOrError(parsed.value) catch |err| switch (err) {
+            error.MissingNodeTarget => return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required"),
+            error.UnsupportedNodeSelector => return try buildError(allocator, parsed.value.id, .unsupported, "target.selector is not implemented yet"),
+            else => return err,
+        };
         const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "enabled is required");
         store.setFileFollowTail(document, @intCast(node_id), enabled) catch |err| {
@@ -738,6 +768,10 @@ fn parseTerminalArtifactKind(name: []const u8) ?muxly.source.TerminalArtifactKin
     if (std.mem.eql(u8, name, "text")) return .text;
     if (std.mem.eql(u8, name, "surface")) return .surface;
     return null;
+}
+
+fn requestNodeIdOrError(request: protocol.RequestEnvelope) !i64 {
+    return try protocol.requestTargetNodeId(request, "nodeId");
 }
 
 fn parseProjectionRequest(allocator: std.mem.Allocator, params: ?std.json.Value) !muxly.projection.Request {

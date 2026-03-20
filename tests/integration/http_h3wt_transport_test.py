@@ -277,6 +277,53 @@ def assert_document_catalog_and_scoping(
     assert "root document target /" in responses[6]["error"]["message"]
 
 
+def assert_node_target_shape(
+    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+) -> None:
+    created = run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "node.append",
+                "params": {"parentId": 1, "kind": "scroll_region", "title": "node-target-demo"},
+            },
+        ],
+    )
+
+    node_id = created[0]["result"]["nodeId"]
+
+    responses = run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "target": {"documentPath": "/", "nodeId": node_id},
+                "method": "node.get",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "target": {"documentPath": "/", "selector": "node-target-demo"},
+                "method": "node.get",
+                "params": {},
+            },
+        ],
+    )
+
+    assert responses[0]["result"]["id"] == node_id
+    assert responses[0]["result"]["title"] == "node-target-demo"
+    assert responses[1]["error"]["code"] == -32001
+    assert "target.selector is not implemented yet" in responses[1]["error"]["message"]
+
+
 def exercise_transport(
     cwd: pathlib.Path,
     env: dict[str, str],
@@ -289,6 +336,7 @@ def exercise_transport(
         assert_session_reuse(cwd, env, actual_transport)
         assert_document_target_handling(cwd, env, actual_transport)
         assert_document_catalog_and_scoping(cwd, env, actual_transport)
+        assert_node_target_shape(cwd, env, actual_transport)
     finally:
         stop_process(proc)
 
