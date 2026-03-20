@@ -5,6 +5,7 @@ comptime {
     _ = @import("capabilities_test.zig");
     _ = @import("cli_args_test.zig");
     _ = @import("protocol_test.zig");
+    _ = @import("router_document_test.zig");
     _ = @import("transport_test.zig");
     _ = @import("trd_test.zig");
     _ = @import("muxml_test.zig");

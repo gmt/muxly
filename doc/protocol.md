@@ -28,6 +28,8 @@ explicit, testable, and debuggable.
 
 ### Documents, views, and graph inspection
 
+- `document.create`
+- `document.list`
 - `document.get`
 - `document.status`
 - `document.serialize`
@@ -81,6 +83,11 @@ explicit, testable, and debuggable.
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
+- `document.create` currently accepts:
+  - `path`: absolute non-root document path without a trailing slash
+  - optional `title`
+- `document.list` returns the daemon's registered document catalog, including
+  each document's path, id, title, lifecycle, root node id, and node count
 - `projection.get` is the public boxed-view surface for one concrete viewport;
   it combines:
   - shared document state from the daemon-owned TOM
@@ -97,6 +104,9 @@ explicit, testable, and debuggable.
   payload and freeze response
 - `view.reset` clears shared root/elision transforms stored in the daemon's
   current document state without mutating source attachments or node content
+- generic document/node/view/file methods now honor `target.documentPath`
+- tmux-backed methods remain rooted to `/` for now; targeting another document
+  returns a structured unsupported error instead of mutating the root document
 - `session.create` accepts an optional `parentId`; when omitted it attaches the
   new TTY leaf at the document root
 - `pane.followTail` / `file.followTail` currently persist a node-level

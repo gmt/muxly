@@ -200,6 +200,83 @@ def assert_document_target_handling(
     assert "not supported yet" in responses[1]["error"]["message"]
 
 
+def assert_document_catalog_and_scoping(
+    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+) -> None:
+    attached_file = cwd / "scoped-demo.txt"
+    attached_file.write_text("scoped file content\n", encoding="utf-8")
+
+    responses = run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "document.create",
+                "params": {"path": "/demo/doc"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "document.list",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "target": {"documentPath": "/demo/doc"},
+                "method": "leaf.source.attach",
+                "params": {"kind": "static-file", "path": str(attached_file)},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "target": {"documentPath": "/demo/doc"},
+                "method": "file.capture",
+                "params": {"nodeId": 2},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "target": {"documentPath": "/demo/doc"},
+                "method": "document.get",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "target": {"documentPath": "/"},
+                "method": "document.get",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "target": {"documentPath": "/demo/doc"},
+                "method": "session.create",
+                "params": {"sessionName": "should-not-cross"},
+            },
+        ],
+    )
+
+    assert responses[0]["result"]["path"] == "/demo/doc"
+    listed_paths = [entry["path"] for entry in responses[1]["result"]]
+    assert "/" in listed_paths
+    assert "/demo/doc" in listed_paths
+    assert responses[2]["result"]["nodeId"] == 2
+    assert responses[3]["result"]["content"] == "scoped file content\n"
+
+    demo_titles = [node["title"] for node in responses[4]["result"]["nodes"]]
+    assert str(attached_file) in demo_titles
+    root_titles = [node["title"] for node in responses[5]["result"]["nodes"]]
+    assert str(attached_file) not in root_titles
+
+    assert responses[6]["error"]["code"] == -32001
+    assert "root document target /" in responses[6]["error"]["message"]
+
+
 def exercise_transport(
     cwd: pathlib.Path,
     env: dict[str, str],
@@ -211,6 +288,7 @@ def exercise_transport(
         assert_trd_resolution(cwd, env, actual_transport)
         assert_session_reuse(cwd, env, actual_transport)
         assert_document_target_handling(cwd, env, actual_transport)
+        assert_document_catalog_and_scoping(cwd, env, actual_transport)
     finally:
         stop_process(proc)
 

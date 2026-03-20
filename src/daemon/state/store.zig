@@ -69,6 +69,36 @@ pub const Store = struct {
         return error.UnsupportedDocumentPath;
     }
 
+    pub fn createDocument(
+        self: *Store,
+        document_path: []const u8,
+        title: ?[]const u8,
+    ) !*document_mod.Document {
+        if (document_path.len == 0 or document_path[0] != '/') return error.InvalidDocumentPath;
+        if (std.mem.eql(u8, document_path, root_document_path)) return error.DocumentAlreadyExists;
+        if (document_path.len > 1 and document_path[document_path.len - 1] == '/') return error.InvalidDocumentPath;
+
+        for (self.documents.items) |entry| {
+            if (std.mem.eql(u8, entry.path, document_path)) return error.DocumentAlreadyExists;
+        }
+
+        const owned_title = if (title == null) try defaultDocumentTitleFromPath(self.allocator, document_path) else null;
+        defer if (owned_title) |value| self.allocator.free(value);
+        const resolved_title = title orelse owned_title.?;
+
+        const document_id = self.next_document_id;
+        self.next_document_id += 1;
+
+        var document = try document_mod.Document.init(self.allocator, document_id, resolved_title);
+        errdefer document.deinit();
+
+        try self.documents.append(self.allocator, .{
+            .path = try self.allocator.dupe(u8, document_path),
+            .document = document,
+        });
+        return &self.documents.items[self.documents.items.len - 1].document;
+    }
+
     pub fn deinit(self: *Store) void {
         if (self.control_connection) |*connection| {
             connection.deinit();
@@ -126,45 +156,47 @@ pub const Store = struct {
     }
 
     pub fn refreshSources(self: *Store) !void {
-        for (self.rootDocument().nodes.items) |*node| {
-            switch (node.source) {
-                .none => {},
-                .tty => |tty| {
-                    if (tty.pane_id) |pane_id| {
-                        const capture = tmux.capturePane(self.allocator, pane_id) catch {
+        for (self.documents.items) |*entry| {
+            for (entry.document.nodes.items) |*node| {
+                switch (node.source) {
+                    .none => {},
+                    .tty => |tty| {
+                        if (tty.pane_id) |pane_id| {
+                            const capture = tmux.capturePane(self.allocator, pane_id) catch {
+                                var fallback = std.array_list.Managed(u8).init(self.allocator);
+                                defer fallback.deinit();
+                                try fallback.writer().print("tty source unavailable for pane {s} in session {s}", .{
+                                    pane_id,
+                                    tty.session_name,
+                                });
+                                try node.setContent(self.allocator, fallback.items);
+                                continue;
+                            };
+                            defer self.allocator.free(capture);
+                            try node.setContent(self.allocator, capture);
+                        } else {
+                            var buffer = std.array_list.Managed(u8).init(self.allocator);
+                            defer buffer.deinit();
+                            try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
+                            try node.setContent(self.allocator, buffer.items);
+                        }
+                    },
+                    .terminal_artifact => {},
+                    .file => |file| {
+                        const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
                             var fallback = std.array_list.Managed(u8).init(self.allocator);
                             defer fallback.deinit();
-                            try fallback.writer().print("tty source unavailable for pane {s} in session {s}", .{
-                                pane_id,
-                                tty.session_name,
+                            try fallback.writer().print("file source unavailable at {s}: {s}", .{
+                                file.path,
+                                @errorName(err),
                             });
                             try node.setContent(self.allocator, fallback.items);
                             continue;
                         };
-                        defer self.allocator.free(capture);
-                        try node.setContent(self.allocator, capture);
-                    } else {
-                        var buffer = std.array_list.Managed(u8).init(self.allocator);
-                        defer buffer.deinit();
-                        try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
-                        try node.setContent(self.allocator, buffer.items);
-                    }
-                },
-                .terminal_artifact => {},
-                .file => |file| {
-                    const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
-                        var fallback = std.array_list.Managed(u8).init(self.allocator);
-                        defer fallback.deinit();
-                        try fallback.writer().print("file source unavailable at {s}: {s}", .{
-                            file.path,
-                            @errorName(err),
-                        });
-                        try node.setContent(self.allocator, fallback.items);
-                        continue;
-                    };
-                    defer self.allocator.free(content);
-                    try node.setContent(self.allocator, content);
-                },
+                        defer self.allocator.free(content);
+                        try node.setContent(self.allocator, content);
+                    },
+                }
             }
         }
     }
@@ -182,6 +214,7 @@ pub const Store = struct {
 
     pub fn attachFile(
         self: *Store,
+        document: *document_mod.Document,
         path: []const u8,
         mode: source_mod.FileMode,
     ) !ids.NodeId {
@@ -189,8 +222,8 @@ pub const Store = struct {
             .monitored => .monitored_file_leaf,
             .static => .static_file_leaf,
         };
-        const node_id = try self.rootDocument().appendNode(
-            self.rootDocument().root_node_id,
+        const node_id = try document.appendNode(
+            document.root_node_id,
             node_kind,
             path,
             .{ .file = .{ .path = @constCast(path), .mode = mode } },
@@ -199,8 +232,8 @@ pub const Store = struct {
         return node_id;
     }
 
-    pub fn attachTty(self: *Store, session_name: []const u8) !ids.NodeId {
-        return try self.attachPaneRef(self.rootDocument().root_node_id, .{
+    pub fn attachTty(self: *Store, document: *document_mod.Document, session_name: []const u8) !ids.NodeId {
+        return try self.attachPaneRef(document, document.root_node_id, .{
             .pane_id = try self.allocator.dupe(u8, ""),
             .window_id = try self.allocator.dupe(u8, ""),
             .session_name = try self.allocator.dupe(u8, session_name),
@@ -332,9 +365,9 @@ pub const Store = struct {
         try self.rootDocument().setFollowTail(node_id, enabled);
     }
 
-    pub fn captureFileNode(self: *Store, node_id: ids.NodeId) ![]u8 {
+    pub fn captureFileNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) ![]u8 {
         try self.refreshSources();
-        const node = self.rootDocument().findNode(node_id) orelse return error.UnknownNode;
+        const node = document.findNode(node_id) orelse return error.UnknownNode;
         switch (node.source) {
             .file => {},
             else => return error.InvalidSourceKind,
@@ -342,8 +375,9 @@ pub const Store = struct {
         return try self.allocator.dupe(u8, node.content);
     }
 
-    pub fn setFileFollowTail(self: *Store, node_id: ids.NodeId, enabled: bool) !void {
-        const node = self.rootDocument().findNode(node_id) orelse return error.UnknownNode;
+    pub fn setFileFollowTail(self: *Store, document: *document_mod.Document, node_id: ids.NodeId, enabled: bool) !void {
+        _ = self;
+        const node = document.findNode(node_id) orelse return error.UnknownNode;
         switch (node.source) {
             .file => {},
             else => return error.InvalidSourceKind,
@@ -351,43 +385,50 @@ pub const Store = struct {
         node.follow_tail = enabled;
     }
 
-    pub fn resetView(self: *Store) void {
-        self.rootDocument().resetView();
+    pub fn resetView(self: *Store, document: *document_mod.Document) void {
+        _ = self;
+        document.resetView();
     }
 
-    pub fn appendNode(self: *Store, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
-        const node_id = try self.rootDocument().appendNode(parent_id, kind, title, .{ .none = {} });
+    pub fn appendNode(self: *Store, document: *document_mod.Document, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
+        _ = self;
+        const node_id = try document.appendNode(parent_id, kind, title, .{ .none = {} });
         return node_id;
     }
 
-    pub fn updateNode(self: *Store, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
-        if (title) |value| try self.rootDocument().setNodeTitle(node_id, value);
-        if (content) |value| try self.rootDocument().setNodeContent(node_id, value);
+    pub fn updateNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
+        _ = self;
+        if (title) |value| try document.setNodeTitle(node_id, value);
+        if (content) |value| try document.setNodeContent(node_id, value);
     }
 
     pub fn freezeTerminalNode(
         self: *Store,
+        document: *document_mod.Document,
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
     ) !void {
-        const sections = try self.captureTerminalArtifact(node_id, artifact_kind);
-        try self.rootDocument().freezeTtyNodeAsArtifact(node_id, artifact_kind, sections);
+        const sections = try self.captureTerminalArtifact(document, node_id, artifact_kind);
+        try document.freezeTtyNodeAsArtifact(node_id, artifact_kind, sections);
     }
 
-    pub fn removeNode(self: *Store, node_id: ids.NodeId) !void {
-        try self.rootDocument().removeNode(node_id);
+    pub fn removeNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) !void {
+        _ = self;
+        try document.removeNode(node_id);
     }
 
-    pub fn clearViewRoot(self: *Store) void {
-        self.rootDocument().clearViewRoot();
+    pub fn clearViewRoot(self: *Store, document: *document_mod.Document) void {
+        _ = self;
+        document.clearViewRoot();
     }
 
-    pub fn expandNode(self: *Store, node_id: ids.NodeId) !void {
-        try self.rootDocument().setElided(node_id, false);
+    pub fn expandNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) !void {
+        _ = self;
+        try document.setElided(node_id, false);
     }
 
-    fn attachPaneRef(self: *Store, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
-        const node_id = try self.rootDocument().appendNode(
+    fn attachPaneRef(self: *Store, document: *document_mod.Document, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
+        const node_id = try document.appendNode(
             parent_id,
             .tty_leaf,
             pane_ref.session_name,
@@ -563,10 +604,11 @@ pub const Store = struct {
 
     fn captureTerminalArtifact(
         self: *Store,
+        document: *document_mod.Document,
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
     ) !source_mod.TerminalArtifactSections {
-        const node = self.rootDocument().findNode(node_id) orelse return error.UnknownNode;
+        const node = document.findNode(node_id) orelse return error.UnknownNode;
         const tty = switch (node.source) {
             .tty => |value| value,
             else => return error.InvalidSourceKind,
@@ -589,6 +631,21 @@ pub const Store = struct {
         return self.documentForPath(root_document_path) catch unreachable;
     }
 };
+
+fn defaultDocumentTitleFromPath(allocator: std.mem.Allocator, document_path: []const u8) ![]u8 {
+    const base = std.fs.path.basename(document_path);
+    if (base.len != 0 and !std.mem.eql(u8, base, "/")) {
+        return try allocator.dupe(u8, base);
+    }
+
+    const trimmed = std.mem.trimRight(u8, document_path, "/");
+    const trimmed_base = std.fs.path.basename(trimmed);
+    if (trimmed_base.len != 0 and !std.mem.eql(u8, trimmed_base, "/")) {
+        return try allocator.dupe(u8, trimmed_base);
+    }
+
+    return try allocator.dupe(u8, "document");
+}
 
 fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     var buffer = std.array_list.Managed(u8).init(allocator);

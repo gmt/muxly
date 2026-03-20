@@ -36,6 +36,35 @@ pub fn documentGetInDocument(
     return try requestInDocument(allocator, socket_path, document_path, "document.get", "{}");
 }
 
+/// Lists documents currently registered in the daemon.
+pub fn documentList(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
+    return try request(allocator, socket_path, "document.list", "{}");
+}
+
+/// Creates a new document at `document_path`, optionally overriding its title.
+pub fn documentCreate(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    document_path: []const u8,
+    title: ?[]const u8,
+) ![]u8 {
+    const path_json = try std.json.Stringify.valueAlloc(allocator, document_path, .{});
+    defer allocator.free(path_json);
+
+    const params_json = if (title) |value| blk: {
+        const title_json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        defer allocator.free(title_json);
+        break :blk try std.fmt.allocPrint(
+            allocator,
+            "{{\"path\":{s},\"title\":{s}}}",
+            .{ path_json, title_json },
+        );
+    } else try std.fmt.allocPrint(allocator, "{{\"path\":{s}}}", .{path_json});
+    defer allocator.free(params_json);
+
+    return try request(allocator, socket_path, "document.create", params_json);
+}
+
 /// Returns the current graph/document payload through the graph alias surface.
 pub fn graphGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "graph.get", "{}");

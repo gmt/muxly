@@ -4,6 +4,8 @@ const protocol = muxly.protocol;
 const errors = muxly.errors;
 const store_mod = @import("state/store.zig");
 
+pub const Store = store_mod.Store;
+
 pub fn handleRequest(
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
@@ -16,6 +18,44 @@ pub fn handleRequest(
 
     if (!std.mem.eql(u8, parsed.value.jsonrpc, protocol.JsonRpcVersion)) {
         return try buildError(allocator, parsed.value.id, .invalid_request, "jsonrpc must be 2.0");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "ping")) {
+        return try buildResult(allocator, parsed.value.id, "{\"pong\":true}");
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "initialize") or std.mem.eql(u8, parsed.value.method, "capabilities.get")) {
+        var result = std.array_list.Managed(u8).init(allocator);
+        defer result.deinit();
+        try store.capabilities.writeJson(result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "document.list")) {
+        var result = std.array_list.Managed(u8).init(allocator);
+        defer result.deinit();
+        try writeDocumentList(store, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
+    }
+
+    if (std.mem.eql(u8, parsed.value.method, "document.create")) {
+        const path = protocol.getString(parsed.value.params, "path") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "path is required");
+        const title = protocol.getString(parsed.value.params, "title");
+        const document = store.createDocument(path, title) catch |err| switch (err) {
+            error.InvalidDocumentPath => {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "path must be an absolute non-root path without a trailing slash");
+            },
+            error.DocumentAlreadyExists => {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "document path already exists");
+            },
+            else => return err,
+        };
+
+        var result = std.array_list.Managed(u8).init(allocator);
+        defer result.deinit();
+        try writeDocumentSummary(path, document, result.writer());
+        return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     const document_path = protocol.requestDocumentPath(parsed.value) catch {
@@ -38,17 +78,6 @@ pub fn handleRequest(
         error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
         else => return err,
     };
-
-    if (std.mem.eql(u8, parsed.value.method, "ping")) {
-        return try buildResult(allocator, parsed.value.id, "{\"pong\":true}");
-    }
-
-    if (std.mem.eql(u8, parsed.value.method, "initialize") or std.mem.eql(u8, parsed.value.method, "capabilities.get")) {
-        var result = std.array_list.Managed(u8).init(allocator);
-        defer result.deinit();
-        try store.capabilities.writeJson(result.writer());
-        return try buildResult(allocator, parsed.value.id, result.items);
-    }
 
     if (std.mem.eql(u8, parsed.value.method, "document.get") or
         std.mem.eql(u8, parsed.value.method, "graph.get") or
@@ -146,7 +175,7 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "title is required");
         const kind = parseNodeKind(kind_name) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported node kind");
-        const node_id = store.appendNode(@intCast(parent_id), kind, title) catch |err| {
+        const node_id = store.appendNode(document, @intCast(parent_id), kind, title) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to append node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -159,7 +188,7 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
         const title = protocol.getString(parsed.value.params, "title");
         const content = protocol.getString(parsed.value.params, "content");
-        store.updateNode(@intCast(node_id), title, content) catch |err| {
+        store.updateNode(document, @intCast(node_id), title, content) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to update node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -174,7 +203,7 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "artifactKind is required");
         const artifact_kind = parseTerminalArtifactKind(artifact_kind_name) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported artifactKind");
-        store.freezeTerminalNode(@intCast(node_id), artifact_kind) catch |err| {
+        store.freezeTerminalNode(document, @intCast(node_id), artifact_kind) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to freeze node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -207,7 +236,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "node.remove")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        store.removeNode(@intCast(node_id)) catch |err| {
+        store.removeNode(document, @intCast(node_id)) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to remove node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -216,6 +245,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "session.create")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "session.create");
+        }
         const parent_id: u64 = if (protocol.getInteger(parsed.value.params, "parentId")) |value| blk: {
             if (value < 0) {
                 return try buildError(allocator, parsed.value.id, .invalid_params, "parentId must be non-negative");
@@ -234,6 +266,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "window.create")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "window.create");
+        }
         const target = protocol.getString(parsed.value.params, "target") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
         const window_name = protocol.getString(parsed.value.params, "windowName");
@@ -247,6 +282,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.split")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.split");
+        }
         const target = protocol.getString(parsed.value.params, "target") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
         const direction = protocol.getString(parsed.value.params, "direction") orelse "below";
@@ -260,6 +298,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.capture")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.capture");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const capture = store.captureTmuxPane(pane_id) catch
@@ -276,6 +317,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.scroll")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.scroll");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const start_line = protocol.getInteger(parsed.value.params, "startLine") orelse
@@ -299,6 +343,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.resize")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.resize");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const direction = protocol.getString(parsed.value.params, "direction") orelse
@@ -314,6 +361,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.focus")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.focus");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         store.focusTmuxPane(pane_id) catch |err| {
@@ -325,6 +375,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.sendKeys")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.sendKeys");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const keys = protocol.getString(parsed.value.params, "keys") orelse
@@ -339,6 +392,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.close")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.close");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         store.closeTmuxPane(pane_id) catch |err| {
@@ -350,6 +406,9 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.followTail")) {
+        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
+            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.followTail");
+        }
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
@@ -371,7 +430,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.clearRoot")) {
-        store.clearViewRoot();
+        store.clearViewRoot(document);
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
@@ -386,7 +445,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "view.expand")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        store.expandNode(@intCast(node_id)) catch
+        store.expandNode(document, @intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
@@ -398,7 +457,7 @@ pub fn handleRequest(
         if (std.mem.eql(u8, kind, "static-file") or std.mem.eql(u8, kind, "monitored-file")) {
             const path = protocol.getString(parsed.value.params, "path") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "path is required");
-            const node_id = store.attachFile(path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch |err| {
+            const node_id = store.attachFile(document, path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch |err| {
                 const message = try std.fmt.allocPrint(allocator, "unable to attach file source: {s}", .{@errorName(err)});
                 defer allocator.free(message);
                 return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -409,7 +468,7 @@ pub fn handleRequest(
         if (std.mem.eql(u8, kind, "tty")) {
             const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
-            const node_id = store.attachTty(session_name) catch |err| {
+            const node_id = store.attachTty(document, session_name) catch |err| {
                 const message = try std.fmt.allocPrint(allocator, "unable to attach tty source: {s}", .{@errorName(err)});
                 defer allocator.free(message);
                 return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -437,7 +496,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "file.capture")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        const capture = store.captureFileNode(@intCast(node_id)) catch |err| {
+        const capture = store.captureFileNode(document, @intCast(node_id)) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to capture file node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -456,7 +515,7 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
         const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "enabled is required");
-        store.setFileFollowTail(@intCast(node_id), enabled) catch |err| {
+        store.setFileFollowTail(document, @intCast(node_id), enabled) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to set file follow tail: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -465,7 +524,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "view.reset")) {
-        store.resetView();
+        store.resetView(document);
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
@@ -535,6 +594,46 @@ fn buildError(
     defer buffer.deinit();
     try protocol.writeError(buffer.writer(), id, code, message);
     return try buffer.toOwnedSlice();
+}
+
+fn buildRootOnlyTargetError(
+    allocator: std.mem.Allocator,
+    id: ?std.json.Value,
+    method_name: []const u8,
+) ![]u8 {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "{s} currently supports only the root document target /",
+        .{method_name},
+    );
+    defer allocator.free(message);
+    return try buildError(allocator, id, .unsupported, message);
+}
+
+fn writeDocumentList(store: *store_mod.Store, writer: anytype) !void {
+    try writer.writeAll("[");
+    for (store.documents.items, 0..) |entry, index| {
+        if (index != 0) try writer.writeAll(",");
+        try writeDocumentSummary(entry.path, &entry.document, writer);
+    }
+    try writer.writeAll("]");
+}
+
+fn writeDocumentSummary(
+    document_path: []const u8,
+    document: *const muxly.document.Document,
+    writer: anytype,
+) !void {
+    try writer.writeAll("{\"path\":");
+    try writer.print("{f}", .{std.json.fmt(document_path, .{})});
+    try writer.writeAll(",\"id\":");
+    try writer.print("{d}", .{document.id});
+    try writer.writeAll(",\"title\":");
+    try writer.print("{f}", .{std.json.fmt(document.title, .{})});
+    try writer.print(",\"lifecycle\":\"{s}\"", .{@tagName(document.lifecycle)});
+    try writer.print(",\"rootNodeId\":{d}", .{document.root_node_id});
+    try writer.print(",\"nodeCount\":{d}", .{document.nodes.items.len});
+    try writer.writeAll("}");
 }
 
 fn writeSessionList(store: *store_mod.Store, writer: anytype) !void {
