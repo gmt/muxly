@@ -186,6 +186,7 @@ export fn muxly_client_node_update_ex(
 ) MuxlyStatus {
     const out = initStringOut(out_response) orelse return .null_argument;
     const client = handle orelse return .null_argument;
+    if (title == null and content == null) return .invalid_argument;
     const title_slice = if (title) |value| std.mem.span(value) else null;
     const content_slice = if (content) |value| std.mem.span(value) else null;
     return writeOwnedStringResult(
