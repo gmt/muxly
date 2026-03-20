@@ -11,7 +11,7 @@ pub const Listener = struct {
     /// Creates a listening Unix-domain socket, removing any stale socket file
     /// first.
     pub fn init(socket_path: []const u8) !Listener {
-        std.fs.deleteFileAbsolute(socket_path) catch |err| switch (err) {
+        std.posix.unlink(socket_path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
@@ -24,7 +24,7 @@ pub const Listener = struct {
     /// Shuts down the listener and removes the socket file best-effort.
     pub fn deinit(self: *Listener) void {
         self.server.deinit();
-        std.fs.deleteFileAbsolute(self.socket_path) catch {};
+        std.posix.unlink(self.socket_path) catch {};
     }
 
     /// Accepts one incoming client connection.

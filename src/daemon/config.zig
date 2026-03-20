@@ -9,10 +9,11 @@ pub const ParseError = error{
 pub const usage =
     \\usage: muxlyd [--transport SPEC] [--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated]
     \\
-    \\  --transport   listen on unix, tcp, or prefixed unsafe+tcp transport specs
-    \\  --socket      legacy alias for a unix-domain socket path
+    \\  --transport   listen on unix, tcp, http, or h3wt transport specs
+    \\  --socket      legacy alias for a unix-domain socket path; defaults to
+    \\                ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
     \\  --i-know-this-is-unencrypted-and-unauthenticated
-    \\                allow tcp listeners outside loopback/link-local ranges
+    \\                allow tcp/http listeners outside loopback/link-local ranges
     \\  --help        show this help text
     \\
 ;

@@ -52,6 +52,7 @@ pub const Capabilities = struct {
         if (self.supports_tcp_socket) {
             if (self.supports_unix_socket) try writer.writeAll(",");
             try writer.writeAll("\"tcp\"");
+            try writer.writeAll(",\"http\",\"h3wt\"");
         }
         if (self.supports_named_pipes) {
             if (self.supports_unix_socket or self.supports_tcp_socket) try writer.writeAll(",");

@@ -107,14 +107,24 @@ interactive navigation. Press `q` to leave the attached viewer session.
 `muxly`, `muxlyd`, and `muxview` now accept `--transport` in addition to the
 legacy `--socket` flag. Supported specs are:
 
-- bare paths or `unix:///tmp/muxly.sock`
+- bare paths or `unix:///run/user/$UID/muxly.sock`
 - `tcp://169.254.10.20:4488`
+- `http://127.0.0.1:8080/rpc`
+- `h3wt://127.0.0.1:4433/mux?sha256=<cert-pin>`
 - `ssh://alice@example.com/tcp://169.254.10.20:4488`
 - `ssh://alice@example.com:2222/tcp://169.254.10.20:4488`
 
-Plain TCP is intentionally restricted to loopback and link-local addresses
-unless you also pass
+When no transport is specified, muxly prefers
+`${XDG_RUNTIME_DIR}/muxly.sock`, then `/run/user/$UID/muxly.sock`, and finally
+falls back to `/tmp/muxly.sock`.
+
+Plain `tcp://` and `http://` are intentionally restricted to loopback and
+link-local addresses unless you also pass
 `--i-know-this-is-unencrypted-and-unauthenticated`.
+
+`h3wt://` is a WebTransport-over-HTTP/3 transport. The daemon prints a
+ready-to-use `?sha256=...` certificate pin when it starts listening, and the
+client accepts `wt://` as a shorthand alias for the same transport.
 
 If you need a custom SSH client config for transport testing or host-specific
 identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
@@ -122,6 +132,12 @@ identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
 `zig build test` stays Docker-free and permission-free. For CI, use
 `zig build test-ci`; it runs the unit suite by default and only adds the Docker
 transport integration coverage when `MUXLY_ENABLE_DOCKER_TESTS=1` is present.
+
+To run the local HTTP/H3WT transport integration coverage, use:
+
+```sh
+zig build test-transport
+```
 
 To run the Docker-backed integration coverage explicitly, including the raw TCP
 path that requires
@@ -136,6 +152,25 @@ or the underlying script directly:
 ```sh
 python3 tests/integration/docker_transport_test.py
 ```
+
+### TRD descriptors
+
+TOM Resource Descriptors combine a transport, a document path placeholder, and
+a TOM selector into one string:
+
+- `trd://wt|host.lan:4433/mux?sha256=...//doc/path#node/path`
+- `trd://http|127.0.0.1:8080/rpc//#welcome`
+- `trd:#welcome/child`
+
+Absolute TRDs use `trd://<transport-code>|<endpoint>//<document>#<selector>`.
+Relative TRDs use `trd:#...` and stay on the current transport. Today muxly
+only has one live document, so the document portion is currently a reserved
+placeholder and `/` is the practical default.
+
+`trd://` is valid and refers to the root node on the runtime-default transport.
+`trd://foo` is shorthand for "the `foo` selector on the runtime-default
+transport and root document". CLI commands that normally take node ids now also
+accept TRDs.
 
 ### Viewer keys, exremely preliminary
 

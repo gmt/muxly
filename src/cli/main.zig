@@ -38,26 +38,31 @@ pub fn main() !void {
     else if (std.mem.eql(u8, args[cursor], "capabilities") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try muxly.api.capabilitiesGet(allocator, transport_spec)
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "get")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.nodeGet(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.nodeGet(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "append")) blk: {
-        const parent_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.nodeAppend(allocator, transport_spec, parent_id, args[cursor + 3], args[cursor + 4]);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.nodeAppend(allocator, target.transport_spec, target.node_id, args[cursor + 3], args[cursor + 4]);
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "update")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
         break :blk try muxly.api.nodeUpdate(
             allocator,
-            transport_spec,
-            node_id,
+            target.transport_spec,
+            target.node_id,
             if (std.mem.eql(u8, args[cursor + 3], "title")) args[cursor + 4] else null,
             if (std.mem.eql(u8, args[cursor + 3], "content")) args[cursor + 4] else null,
         );
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.nodeFreeze(allocator, transport_spec, node_id, args[cursor + 3]);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.nodeFreeze(allocator, target.transport_spec, target.node_id, args[cursor + 3]);
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "remove")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.nodeRemove(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.nodeRemove(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "session") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
         try muxly.api.sessionList(allocator, transport_spec)
     else if (std.mem.eql(u8, args[cursor], "window") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
@@ -84,11 +89,12 @@ pub fn main() !void {
             if (cursor + 3 < args.len) args[cursor + 3] else null,
         );
     } else if (std.mem.eql(u8, args[cursor], "session") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "create-under")) blk: {
-        const parent_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
         break :blk try muxly.api.sessionCreateAt(
             allocator,
-            transport_spec,
-            parent_id,
+            target.transport_spec,
+            target.node_id,
             args[cursor + 3],
             if (cursor + 4 < args.len) args[cursor + 4] else null,
         );
@@ -147,17 +153,20 @@ pub fn main() !void {
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file")) blk: {
         break :blk try muxly.api.leafAttachFile(allocator, transport_spec, args[cursor + 2], args[cursor + 3]);
     } else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "source-get")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.leafSourceGet(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.leafSourceGet(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "file") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "capture")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.fileCapture(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.fileCapture(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "file") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "follow-tail")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
         break :blk try muxly.api.fileFollowTail(
             allocator,
-            transport_spec,
-            node_id,
+            target.transport_spec,
+            target.node_id,
             std.mem.eql(u8, args[cursor + 3], "true"),
         );
     } else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-tty")) blk: {
@@ -167,15 +176,16 @@ pub fn main() !void {
     else if (std.mem.eql(u8, args[cursor], "projection") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "get")) blk: {
         const rows = try std.fmt.parseInt(u16, args[cursor + 2], 10);
         const cols = try std.fmt.parseInt(u16, args[cursor + 3], 10);
-        const focused_node_id = if (cursor + 4 < args.len)
-            try std.fmt.parseInt(u64, args[cursor + 4], 10)
+        var focused_target = if (cursor + 4 < args.len)
+            try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 4])
         else
             null;
-        break :blk try muxly.api.projectionGet(allocator, transport_spec, .{
+        defer if (focused_target) |*value| value.deinit(allocator);
+        break :blk try muxly.api.projectionGet(allocator, if (focused_target) |value| value.transport_spec else transport_spec, .{
             .rows = rows,
             .cols = cols,
             .local_state = .{
-                .focused_node_id = focused_node_id,
+                .focused_node_id = if (focused_target) |value| value.node_id else null,
             },
         });
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "reset"))
@@ -183,18 +193,50 @@ pub fn main() !void {
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "clear-root"))
         try muxly.api.viewClearRoot(allocator, transport_spec)
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.viewSetRoot(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.viewSetRoot(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "elide")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.viewElide(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.viewElide(allocator, target.transport_spec, target.node_id);
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "expand")) blk: {
-        const node_id = try std.fmt.parseInt(u64, args[cursor + 2], 10);
-        break :blk try muxly.api.viewExpand(allocator, transport_spec, node_id);
+        var target = try resolveNodeTargetArg(allocator, transport_spec, args[cursor + 2]);
+        defer target.deinit(allocator);
+        break :blk try muxly.api.viewExpand(allocator, target.transport_spec, target.node_id);
     } else return printUsage();
     defer allocator.free(response);
 
     try cli_format.writeResponse(std.fs.File.stdout().deprecatedWriter(), response);
+}
+
+const NodeTargetArg = struct {
+    transport_spec: []u8,
+    node_id: u64,
+
+    fn deinit(self: *NodeTargetArg, allocator: std.mem.Allocator) void {
+        allocator.free(self.transport_spec);
+    }
+};
+
+fn resolveNodeTargetArg(
+    allocator: std.mem.Allocator,
+    current_transport_spec: []const u8,
+    arg: []const u8,
+) !NodeTargetArg {
+    if (muxly.trd.isDescriptor(arg)) {
+        const target = try muxly.trd.resolveNodeTarget(allocator, current_transport_spec, arg);
+        defer allocator.free(target.document_path);
+        return .{
+            .transport_spec = target.transport_spec,
+            .node_id = target.node_id,
+        };
+    }
+
+    return .{
+        .transport_spec = try allocator.dupe(u8, current_transport_spec),
+        .node_id = try std.fmt.parseInt(u64, arg, 10),
+    };
 }
 
 fn printUsage() !void {
@@ -241,6 +283,11 @@ fn printUsage() !void {
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view set-root <node-id>
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view elide <node-id>
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view expand <node-id>
+        \\
+        \\transport notes:
+        \\  SPEC may be unix paths, tcp://, ssh://, http://, or h3wt://
+        \\  bare/default sockets use ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
+        \\  node-id arguments above also accept trd://... or trd:#... selectors
         \\
     );
 }

@@ -6,6 +6,7 @@ comptime {
     _ = @import("cli_args_test.zig");
     _ = @import("protocol_test.zig");
     _ = @import("transport_test.zig");
+    _ = @import("trd_test.zig");
     _ = @import("view_test.zig");
     _ = @import("viewer_app_test.zig");
     _ = @import("viewer_render_test.zig");

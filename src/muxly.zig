@@ -42,6 +42,8 @@ pub const client = @import("lib/client.zig");
 pub const api = @import("lib/api.zig");
 /// Shared transport parsing and stream helpers for clients, the daemon, and relays.
 pub const transport = @import("lib/transport.zig");
+/// TOM resource descriptor parsing and selector resolution helpers.
+pub const trd = @import("lib/trd.zig");
 
 /// Backend implementation modules used by the daemon.
 pub const daemon = struct {

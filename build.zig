@@ -17,12 +17,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const docker_tests_enabled = envVarEnabled(b.allocator, "MUXLY_ENABLE_DOCKER_TESTS");
+    const build_options = b.addOptions();
+    build_options.addOption(
+        []const u8,
+        "transport_bridge_backend_path",
+        b.pathFromRoot("tools/transport_bridge/backend.py"),
+    );
 
     const muxly_module = b.addModule("muxly", .{
         .root_source_file = b.path("src/muxly.zig"),
         .target = target,
         .optimize = optimize,
     });
+    muxly_module.addImport("build_options", build_options.createModule());
 
     const daemon = b.addExecutable(.{
         .name = "muxlyd",
@@ -79,6 +86,13 @@ pub fn build(b: *std.Build) void {
     });
     const install_guided_tour = b.addInstallArtifact(guided_tour, .{});
     b.getInstallStep().dependOn(&install_guided_tour.step);
+
+    const install_transport_bridge = b.addInstallDirectory(.{
+        .source_dir = b.path("tools/transport_bridge"),
+        .install_dir = .prefix,
+        .install_subdir = "share/muxly/transport_bridge",
+    });
+    b.getInstallStep().dependOn(&install_transport_bridge.step);
 
     const shared = b.addLibrary(.{
         .linkage = .dynamic,
@@ -175,6 +189,22 @@ pub fn build(b: *std.Build) void {
         "Run Docker-backed transport integration tests",
     );
     test_docker_step.dependOn(&run_docker_transport_tests.step);
+
+    const run_transport_tests = b.addSystemCommand(&.{
+        "python3",
+        "tests/integration/http_h3wt_transport_test.py",
+        "--skip-build",
+    });
+    run_transport_tests.setCwd(b.path("."));
+    run_transport_tests.step.dependOn(&install_cli.step);
+    run_transport_tests.step.dependOn(&install_daemon.step);
+    run_transport_tests.step.dependOn(&install_transport_bridge.step);
+
+    const test_transport_step = b.step(
+        "test-transport",
+        "Run HTTP and H3WT transport integration tests",
+    );
+    test_transport_step.dependOn(&run_transport_tests.step);
 
     const test_ci_step = b.step(
         "test-ci",

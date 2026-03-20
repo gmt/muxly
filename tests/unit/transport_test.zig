@@ -41,6 +41,85 @@ test "tcp transport rejects non-local-only endpoints without override" {
     try unsafe_address.validateForClient();
 }
 
+test "http transport parses, validates local-only defaults, and round-trips" {
+    var safe_address = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "http://127.0.0.1:8080/rpc",
+    );
+    defer safe_address.deinit(std.testing.allocator);
+
+    try safe_address.validateForClient();
+
+    switch (safe_address.target) {
+        .http => |http| {
+            try std.testing.expectEqualStrings("127.0.0.1", http.host);
+            try std.testing.expectEqual(@as(u16, 8080), http.port);
+            try std.testing.expectEqualStrings("/rpc", http.path);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    var unsafe_http = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "unsafe+http://10.0.0.5:9000/api",
+    );
+    defer unsafe_http.deinit(std.testing.allocator);
+    try unsafe_http.validateForClient();
+
+    var serialized = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer serialized.deinit();
+    try unsafe_http.write(serialized.writer());
+    try std.testing.expectEqualStrings("unsafe+http://10.0.0.5:9000/api", serialized.items);
+}
+
+test "h3wt transport parses sha256 pins and round-trips" {
+    var address = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef",
+    );
+    defer address.deinit(std.testing.allocator);
+
+    switch (address.target) {
+        .h3wt => |h3wt| {
+            try std.testing.expectEqualStrings("127.0.0.1", h3wt.host);
+            try std.testing.expectEqual(@as(u16, 4433), h3wt.port);
+            try std.testing.expectEqualStrings("/mux", h3wt.path);
+            try std.testing.expectEqualStrings("deadbeef", h3wt.certificate_hash.?);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    var serialized = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer serialized.deinit();
+    try address.write(serialized.writer());
+    try std.testing.expectEqualStrings(
+        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef",
+        serialized.items,
+    );
+}
+
+test "ssh transport without remote spec uses the remote default transport" {
+    var address = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "ssh://alice@example.com",
+    );
+    defer address.deinit(std.testing.allocator);
+
+    switch (address.target) {
+        .ssh => |ssh| {
+            try std.testing.expectEqualStrings("alice@example.com", ssh.destination);
+            try std.testing.expectEqual(@as(?u16, null), ssh.port);
+            try std.testing.expectEqualStrings("", ssh.remote_spec);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    var serialized = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer serialized.deinit();
+    try address.write(serialized.writer());
+    try std.testing.expectEqualStrings("ssh://alice@example.com", serialized.items);
+}
+
 test "persistent client reuses one tcp connection for multiple requests" {
     const MockServer = struct {
         allocator: std.mem.Allocator,

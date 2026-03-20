@@ -7,9 +7,14 @@ const store_mod = @import("state/store.zig");
 pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     var store = try store_mod.Store.init(allocator);
     defer store.deinit();
+    var store_mutex = std.Thread.Mutex{};
 
-    var listener = try muxly.transport.Listener.init(&config.transport);
+    var listener = try muxly.transport.Listener.init(allocator, &config.transport);
     defer listener.deinit();
+    const single_request_per_connection = switch (listener.target) {
+        .proxy => true,
+        .unix, .tcp => false,
+    };
 
     const stderr = std.fs.File.stderr().deprecatedWriter();
     try stderr.writeAll("muxlyd listening on ");
@@ -17,23 +22,59 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     try stderr.writeByte('\n');
 
     while (true) {
-        var connection = try listener.accept();
-        defer connection.stream.close();
-        var request_reader = muxly.transport.MessageReader.init(allocator);
-        defer request_reader.deinit();
+        const connection = try listener.accept();
+        const thread = try std.Thread.spawn(.{}, serveConnection, .{ConnectionContext{
+            .store = &store,
+            .store_mutex = &store_mutex,
+            .connection = connection,
+            .single_request_per_connection = single_request_per_connection,
+        }});
+        thread.detach();
+    }
+}
 
-        while (true) {
-            const request = try request_reader.readMessageLine(
-                connection.stream,
-                muxly.transport.max_message_bytes,
-            ) orelse break;
-            defer allocator.free(request);
-            if (request.len == 0) continue;
+const ConnectionContext = struct {
+    store: *store_mod.Store,
+    store_mutex: *std.Thread.Mutex,
+    connection: std.net.Server.Connection,
+    single_request_per_connection: bool,
+};
 
-            const response = try router.handleRequest(allocator, &store, request);
-            defer allocator.free(response);
-            try connection.stream.writeAll(response);
-            try connection.stream.writeAll("\n");
-        }
+fn serveConnection(context: ConnectionContext) void {
+    serveConnectionImpl(context) catch |err| {
+        std.fs.File.stderr().deprecatedWriter().print("muxlyd connection error: {}\n", .{err}) catch {};
+    };
+}
+
+fn serveConnectionImpl(context: ConnectionContext) !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
+
+    var connection = context.connection;
+    defer connection.stream.close();
+
+    var request_reader = muxly.transport.MessageReader.init(allocator);
+    defer request_reader.deinit();
+
+    while (true) {
+        const request = try request_reader.readMessageLine(
+            connection.stream,
+            muxly.transport.max_message_bytes,
+        ) orelse break;
+        defer allocator.free(request);
+        if (request.len == 0) continue;
+
+        context.store_mutex.lock();
+        const response = router.handleRequest(allocator, context.store, request) catch |err| {
+            context.store_mutex.unlock();
+            return err;
+        };
+        context.store_mutex.unlock();
+        defer allocator.free(response);
+
+        try connection.stream.writeAll(response);
+        try connection.stream.writeAll("\n");
+        if (context.single_request_per_connection) break;
     }
 }

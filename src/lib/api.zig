@@ -530,17 +530,42 @@ pub fn projectionGetWithClient(
 pub fn transportSpecFromEnv(allocator: std.mem.Allocator) ![]u8 {
     return std.process.getEnvVarOwned(allocator, "MUXLY_TRANSPORT") catch |transport_err| switch (transport_err) {
         error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "MUXLY_SOCKET") catch |socket_err| switch (socket_err) {
-            error.EnvironmentVariableNotFound => try allocator.dupe(u8, defaultTransportSpec()),
+            error.EnvironmentVariableNotFound => try runtimeDefaultTransportSpecOwned(allocator),
             else => return socket_err,
         },
         else => return transport_err,
     };
 }
 
-/// Returns the platform-default daemon transport spec.
+/// Returns the platform-default daemon transport spec as an owned slice.
 ///
-/// Unix-like hosts use `/tmp/muxly.sock`. Windows uses the planned named-pipe
+/// Unix-like hosts default to `${XDG_RUNTIME_DIR}/muxly.sock` when available and
+/// otherwise `/run/user/<uid>/muxly.sock`, falling back to `/tmp/muxly.sock` if
+/// a runtime directory cannot be determined. Windows uses the planned named-pipe
 /// path even though the current client transport is not implemented there yet.
+pub fn runtimeDefaultTransportSpecOwned(allocator: std.mem.Allocator) ![]u8 {
+    if (builtin.os.tag == .windows) {
+        return try allocator.dupe(u8, "\\\\.\\pipe\\muxly");
+    }
+
+    if (std.process.getEnvVarOwned(allocator, "XDG_RUNTIME_DIR")) |runtime_dir| {
+        defer allocator.free(runtime_dir);
+        return try std.fs.path.join(allocator, &.{ runtime_dir, "muxly.sock" });
+    } else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+
+    const uid = std.posix.getuid();
+    return std.fmt.allocPrint(allocator, "/run/user/{d}/muxly.sock", .{uid}) catch
+        try allocator.dupe(u8, "/tmp/muxly.sock");
+}
+
+/// Returns the legacy compile-time daemon transport spec.
+///
+/// Prefer `runtimeDefaultTransportSpecOwned` for the real runtime default,
+/// which now prefers `${XDG_RUNTIME_DIR}/muxly.sock` and then
+/// `/run/user/<uid>/muxly.sock` on Unix-like systems.
 pub fn defaultTransportSpec() []const u8 {
     return if (builtin.os.tag == .windows)
         "\\\\.\\pipe\\muxly"
@@ -551,6 +576,11 @@ pub fn defaultTransportSpec() []const u8 {
 /// Legacy alias retained for examples and existing callers.
 pub fn socketPathFromEnv(allocator: std.mem.Allocator) ![]u8 {
     return try transportSpecFromEnv(allocator);
+}
+
+/// Returns the runtime-default daemon socket path as an owned slice.
+pub fn runtimeDefaultSocketPathOwned(allocator: std.mem.Allocator) ![]u8 {
+    return try runtimeDefaultTransportSpecOwned(allocator);
 }
 
 /// Legacy alias retained for examples and existing callers.
