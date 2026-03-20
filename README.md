@@ -14,7 +14,7 @@ The web metaphor breaks down pretty quickly, however: I suppose muxly would be a
 
 ## No, *what?*
 
-The project is not really implemented yet; it's a work in progress. It has:
+The project is far from fully implemented&mdash;a work in progress. It has:
 
 - a shared library with a C ABI
 - an xml serialization format, sort of
@@ -49,13 +49,13 @@ Everything in the TOM is a node; nodes are rectangles made of text and you can s
 - file-backed text objects are meant to be read-only windows onto text files; they are a candidate for deletion from the model as I'm not sure these shouldn't be promoted to be terminals running less or something similar
 
 - pseudo-ttys to which programs may be multiplexed via their stdin and stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be accessed in the viewer.
-  
-  Because programs attached to terminals need to know the dimensions of the terminal, this means there are three kinds of terminal viewers: 
-  
+
+  Because programs attached to terminals need to know the dimensions of the terminal, this means there are three kinds of terminal viewers:
+
    - detached ***virtual*** viewers simply hold the terminal at a given virtual size, while
-  
+
    - ***primary*** viewers, whose physical terminal size is meant to optionally force virtual terminal resizing to change as the virtual size changes, and finally
-  
+
    - ***secondary*** viewers, who may be thought of as spectators, have read-only connections and do not control virtual terminal size.
 
 The branch nodes all may contain each other and consist of:
