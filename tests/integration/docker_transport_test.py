@@ -1,6 +1,8 @@
+import argparse
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import tempfile
 import time
@@ -28,6 +30,16 @@ def run_checked(*args: str, env: dict[str, str] | None = None, text: bool = True
 def run_cli(env: dict[str, str], *args: str) -> dict:
     completed = run_checked(str(REPO / "zig-out/bin/muxly"), *args, env=env)
     return json.loads(completed.stdout)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Docker-backed TCP and SSH transport integration coverage.")
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="assume zig-out/bin/muxly and zig-out/bin/muxlyd already exist",
+    )
+    return parser.parse_args()
 
 
 def build_binaries() -> None:
@@ -72,6 +84,28 @@ def write_ssh_client_config(config_path: pathlib.Path, private_key_path: pathlib
     os.chmod(config_path, 0o600)
 
 
+def select_non_loopback_host_ipv4() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+    finally:
+        sock.close()
+
+    if ip.startswith("127."):
+        raise RuntimeError(f"resolved only a loopback IPv4 address: {ip}")
+    return ip
+
+
+def parse_docker_port_host_port(output: str) -> int:
+    for line in output.splitlines():
+        endpoint = line.strip()
+        if endpoint.startswith("0.0.0.0:") or endpoint.startswith("127.0.0.1:"):
+            return int(endpoint.rsplit(":", 1)[1])
+    first = output.splitlines()[0].strip()
+    return int(first.rsplit(":", 1)[1])
+
+
 def wait_for_tcp_ping(
     env: dict[str, str],
     transport_spec: str,
@@ -114,7 +148,10 @@ def run_transport_relay(env: dict[str, str], transport_spec: str, requests: list
 
 
 def main() -> None:
-    build_binaries()
+    args = parse_args()
+
+    if not args.skip_build:
+        build_binaries()
     build_image()
 
     container_name = f"muxly-docker-transport-{uuid.uuid4().hex[:12]}"
@@ -144,6 +181,7 @@ def main() -> None:
 
         env = os.environ.copy()
         env["MUXLY_SSH_CONFIG"] = str(ssh_config_path)
+        host_tcp_ip = select_non_loopback_host_ipv4()
 
         try:
             container_id = run_checked(
@@ -160,13 +198,13 @@ def main() -> None:
                 "-p",
                 "127.0.0.1::22",
                 "-p",
-                f"127.0.0.1::{REMOTE_TCP_PORT}",
+                f"0.0.0.0::{REMOTE_TCP_PORT}",
                 IMAGE_TAG,
                 env=env,
             ).stdout.strip()
 
             ssh_port_output = run_checked("docker", "port", container_name, "22/tcp", env=env).stdout.strip()
-            ssh_port = int(ssh_port_output.rsplit(":", 1)[1])
+            ssh_port = parse_docker_port_host_port(ssh_port_output)
             tcp_port_output = run_checked(
                 "docker",
                 "port",
@@ -174,7 +212,7 @@ def main() -> None:
                 f"{REMOTE_TCP_PORT}/tcp",
                 env=env,
             ).stdout.strip()
-            host_tcp_port = int(tcp_port_output.rsplit(":", 1)[1])
+            host_tcp_port = parse_docker_port_host_port(tcp_port_output)
 
             subprocess.run(
                 [
@@ -191,14 +229,15 @@ def main() -> None:
                 check=True,
             )
 
-            ping = wait_for_tcp_ping(env, f"tcp://127.0.0.1:{host_tcp_port}")
+            tcp_transport = f"tcp://{host_tcp_ip}:{host_tcp_port}"
+            ping = wait_for_tcp_ping(env, tcp_transport, require_unsafe_flag=True)
             assert ping["result"]["pong"] is True
 
             tcp_without_override = subprocess.run(
                 [
                     str(REPO / "zig-out/bin/muxly"),
                     "--transport",
-                    "tcp://10.0.0.5:4488",
+                    tcp_transport,
                     "ping",
                 ],
                 cwd=REPO,
@@ -211,7 +250,8 @@ def main() -> None:
             capabilities = run_cli(
                 env,
                 "--transport",
-                f"tcp://127.0.0.1:{host_tcp_port}",
+                tcp_transport,
+                UNSAFE_TCP_FLAG,
                 "capabilities",
                 "get",
             )["result"]
