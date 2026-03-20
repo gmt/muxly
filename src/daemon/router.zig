@@ -21,7 +21,7 @@ pub fn handleRequest(
     const document_path = protocol.requestDocumentPath(parsed.value) catch {
         return try buildError(allocator, parsed.value.id, .invalid_params, "target.documentPath must be an absolute path");
     };
-    _ = store.documentForPath(document_path) catch |err| switch (err) {
+    const document = store.documentForPath(document_path) catch |err| switch (err) {
         error.UnsupportedDocumentPath => {
             const message = try std.fmt.allocPrint(
                 allocator,
@@ -57,7 +57,7 @@ pub fn handleRequest(
         try store.refreshSources();
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
-        try store.document.writeJson(result.writer());
+        try document.writeJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
@@ -72,21 +72,21 @@ pub fn handleRequest(
 
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
-        try muxly.projection.writeProjectionJson(allocator, &store.document, request_value, result.writer());
+        try muxly.projection.writeProjectionJson(allocator, document, request_value, result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "document.status")) {
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
-        try store.document.writeStatusJson(result.writer());
+        try document.writeStatusJson(result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
     if (std.mem.eql(u8, parsed.value.method, "node.get")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        const node = store.document.findNode(@intCast(node_id)) orelse
+        const node = document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
@@ -122,7 +122,7 @@ pub fn handleRequest(
         try store.refreshSources();
         var xml = std.array_list.Managed(u8).init(allocator);
         defer xml.deinit();
-        try store.document.writeXml(xml.writer());
+        try document.writeXml(xml.writer());
 
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
@@ -133,7 +133,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "document.freeze")) {
-        store.document.freeze();
+        document.freeze();
         return try buildResult(allocator, parsed.value.id, "{\"lifecycle\":\"frozen\"}");
     }
 
@@ -179,7 +179,7 @@ pub fn handleRequest(
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
         };
-        const node = store.document.findNode(@intCast(node_id)) orelse
+        const node = document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .internal_error, "frozen node missing from document");
         const artifact = switch (node.source) {
             .terminal_artifact => |value| value,
@@ -221,7 +221,7 @@ pub fn handleRequest(
                 return try buildError(allocator, parsed.value.id, .invalid_params, "parentId must be non-negative");
             }
             break :blk @intCast(value);
-        } else store.document.root_node_id;
+        } else document.root_node_id;
         const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
         const command = protocol.getString(parsed.value.params, "command");
@@ -365,7 +365,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "view.setRoot")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        store.document.setViewRoot(@intCast(node_id)) catch
+        document.setViewRoot(@intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
@@ -378,7 +378,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "view.elide")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        store.document.toggleElided(@intCast(node_id)) catch
+        document.toggleElided(@intCast(node_id)) catch
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
@@ -423,7 +423,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "leaf.source.get")) {
         const node_id = protocol.getInteger(parsed.value.params, "nodeId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "nodeId is required");
-        const node = store.document.findNode(@intCast(node_id)) orelse
+        const node = document.findNode(@intCast(node_id)) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unknown nodeId");
 
         var result = std.array_list.Managed(u8).init(allocator);
