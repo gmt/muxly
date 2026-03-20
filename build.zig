@@ -124,10 +124,10 @@ pub fn build(b: *std.Build) void {
     const install_api_docs = b.addInstallDirectory(.{
         .source_dir = api_docs.getEmittedDocs(),
         .install_dir = .prefix,
-        .install_subdir = "docs/api",
+        .install_subdir = "doc/api",
     });
 
-    const ffi_docs_root = b.getInstallPath(.prefix, "docs");
+    const ffi_docs_root = b.getInstallPath(.prefix, "doc");
     const ffi_docs_files = b.addWriteFiles();
     const ffi_doxyfile = ffi_docs_files.add("Doxyfile.ffi", b.fmt(
         \\PROJECT_NAME = "libmuxly C API"
@@ -149,10 +149,10 @@ pub fn build(b: *std.Build) void {
         \\JAVADOC_AUTOBRIEF = YES
         \\FULL_PATH_NAMES = NO
         \\STRIP_FROM_PATH = include
-        \\INPUT = docs/ffi.md include/muxly.h
+        \\INPUT = doc/ffi.md include/muxly.h
         \\FILE_PATTERNS = *.md *.h
         \\RECURSIVE = NO
-        \\USE_MDFILE_AS_MAINPAGE = docs/ffi.md
+        \\USE_MDFILE_AS_MAINPAGE = doc/ffi.md
         \\MARKDOWN_SUPPORT = YES
     , .{ffi_docs_root}));
     const build_ffi_docs = b.addSystemCommand(&.{"doxygen"});

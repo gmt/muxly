@@ -188,7 +188,7 @@ Defaults:
 - `trd://tcp|//` defaults to `localhost:4488`
 
 CLI commands that normally take node ids now also accept TRDs. See
-[docs/trine.md](docs/trine.md) for the design doctrine and the current TRD
+[doc/trine.md](doc/trine.md) for the design doctrine and the current TRD
 grammar.
 
 ### Viewer keys, exremely preliminary
@@ -204,18 +204,18 @@ grammar.
 
 ## Documentation
 
-- `docs/architecture.md`
-- `docs/trine.md`
-- `docs/tom.md`
-- `docs/platform-matrix.md`
-- `docs/muxml.md`
-- `docs/terminal-artifacts.md`
-- `docs/protocol.md`
-- `docs/tmux-backend.md`
-- `docs/viewer-architecture.md`
-- `docs/keybinding-model.md`
-- `docs/neovim-integration.md`
-- `docs/demos.md`
+- `doc/architecture.md`
+- `doc/trine.md`
+- `doc/tom.md`
+- `doc/platform-matrix.md`
+- `doc/muxml.md`
+- `doc/terminal-artifacts.md`
+- `doc/protocol.md`
+- `doc/tmux-backend.md`
+- `doc/viewer-architecture.md`
+- `doc/keybinding-model.md`
+- `doc/neovim-integration.md`
+- `doc/demos.md`
 
 ## Examples, such as they are
 

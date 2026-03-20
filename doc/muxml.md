@@ -7,7 +7,7 @@ through library/client APIs without caring about the exact serialized muxml
 shape.
 
 For the live in-memory model that muxml represents, see
-[`docs/tom.md`](/home/greg/src/muxly/docs/tom.md).
+[`doc/tom.md`](/home/greg/src/muxly/doc/tom.md).
 
 Within the daemon, muxly maintains a live **TOM**: a Terminal Object Model.
 `muxml` is the serializable representation of that live state, not the same
@@ -55,7 +55,7 @@ Durable terminal-backed artifacts should also be distinguished explicitly:
   payload
 
 That contract is defined in
-[`docs/terminal-artifacts.md`](/home/greg/src/muxly/docs/terminal-artifacts.md).
+[`doc/terminal-artifacts.md`](/home/greg/src/muxly/doc/terminal-artifacts.md).
 
 The current first-pass representation posture is:
 

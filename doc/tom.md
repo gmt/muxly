@@ -248,7 +248,7 @@ Today the public protocol already exposes core TOM operations such as:
 - `view.clearRoot`
 - node append/update/remove/freeze operations
 
-See [protocol.md](/home/greg/src/muxly/docs/protocol.md).
+See [protocol.md](/home/greg/src/muxly/doc/protocol.md).
 
 ### Protocol design rule
 
