@@ -155,7 +155,12 @@ pub fn resolveNodeTarget(
     var resolved = try parsed.resolve(allocator, current_transport_spec);
     errdefer resolved.deinit(allocator);
 
-    const node_id = try resolveSelectorToNodeId(allocator, resolved.transport_spec, resolved.selector);
+    const node_id = try resolveSelectorToNodeId(
+        allocator,
+        resolved.transport_spec,
+        resolved.document_path,
+        resolved.selector,
+    );
     if (resolved.selector) |selector| {
         allocator.free(selector);
         resolved.selector = null;
@@ -198,14 +203,15 @@ fn transportSpecFromReference(
 fn resolveSelectorToNodeId(
     allocator: std.mem.Allocator,
     transport_spec: []const u8,
+    document_path: []const u8,
     selector: ?[]const u8,
 ) !u64 {
-    const selector_text = selector orelse return try fetchRootNodeId(allocator, transport_spec);
+    const selector_text = selector orelse return try fetchRootNodeId(allocator, transport_spec, document_path);
     if (selector_text.len == 0 or std.mem.eql(u8, selector_text, "/")) {
-        return try fetchRootNodeId(allocator, transport_spec);
+        return try fetchRootNodeId(allocator, transport_spec, document_path);
     }
 
-    const response = try api.documentGet(allocator, transport_spec);
+    const response = try api.documentGetInDocument(allocator, transport_spec, document_path);
     defer allocator.free(response);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{
@@ -243,8 +249,12 @@ fn resolveSelectorToNodeId(
     return current_id;
 }
 
-fn fetchRootNodeId(allocator: std.mem.Allocator, transport_spec: []const u8) !u64 {
-    const response = try api.documentStatus(allocator, transport_spec);
+fn fetchRootNodeId(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+    document_path: []const u8,
+) !u64 {
+    const response = try api.documentStatusInDocument(allocator, transport_spec, document_path);
     defer allocator.free(response);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{

@@ -43,6 +43,11 @@ pub const Store = struct {
         };
     }
 
+    pub fn documentForPath(self: *Store, document_path: []const u8) !*document_mod.Document {
+        if (std.mem.eql(u8, document_path, "/")) return &self.document;
+        return error.UnsupportedDocumentPath;
+    }
+
     pub fn deinit(self: *Store) void {
         if (self.control_connection) |*connection| {
             connection.deinit();

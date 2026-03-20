@@ -171,6 +171,35 @@ def assert_session_reuse(cwd: pathlib.Path, env: dict[str, str], transport_spec:
     assert responses[1]["result"]["rootNodeId"] == 1
 
 
+def assert_document_target_handling(
+    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+) -> None:
+    responses = run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "target": {"documentPath": "/"},
+                "method": "document.status",
+                "params": {},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "target": {"documentPath": "/not-yet"},
+                "method": "document.status",
+                "params": {},
+            },
+        ],
+    )
+    assert responses[0]["result"]["rootNodeId"] == 1
+    assert responses[1]["error"]["code"] == -32001
+    assert "not supported yet" in responses[1]["error"]["message"]
+
+
 def exercise_transport(
     cwd: pathlib.Path,
     env: dict[str, str],
@@ -181,6 +210,7 @@ def exercise_transport(
         assert_ping_and_document(cwd, env, actual_transport)
         assert_trd_resolution(cwd, env, actual_transport)
         assert_session_reuse(cwd, env, actual_transport)
+        assert_document_target_handling(cwd, env, actual_transport)
     finally:
         stop_process(proc)
 

@@ -18,6 +18,22 @@ pub fn handleRequest(
         return try buildError(allocator, parsed.value.id, .invalid_request, "jsonrpc must be 2.0");
     }
 
+    const document_path = protocol.requestDocumentPath(parsed.value) catch {
+        return try buildError(allocator, parsed.value.id, .invalid_params, "target.documentPath must be an absolute path");
+    };
+    _ = store.documentForPath(document_path) catch |err| switch (err) {
+        error.UnsupportedDocumentPath => {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "document path {f} is not supported yet",
+                .{std.json.fmt(document_path, .{})},
+            );
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .unsupported, message);
+        },
+        else => return err,
+    };
+
     store.pumpTmuxBackend() catch |err| switch (err) {
         error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
         else => return err,

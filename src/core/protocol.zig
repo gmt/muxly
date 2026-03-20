@@ -4,10 +4,16 @@ const std = @import("std");
 const errors = @import("errors.zig");
 
 pub const JsonRpcVersion = "2.0";
+pub const default_document_path = "/";
+
+pub const RequestTarget = struct {
+    documentPath: ?[]const u8 = null,
+};
 
 pub const RequestEnvelope = struct {
     jsonrpc: []const u8,
     id: ?std.json.Value = null,
+    target: ?RequestTarget = null,
     method: []const u8,
     params: ?std.json.Value = null,
 };
@@ -46,6 +52,41 @@ pub fn writeError(
     try writer.print("\"code\":{d},\"message\":", .{@intFromEnum(code)});
     try writer.print("{f}", .{std.json.fmt(message, .{})});
     try writer.writeAll("}}");
+}
+
+pub fn requestDocumentPath(request: RequestEnvelope) ![]const u8 {
+    const document_path = if (request.target) |target|
+        target.documentPath orelse default_document_path
+    else
+        default_document_path;
+
+    if (document_path.len == 0 or document_path[0] != '/') {
+        return error.InvalidDocumentPath;
+    }
+
+    return document_path;
+}
+
+pub fn writeClientRequest(
+    writer: anytype,
+    request_id: u64,
+    document_path: []const u8,
+    method: []const u8,
+    params_json: []const u8,
+) !void {
+    if (document_path.len == 0 or document_path[0] != '/') {
+        return error.InvalidDocumentPath;
+    }
+
+    try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+    try writer.print("{d}", .{request_id});
+    try writer.writeAll(",\"target\":{\"documentPath\":");
+    try writer.print("{f}", .{std.json.fmt(document_path, .{})});
+    try writer.writeAll("},\"method\":");
+    try writer.print("{f}", .{std.json.fmt(method, .{})});
+    try writer.writeAll(",\"params\":");
+    try writer.writeAll(params_json);
+    try writer.writeAll("}");
 }
 
 /// Returns a string borrowed from `params` and therefore from the owning parsed
