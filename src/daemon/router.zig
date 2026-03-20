@@ -6,6 +6,8 @@ const store_mod = @import("state/store.zig");
 
 pub const Store = store_mod.Store;
 
+const document_retention_policy = "daemon-lifetime";
+
 pub fn handleRequest(
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
@@ -108,7 +110,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "document.status")) {
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
-        try document.writeStatusJson(result.writer());
+        try writeDocumentStatus(document_path, document, result.writer());
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
@@ -631,8 +633,33 @@ fn writeDocumentSummary(
     try writer.writeAll(",\"title\":");
     try writer.print("{f}", .{std.json.fmt(document.title, .{})});
     try writer.print(",\"lifecycle\":\"{s}\"", .{@tagName(document.lifecycle)});
+    try writer.print(",\"retentionPolicy\":\"{s}\"", .{document_retention_policy});
     try writer.print(",\"rootNodeId\":{d}", .{document.root_node_id});
     try writer.print(",\"nodeCount\":{d}", .{document.nodes.items.len});
+    try writer.writeAll("}");
+}
+
+fn writeDocumentStatus(
+    document_path: []const u8,
+    document: *const muxly.document.Document,
+    writer: anytype,
+) !void {
+    try writer.writeAll("{\"path\":");
+    try writer.print("{f}", .{std.json.fmt(document_path, .{})});
+    try writer.writeAll(",\"id\":");
+    try writer.print("{d}", .{document.id});
+    try writer.writeAll(",\"title\":");
+    try writer.print("{f}", .{std.json.fmt(document.title, .{})});
+    try writer.print(",\"lifecycle\":\"{s}\"", .{@tagName(document.lifecycle)});
+    try writer.print(",\"retentionPolicy\":\"{s}\"", .{document_retention_policy});
+    try writer.print(",\"rootNodeId\":{d},", .{document.root_node_id});
+    if (document.view_root_node_id) |view_root_node_id| {
+        try writer.print("\"viewRootNodeId\":{d},", .{view_root_node_id});
+    } else {
+        try writer.writeAll("\"viewRootNodeId\":null,");
+    }
+    try writer.print("\"nodeCount\":{d},", .{document.nodes.items.len});
+    try writer.print("\"elidedCount\":{d}", .{document.elided_node_ids.items.len});
     try writer.writeAll("}");
 }
 

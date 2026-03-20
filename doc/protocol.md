@@ -80,6 +80,8 @@ explicit, testable, and debuggable.
 - `graph.get` currently aliases the same muxml/tree payload returned by
   `document.get` / `view.get`
 - `document.status` returns a smaller lifecycle/count-oriented payload
+- created documents currently live for the daemon lifetime; there is no public
+  delete/close surface in this slice
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
@@ -94,7 +96,13 @@ explicit, testable, and debuggable.
     - must not contain empty, `.` or `..` segments
   - optional `title`
 - `document.list` returns the daemon's registered document catalog, including
-  each document's path, id, title, lifecycle, root node id, and node count
+  each document's path, id, title, lifecycle, retention policy, root node id,
+  and node count
+- `document.status` currently includes:
+  - path, id, title
+  - lifecycle and `retentionPolicy`
+  - root/view root ids
+  - node/elision counts
 - request `target` metadata now supports:
   - `documentPath`
   - optional `nodeId`

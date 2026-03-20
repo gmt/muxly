@@ -41,6 +41,7 @@ test "document lifecycle methods create and list registered documents" {
     const created_result = try resultObject(created);
     try std.testing.expectEqualStrings("/docs/demo", created_result.get("path").?.string);
     try std.testing.expectEqualStrings("demo", created_result.get("title").?.string);
+    try std.testing.expectEqualStrings("daemon-lifetime", created_result.get("retentionPolicy").?.string);
     try std.testing.expectEqual(@as(i64, 1), created_result.get("rootNodeId").?.integer);
     try std.testing.expectEqual(@as(i64, 1), created_result.get("nodeCount").?.integer);
 
@@ -53,7 +54,9 @@ test "document lifecycle methods create and list registered documents" {
     try std.testing.expect(list_result == .array);
     try std.testing.expectEqual(@as(usize, 2), list_result.array.items.len);
     try std.testing.expectEqualStrings("/", list_result.array.items[0].object.get("path").?.string);
+    try std.testing.expectEqualStrings("daemon-lifetime", list_result.array.items[0].object.get("retentionPolicy").?.string);
     try std.testing.expectEqualStrings("/docs/demo", list_result.array.items[1].object.get("path").?.string);
+    try std.testing.expectEqualStrings("daemon-lifetime", list_result.array.items[1].object.get("retentionPolicy").?.string);
 }
 
 test "document lifecycle rejects duplicate and non-canonical paths" {
@@ -173,6 +176,31 @@ test "document-targeted methods reject non-canonical target paths" {
     const err = try errorObject(invalid);
     try std.testing.expectEqual(@as(i64, -32602), err.get("code").?.integer);
     try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "canonical absolute path") != null);
+}
+
+test "document status exposes identity and daemon-lifetime retention" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    var created = try call(std.testing.allocator, &store,
+        \\{"jsonrpc":"2.0","id":1,"method":"document.create","params":{"path":"/demo","title":"Demo Doc"}}
+    );
+    created.deinit();
+
+    var status = try call(std.testing.allocator, &store,
+        \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"document.status","params":{}}
+    );
+    defer status.deinit();
+
+    const result = try resultObject(status);
+    try std.testing.expectEqualStrings("/demo", result.get("path").?.string);
+    try std.testing.expectEqualStrings("Demo Doc", result.get("title").?.string);
+    try std.testing.expectEqualStrings("live", result.get("lifecycle").?.string);
+    try std.testing.expectEqualStrings("daemon-lifetime", result.get("retentionPolicy").?.string);
+    try std.testing.expectEqual(@as(i64, 1), result.get("rootNodeId").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), result.get("nodeCount").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), result.get("elidedCount").?.integer);
+    try std.testing.expect((result.get("viewRootNodeId").?) == .null);
 }
 
 test "node-targeted methods accept target.nodeId and resolve target.selector server-side" {
