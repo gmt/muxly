@@ -1,11 +1,15 @@
 //! TOM Resource Descriptor parsing and selector resolution helpers.
 //!
-//! TRDs let clients point at both a daemon transport and a logical node inside
-//! the live TOM with one string. Absolute descriptors use `trd://...`; relative
-//! selectors use `trd:#...`.
+//! TRDs let clients point at a daemon transport, a logical document, and an
+//! optional node selector with one string. Absolute descriptors use
+//! `trd://...`; relative selectors use `trd:#...`.
 
 const std = @import("std");
 const api = @import("api.zig");
+const protocol = @import("../core/protocol.zig");
+
+pub const default_tcp_port: u16 = 4488;
+const default_host = "localhost";
 
 pub const Parsed = struct {
     kind: Kind,
@@ -13,7 +17,6 @@ pub const Parsed = struct {
     endpoint: ?[]u8 = null,
     document_path: ?[]u8 = null,
     selector: ?[]u8 = null,
-    shorthand_selector: ?[]u8 = null,
 
     pub const Kind = enum {
         absolute,
@@ -25,31 +28,37 @@ pub const Parsed = struct {
         if (self.endpoint) |value| allocator.free(value);
         if (self.document_path) |value| allocator.free(value);
         if (self.selector) |value| allocator.free(value);
-        if (self.shorthand_selector) |value| allocator.free(value);
     }
 
-    pub fn resolve(self: Parsed, allocator: std.mem.Allocator, current_transport_spec: []const u8) !Resolved {
+    pub fn resolve(
+        self: Parsed,
+        allocator: std.mem.Allocator,
+        current_transport_spec: []const u8,
+        current_document_path: []const u8,
+    ) !Resolved {
         const transport_spec = switch (self.kind) {
             .relative => try allocator.dupe(u8, current_transport_spec),
-            .absolute => if (self.transport_code) |transport_code|
+            .absolute => if (self.endpoint != null or self.transport_code != null)
                 try transportSpecFromReference(
                     allocator,
-                    transport_code,
-                    self.endpoint orelse return error.InvalidResourceDescriptor,
+                    self.transport_code,
+                    self.endpoint orelse "",
                 )
             else
                 try api.runtimeDefaultTransportSpecOwned(allocator),
         };
         errdefer allocator.free(transport_spec);
 
-        const document_path = if (self.document_path) |value|
-            try allocator.dupe(u8, value)
-        else
-            try allocator.dupe(u8, "/");
+        const document_path = switch (self.kind) {
+            .relative => try allocator.dupe(u8, current_document_path),
+            .absolute => if (self.document_path) |value|
+                try allocator.dupe(u8, value)
+            else
+                try allocator.dupe(u8, protocol.default_document_path),
+        };
         errdefer allocator.free(document_path);
 
-        const selector_source = self.selector orelse self.shorthand_selector;
-        const selector = if (selector_source) |value|
+        const selector = if (self.selector) |value|
             try allocator.dupe(u8, value)
         else
             null;
@@ -107,52 +116,52 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Parsed {
         without_selector = payload[0..hash_index];
     }
 
-    var document_path: ?[]const u8 = null;
-    var transport_part = without_selector;
-    if (std.mem.indexOf(u8, without_selector, "//")) |doc_sep| {
-        document_path = if (doc_sep + 1 < without_selector.len)
-            without_selector[doc_sep + 1 ..]
-        else
-            "/";
-        transport_part = without_selector[0..doc_sep];
-    }
-
-    if (transport_part.len == 0) {
+    if (without_selector.len == 0) {
         return .{
             .kind = .absolute,
-            .document_path = if (document_path) |value| try allocator.dupe(u8, value) else null,
             .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
         };
     }
 
-    if (std.mem.indexOfScalar(u8, transport_part, '|')) |pipe_index| {
-        if (pipe_index == 0 or pipe_index == transport_part.len - 1) return error.InvalidResourceDescriptor;
+    if (std.mem.indexOfScalar(u8, without_selector, '|')) |pipe_index| {
+        const transport_code = without_selector[0..pipe_index];
+        const endpoint_and_document = without_selector[pipe_index + 1 ..];
+        var endpoint = endpoint_and_document;
+        var document_path: ?[]const u8 = null;
+        if (std.mem.indexOf(u8, endpoint_and_document, "//")) |doc_sep| {
+            endpoint = endpoint_and_document[0..doc_sep];
+            document_path = endpoint_and_document[doc_sep + 2 ..];
+        }
+
         return .{
             .kind = .absolute,
-            .transport_code = try allocator.dupe(u8, transport_part[0..pipe_index]),
-            .endpoint = try allocator.dupe(u8, transport_part[pipe_index + 1 ..]),
-            .document_path = if (document_path) |value| try allocator.dupe(u8, value) else null,
+            .transport_code = if (transport_code.len != 0) try allocator.dupe(u8, transport_code) else null,
+            .endpoint = try allocator.dupe(u8, endpoint),
+            .document_path = if (document_path) |value|
+                try normalizeDocumentPathOwned(allocator, value)
+            else
+                null,
             .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
         };
     }
-
-    if (document_path != null or selector != null) return error.InvalidResourceDescriptor;
 
     return .{
         .kind = .absolute,
-        .shorthand_selector = try allocator.dupe(u8, transport_part),
+        .document_path = try normalizeDocumentPathOwned(allocator, without_selector),
+        .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
     };
 }
 
 pub fn resolveNodeTarget(
     allocator: std.mem.Allocator,
     current_transport_spec: []const u8,
+    current_document_path: []const u8,
     descriptor_text: []const u8,
 ) !NodeTarget {
     var parsed = try parse(allocator, descriptor_text);
     defer parsed.deinit(allocator);
 
-    var resolved = try parsed.resolve(allocator, current_transport_spec);
+    var resolved = try parsed.resolve(allocator, current_transport_spec, current_document_path);
     errdefer resolved.deinit(allocator);
 
     const node_id = try resolveSelectorToNodeId(
@@ -179,25 +188,63 @@ pub fn isDescriptor(text: []const u8) bool {
 
 fn transportSpecFromReference(
     allocator: std.mem.Allocator,
-    transport_code: []const u8,
+    transport_code: ?[]const u8,
     endpoint: []const u8,
 ) ![]u8 {
-    if (std.mem.eql(u8, transport_code, "ux")) {
+    const code = transport_code orelse "unix";
+    if (std.mem.eql(u8, code, "unix") or std.mem.eql(u8, code, "ux")) {
+        if (endpoint.len == 0) return try api.runtimeDefaultTransportSpecOwned(allocator);
         return try allocator.dupe(u8, endpoint);
     }
-    if (std.mem.eql(u8, transport_code, "tcp")) {
-        return try std.fmt.allocPrint(allocator, "tcp://{s}", .{endpoint});
+    if (std.mem.eql(u8, code, "tcp")) {
+        const authority = try tcpEndpointWithDefaultPortOwned(allocator, endpoint);
+        defer allocator.free(authority);
+        return try std.fmt.allocPrint(allocator, "tcp://{s}", .{authority});
     }
-    if (std.mem.eql(u8, transport_code, "ssh")) {
-        return try std.fmt.allocPrint(allocator, "ssh://{s}", .{endpoint});
+    if (std.mem.eql(u8, code, "ssh")) {
+        return try std.fmt.allocPrint(allocator, "ssh://{s}", .{if (endpoint.len == 0) default_host else endpoint});
     }
-    if (std.mem.eql(u8, transport_code, "http")) {
-        return try std.fmt.allocPrint(allocator, "http://{s}", .{endpoint});
+    if (std.mem.eql(u8, code, "http")) {
+        return try std.fmt.allocPrint(allocator, "http://{s}", .{if (endpoint.len == 0) default_host else endpoint});
     }
-    if (std.mem.eql(u8, transport_code, "wt")) {
-        return try std.fmt.allocPrint(allocator, "h3wt://{s}", .{endpoint});
+    if (std.mem.eql(u8, code, "webtransport") or std.mem.eql(u8, code, "wt") or std.mem.eql(u8, code, "h3wt")) {
+        return try std.fmt.allocPrint(allocator, "h3wt://{s}", .{if (endpoint.len == 0) default_host else endpoint});
     }
     return error.UnsupportedResourceTransport;
+}
+
+fn normalizeDocumentPathOwned(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    if (value.len == 0) return try allocator.dupe(u8, protocol.default_document_path);
+    if (value[0] == '/') return try allocator.dupe(u8, value);
+    return try std.fmt.allocPrint(allocator, "/{s}", .{value});
+}
+
+fn tcpEndpointWithDefaultPortOwned(allocator: std.mem.Allocator, endpoint: []const u8) ![]u8 {
+    const authority = if (endpoint.len == 0) default_host else endpoint;
+    if (tcpEndpointHasExplicitPort(authority)) return try allocator.dupe(u8, authority);
+    if (authority.len != 0 and authority[0] == '[') {
+        return try std.fmt.allocPrint(allocator, "{s}:{d}", .{ authority, default_tcp_port });
+    }
+    if (std.mem.indexOfScalar(u8, authority, ':') != null) {
+        return try std.fmt.allocPrint(allocator, "[{s}]:{d}", .{ authority, default_tcp_port });
+    }
+    return try std.fmt.allocPrint(allocator, "{s}:{d}", .{ authority, default_tcp_port });
+}
+
+fn tcpEndpointHasExplicitPort(authority: []const u8) bool {
+    if (authority.len == 0) return false;
+
+    if (authority[0] == '[') {
+        const close_index = std.mem.indexOfScalar(u8, authority, ']') orelse return false;
+        if (close_index + 1 >= authority.len or authority[close_index + 1] != ':') return false;
+        _ = std.fmt.parseInt(u16, authority[close_index + 2 ..], 10) catch return false;
+        return true;
+    }
+
+    const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':') orelse return false;
+    if (std.mem.indexOfScalar(u8, authority[0..colon_index], ':') != null) return false;
+    _ = std.fmt.parseInt(u16, authority[colon_index + 1 ..], 10) catch return false;
+    return true;
 }
 
 fn resolveSelectorToNodeId(

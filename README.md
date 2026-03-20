@@ -155,22 +155,41 @@ python3 tests/integration/docker_transport_test.py
 
 ### TRD descriptors
 
-TOM Resource Descriptors combine a transport, a document path placeholder, and
-a TOM selector into one string:
+TOM Resource Descriptors combine a transport, a document path, and an optional
+TOM selector into one string:
 
-- `trd://wt|host.lan:4433/mux?sha256=...//doc/path#node/path`
+- `trd://builds/demo`
+- `trd://webtransport|host.lan:4433/mux?sha256=...//doc/path#node/path`
 - `trd://http|127.0.0.1:8080/rpc//#welcome`
 - `trd:#welcome/child`
 
-Absolute TRDs use `trd://<transport-code>|<endpoint>//<document>#<selector>`.
-Relative TRDs use `trd:#...` and stay on the current transport. Today muxly
-only has one live document, so the document portion is currently a reserved
-placeholder and `/` is the practical default.
+Absolute TRDs are document-first:
 
-`trd://` is valid and refers to the root node on the runtime-default transport.
-`trd://foo` is shorthand for "the `foo` selector on the runtime-default
-transport and root document". CLI commands that normally take node ids now also
-accept TRDs.
+- `trd://<document>[#<selector>]`
+- `trd://<transport>|<endpoint>//<document>[#<selector>]`
+
+If there is no `|`, everything after `trd://` is treated as the document path.
+If there is a `|`, the left side is the explicit server reference and the right
+side is the document path. Relative TRDs use `trd:#...` and stay on the current
+transport and current document.
+
+Supported public transport names are `unix`, `tcp`, `ssh`, `http`, and
+`webtransport`. `ux` and `wt` remain accepted as aliases.
+
+Defaults:
+
+- `trd://` resolves to the root document on the runtime-default transport
+- `trd://foo` resolves to document `/foo` on the runtime-default transport
+- `trd://#foo` resolves selector `foo` in document `/` on the runtime-default transport
+- `trd://unix|//foo` uses the runtime-default unix socket path and document `/foo`
+- `trd://|relative.sock//foo` is shorthand for `trd://unix|relative.sock//foo`
+- `trd://http|//` defaults the endpoint to `localhost`
+- `trd://webtransport|//` defaults the endpoint to `localhost`
+- `trd://tcp|//` defaults to `localhost:4488`
+
+CLI commands that normally take node ids now also accept TRDs. See
+[docs/trine.md](docs/trine.md) for the design doctrine and the current TRD
+grammar.
 
 ### Viewer keys, exremely preliminary
 

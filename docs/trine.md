@@ -42,6 +42,46 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - when those terms refer to muxly's own server object rather than an exogenous
   concept, prefer **TOM** instead for clarity and consistency
 
+### TRD grammar is document-first
+
+- a TRD has three logical slots:
+  - `$srv`: transport plus optional authority/path details
+  - `$doc`: document path
+  - `$nod`: node selector
+- the default reading is document-first, not selector-first
+- if there is no `|` before a `#`, everything after `trd://` is `$doc`
+- `#` introduces `$nod`
+- `|` introduces an explicit `$srv`
+- `//` after `$srv` introduces `$doc`
+
+Examples:
+
+- `trd://foo` means document `/foo` on the runtime-default transport
+- `trd://foo/bar#left/pane` means document `/foo/bar`, selector `left/pane`
+- `trd://#welcome` means selector `welcome` in document `/` on the runtime-default transport
+- `trd:#welcome` means selector `welcome` on the current transport and current document
+- `trd://http|host.lan/rpc//builds/demo#log` means explicit server, document `/builds/demo`, selector `log`
+
+Server defaults:
+
+- an empty explicit transport code defaults to `unix`
+- `trd://|path//doc` is shorthand for `trd://unix|path//doc`
+- `trd://unix|//doc` uses the runtime-default unix socket path
+- `trd://http|//doc` uses `localhost`
+- `trd://webtransport|//doc` uses `localhost`
+- `trd://tcp|//doc` uses `localhost:4488`
+
+Public transport names should be written consistently:
+
+- `unix`
+- `tcp`
+- `ssh`
+- `http`
+- `webtransport`
+
+Short aliases such as `ux` and `wt` may be accepted for compatibility, but
+they are not the preferred public spelling.
+
 ### Projection over mutation
 
 - the TOM is the persistent abstract structure, not a live framebuffer
