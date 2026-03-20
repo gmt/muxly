@@ -129,6 +129,7 @@ pub fn build(b: *std.Build) void {
     , .{ffi_docs_root}));
     const build_ffi_docs = b.addSystemCommand(&.{"doxygen"});
     build_ffi_docs.setCwd(b.path("."));
+    // `addFileArg` makes the generated Doxyfile an input dependency of this run step.
     build_ffi_docs.addFileArg(ffi_doxyfile);
 
     const unit_tests = b.addTest(.{

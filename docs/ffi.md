@@ -5,6 +5,11 @@ The interface is intentionally thin: most functions return raw JSON-RPC
 response payloads so downstream bindings can choose their own parsing and error
 handling layer.
 
+For backward compatibility, the header still exposes the original `char *`-only
+entry points. New bindings should prefer the `_ex` variants plus
+`muxly_status`, because they make library-side failures explicit without
+overloading `NULL`.
+
 ## Ownership rules
 
 - `muxly_version()` returns static storage owned by `libmuxly`; do not free it.
@@ -34,9 +39,33 @@ handling layer.
   unsupported platform in the current transport layer, socket/transport
   failures, or client-side validation failures such as calling
   `muxly_client_node_update()` with both `title` and `content` set to `NULL`.
-- The C ABI does not currently expose structured error codes for `NULL`
-  failures, so bindings that need richer diagnostics must add their own wrapper
-  layer.
+- The legacy `char *`-returning API does not expose structured reasons for
+  `NULL`; use the `_ex` variants when bindings need richer library-side
+  diagnostics.
+
+## Structured status API
+
+- The `_ex` entry points return `muxly_status` instead of overloading `NULL`.
+- `MUXLY_STATUS_OK` means libmuxly successfully produced an output value.
+- Response-oriented `_ex` functions write a caller-owned JSON-RPC response
+  string through `out_response`.
+- That response string may still be a daemon-side JSON-RPC error payload, so
+  callers must still inspect the envelope.
+- Non-`OK` status values distinguish at least:
+  - `MUXLY_STATUS_NULL_ARGUMENT`
+  - `MUXLY_STATUS_INVALID_ARGUMENT`
+  - `MUXLY_STATUS_UNSUPPORTED_PLATFORM`
+  - `MUXLY_STATUS_ALLOCATION_FAILURE`
+  - `MUXLY_STATUS_TRANSPORT_FAILURE`
+- `muxly_status_string()` returns a stable human-readable name for one status
+  code.
+
+## Legacy API
+
+- The original `char *`-returning functions remain available for compatibility
+  and for tiny scripts/examples.
+- They are still reasonable for quick use, but new bindings should generally
+  prefer the `_ex` variants.
 
 ## Input strings
 
