@@ -255,6 +255,42 @@ pub const Document = struct {
         return null;
     }
 
+    /// Resolves a document-local selector to one node id.
+    ///
+    /// Selectors follow the same segment rules as TRD selectors:
+    /// - empty or `/` => document root
+    /// - `.` => current node
+    /// - `..` => parent node
+    /// - `@42`, `42`, `node-42` => direct node id references
+    /// - otherwise sibling `name` matches beneath the current node
+    pub fn resolveSelector(self: *const Document, selector: ?[]const u8) !ids.NodeId {
+        const selector_text = selector orelse return self.root_node_id;
+        if (selector_text.len == 0 or std.mem.eql(u8, selector_text, "/")) {
+            return self.root_node_id;
+        }
+
+        var current_id = self.root_node_id;
+        var segments = std.mem.splitScalar(u8, selector_text, '/');
+        while (segments.next()) |segment_raw| {
+            if (segment_raw.len == 0 or std.mem.eql(u8, segment_raw, ".")) continue;
+            if (std.mem.eql(u8, segment_raw, "..")) {
+                const current_node = self.findNodeConst(current_id) orelse return error.InvalidResourceSelector;
+                current_id = current_node.parent_id orelse return error.ResourceSelectorEscapesRoot;
+                continue;
+            }
+
+            if (parseDirectNodeReference(segment_raw)) |direct_id| {
+                _ = self.findNodeConst(direct_id) orelse return error.UnknownResourceSelectorSegment;
+                current_id = direct_id;
+                continue;
+            }
+
+            current_id = try self.resolveChildBySegment(current_id, segment_raw);
+        }
+
+        return current_id;
+    }
+
     /// Writes the full document payload as JSON.
     pub fn writeJson(self: *const Document, writer: anytype) !void {
         try writer.writeAll("{");
@@ -361,7 +397,54 @@ pub const Document = struct {
         }
         return false;
     }
+
+    fn resolveChildBySegment(self: *const Document, parent_id: ids.NodeId, segment: []const u8) !ids.NodeId {
+        const parent = self.findNodeConst(parent_id) orelse return error.InvalidResourceSelector;
+
+        var match_count: usize = 0;
+        var matched_id: ids.NodeId = 0;
+
+        for (parent.children.items) |child_id| {
+            const child = self.findNodeConst(child_id) orelse continue;
+            if (nodeMatchesSegment(child, segment)) {
+                match_count += 1;
+                matched_id = child_id;
+            }
+        }
+
+        return switch (match_count) {
+            0 => error.UnknownResourceSelectorSegment,
+            1 => matched_id,
+            else => error.AmbiguousResourceSelector,
+        };
+    }
 };
+
+fn parseDirectNodeReference(segment: []const u8) ?ids.NodeId {
+    if (segment.len == 0) return null;
+
+    if (segment[0] == '@') {
+        return std.fmt.parseInt(ids.NodeId, segment[1..], 10) catch null;
+    }
+
+    if (std.mem.startsWith(u8, segment, "node-")) {
+        return std.fmt.parseInt(ids.NodeId, segment["node-".len..], 10) catch null;
+    }
+
+    return std.fmt.parseInt(ids.NodeId, segment, 10) catch null;
+}
+
+fn nodeMatchesSegment(node: *const muxml.Node, segment: []const u8) bool {
+    if (node.name) |name| {
+        if (std.mem.eql(u8, name, segment)) return true;
+    }
+
+    var buffer: [32]u8 = undefined;
+    const direct = std.fmt.bufPrint(&buffer, "{d}", .{node.id}) catch return false;
+    if (std.mem.eql(u8, direct, segment)) return true;
+    const with_prefix = std.fmt.bufPrint(&buffer, "node-{d}", .{node.id}) catch return false;
+    return std.mem.eql(u8, with_prefix, segment);
+}
 
 fn writeEscapedXml(writer: anytype, value: []const u8) !void {
     for (value) |char| switch (char) {

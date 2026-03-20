@@ -94,8 +94,13 @@ explicit, testable, and debuggable.
   - optional `selector`
 - daemon-owned node-targeted methods currently prefer `target.nodeId` over
   legacy `params.nodeId` when both are present
-- `target.selector` is parsed and reserved, but currently returns a structured
-  unsupported error until selector resolution is moved into the daemon
+- when `target.selector` is present, daemon-owned node-targeted methods now
+  resolve it within the targeted document using the same segment semantics as
+  TRD selectors:
+  - empty or `/` => document root
+  - `.` / `..` for relative traversal
+  - `@42`, `42`, `node-42` for direct node references
+  - otherwise sibling `name` matching beneath the current node
 - `projection.get` is the public boxed-view surface for one concrete viewport;
   it combines:
   - shared document state from the daemon-owned TOM

@@ -139,7 +139,7 @@ test "tmux methods reject non-root document targets until projections are genera
     try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "root document target /") != null);
 }
 
-test "node-targeted methods accept target.nodeId and reject target.selector for now" {
+test "node-targeted methods accept target.nodeId and resolve target.selector server-side" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -167,13 +167,22 @@ test "node-targeted methods accept target.nodeId and reject target.selector for 
     const target_result = try resultObject(via_target);
     try std.testing.expectEqualStrings("alpha", target_result.get("title").?.string);
 
-    var selector_stub = try call(
+    var selector_target = try call(
         std.testing.allocator,
         &store,
         \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/","selector":"alpha"},"method":"node.get","params":{}}
     );
-    defer selector_stub.deinit();
-    const err = try errorObject(selector_stub);
-    try std.testing.expectEqual(@as(i64, -32001), err.get("code").?.integer);
-    try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "target.selector is not implemented yet") != null);
+    defer selector_target.deinit();
+    const selector_result = try resultObject(selector_target);
+    try std.testing.expectEqualStrings("alpha", selector_result.get("title").?.string);
+
+    var selector_miss = try call(
+        std.testing.allocator,
+        &store,
+        \\{"jsonrpc":"2.0","id":4,"target":{"documentPath":"/","selector":"does-not-exist"},"method":"node.get","params":{}}
+    );
+    defer selector_miss.deinit();
+    const err = try errorObject(selector_miss);
+    try std.testing.expectEqual(@as(i64, -32602), err.get("code").?.integer);
+    try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "does not match any node") != null);
 }

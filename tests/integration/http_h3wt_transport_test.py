@@ -315,13 +315,22 @@ def assert_node_target_shape(
                 "method": "node.get",
                 "params": {},
             },
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "target": {"documentPath": "/", "selector": "does-not-exist"},
+                "method": "node.get",
+                "params": {},
+            },
         ],
     )
 
     assert responses[0]["result"]["id"] == node_id
     assert responses[0]["result"]["title"] == "node-target-demo"
-    assert responses[1]["error"]["code"] == -32001
-    assert "target.selector is not implemented yet" in responses[1]["error"]["message"]
+    assert responses[1]["result"]["id"] == node_id
+    assert responses[1]["result"]["title"] == "node-target-demo"
+    assert responses[2]["error"]["code"] == -32602
+    assert "does not match any node" in responses[2]["error"]["message"]
 
 
 def exercise_transport(
