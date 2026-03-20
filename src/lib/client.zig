@@ -12,6 +12,7 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     address: transport.Address,
     connection: ?transport.Connection = null,
+    response_reader: transport.MessageReader,
     next_request_id: u64 = 1,
 
     /// Initializes a client that will talk to the daemon at `transport_spec`.
@@ -19,12 +20,14 @@ pub const Client = struct {
         return .{
             .allocator = allocator,
             .address = try transport.Address.parse(allocator, transport_spec),
+            .response_reader = transport.MessageReader.init(allocator),
         };
     }
 
     /// Releases memory and any live transport session owned by the client.
     pub fn deinit(self: *Client) void {
         if (self.connection) |*connection| connection.close();
+        self.response_reader.deinit();
         self.address.deinit(self.allocator);
     }
 
@@ -53,8 +56,7 @@ pub const Client = struct {
         try connection.writeAll(request_json);
         try connection.writeAll("\n");
 
-        return (try transport.readMessageLine(
-            self.allocator,
+        return (try self.response_reader.readMessageLine(
             connection,
             transport.max_message_bytes,
         )) orelse error.EndOfStream;

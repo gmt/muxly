@@ -4,7 +4,7 @@ const muxly = @import("muxly");
 test "transport parser keeps unsafe ssh relay metadata" {
     var address = try muxly.transport.Address.parse(
         std.testing.allocator,
-        "unsafe+ssh://alice@example.com/tcp://169.254.10.2:4488",
+        "unsafe+ssh://alice@example.com:2222/tcp://169.254.10.2:4488",
     );
     defer address.deinit(std.testing.allocator);
 
@@ -13,6 +13,7 @@ test "transport parser keeps unsafe ssh relay metadata" {
     switch (address.target) {
         .ssh => |ssh| {
             try std.testing.expectEqualStrings("alice@example.com", ssh.destination);
+            try std.testing.expectEqual(@as(?u16, 2222), ssh.port);
             try std.testing.expectEqualStrings("tcp://169.254.10.2:4488", ssh.remote_spec);
         },
         else => try std.testing.expect(false),
@@ -58,10 +59,11 @@ test "persistent client reuses one tcp connection for multiple requests" {
             var connection = try self.listener.accept();
             self.accept_count += 1;
             defer connection.stream.close();
+            var request_reader = muxly.transport.MessageReader.init(self.allocator);
+            defer request_reader.deinit();
 
             while (self.request_count < 2) : (self.request_count += 1) {
-                const request = try muxly.transport.readMessageLine(
-                    self.allocator,
+                const request = try request_reader.readMessageLine(
                     connection.stream,
                     muxly.transport.max_message_bytes,
                 ) orelse break;

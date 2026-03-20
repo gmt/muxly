@@ -108,10 +108,21 @@ legacy `--socket` flag. Supported specs are:
 - bare paths or `unix:///tmp/muxly.sock`
 - `tcp://169.254.10.20:4488`
 - `ssh://alice@example.com/tcp://169.254.10.20:4488`
+- `ssh://alice@example.com:2222/tcp://169.254.10.20:4488`
 
 Plain TCP is intentionally restricted to loopback and link-local addresses
 unless you also pass
 `--i-know-this-is-unencrypted-and-unauthenticated`.
+
+If you need a custom SSH client config for transport testing or host-specific
+identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
+
+You can exercise both TCP and SSH transports against a transient Docker-hosted
+daemon with:
+
+```sh
+python3 tests/integration/docker_transport_test.py
+```
 
 ### Viewer keys, exremely preliminary
 

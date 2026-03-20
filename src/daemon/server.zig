@@ -19,10 +19,11 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     while (true) {
         var connection = try listener.accept();
         defer connection.stream.close();
+        var request_reader = muxly.transport.MessageReader.init(allocator);
+        defer request_reader.deinit();
 
         while (true) {
-            const request = try muxly.transport.readMessageLine(
-                allocator,
+            const request = try request_reader.readMessageLine(
                 connection.stream,
                 muxly.transport.max_message_bytes,
             ) orelse break;

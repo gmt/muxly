@@ -8,6 +8,51 @@ pub const max_message_bytes: usize = 1 << 20;
 pub const unsafe_tcp_prefix = "unsafe+";
 pub const unsafe_tcp_flag = "--i-know-this-is-unencrypted-and-unauthenticated";
 
+pub const MessageReader = struct {
+    allocator: std.mem.Allocator,
+    pending: std.array_list.Managed(u8),
+
+    pub fn init(allocator: std.mem.Allocator) MessageReader {
+        return .{
+            .allocator = allocator,
+            .pending = std.array_list.Managed(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MessageReader) void {
+        self.pending.deinit();
+    }
+
+    pub fn readMessageLine(self: *MessageReader, reader: anytype, max_bytes: usize) !?[]u8 {
+        while (true) {
+            if (std.mem.indexOfScalar(u8, self.pending.items, '\n')) |newline_index| {
+                const line = try self.allocator.dupe(u8, self.pending.items[0..newline_index]);
+                const remaining_len = self.pending.items.len - newline_index - 1;
+                std.mem.copyForwards(
+                    u8,
+                    self.pending.items[0..remaining_len],
+                    self.pending.items[newline_index + 1 ..],
+                );
+                self.pending.items.len = remaining_len;
+                return line;
+            }
+
+            var buffer: [4096]u8 = undefined;
+            const bytes_read = try reader.read(&buffer);
+            if (bytes_read == 0) {
+                if (self.pending.items.len == 0) return null;
+
+                const line = try self.pending.toOwnedSlice();
+                self.pending = std.array_list.Managed(u8).init(self.allocator);
+                return line;
+            }
+
+            try self.pending.appendSlice(buffer[0..bytes_read]);
+            if (self.pending.items.len > max_bytes) return error.MessageTooLarge;
+        }
+    }
+};
+
 pub const Address = struct {
     allow_insecure_tcp: bool = false,
     target: Target,
@@ -29,6 +74,7 @@ pub const Address = struct {
 
     pub const SshAddress = struct {
         destination: []u8,
+        port: ?u16,
         remote_spec: []u8,
     };
 
@@ -97,6 +143,9 @@ pub const Address = struct {
             .tcp => |tcp| try writeTcpSpec(writer, tcp.host, tcp.port),
             .ssh => |ssh| {
                 try writer.print("ssh://{s}", .{ssh.destination});
+                if (ssh.port) |port| {
+                    try writer.print(":{d}", .{port});
+                }
                 if (ssh.remote_spec.len > 0) {
                     try writer.writeByte('/');
                     try writer.writeAll(ssh.remote_spec);
@@ -177,15 +226,30 @@ pub const SshSession = struct {
     pub fn init(allocator: std.mem.Allocator, ssh: Address.SshAddress, allow_insecure_tcp: bool) !SshSession {
         const remote_command = try buildRemoteRelayCommand(allocator, ssh.remote_spec, allow_insecure_tcp);
         defer allocator.free(remote_command);
-
-        const argv = [_][]const u8{
-            "ssh",
-            "-T",
-            ssh.destination,
-            remote_command,
+        const ssh_config_path = std.process.getEnvVarOwned(allocator, "MUXLY_SSH_CONFIG") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
         };
+        defer if (ssh_config_path) |path| allocator.free(path);
 
-        var child = std.process.Child.init(&argv, allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        try argv.append("ssh");
+        try argv.append("-T");
+        if (ssh_config_path) |path| {
+            try argv.append("-F");
+            try argv.append(path);
+        }
+        var port_buffer: [16]u8 = undefined;
+        if (ssh.port) |port| {
+            const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{port});
+            try argv.append("-p");
+            try argv.append(port_text);
+        }
+        try argv.append(ssh.destination);
+        try argv.append(remote_command);
+
+        var child = std.process.Child.init(argv.items, allocator);
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Inherit;
@@ -280,31 +344,9 @@ pub fn connect(allocator: std.mem.Allocator, address: *const Address) !Connectio
 }
 
 pub fn readMessageLine(allocator: std.mem.Allocator, reader: anytype, max_bytes: usize) !?[]u8 {
-    var request = std.array_list.Managed(u8).init(allocator);
-    errdefer request.deinit();
-
-    var buffer: [4096]u8 = undefined;
-    var saw_any_bytes = false;
-    while (true) {
-        const bytes_read = try reader.read(&buffer);
-        if (bytes_read == 0) {
-            if (!saw_any_bytes) return null;
-            break;
-        }
-
-        saw_any_bytes = true;
-        const chunk = buffer[0..bytes_read];
-        if (std.mem.indexOfScalar(u8, chunk, '\n')) |newline_index| {
-            try request.appendSlice(chunk[0..newline_index]);
-            break;
-        }
-
-        try request.appendSlice(chunk);
-        if (request.items.len > max_bytes) return error.MessageTooLarge;
-    }
-
-    if (request.items.len > max_bytes) return error.MessageTooLarge;
-    return try request.toOwnedSlice();
+    var message_reader = MessageReader.init(allocator);
+    defer message_reader.deinit();
+    return try message_reader.readMessageLine(reader, max_bytes);
 }
 
 fn parseTcp(allocator: std.mem.Allocator, spec: []const u8) !Address.TcpAddress {
@@ -319,6 +361,7 @@ fn parseSsh(allocator: std.mem.Allocator, spec: []const u8) !Address.SshAddress 
     const slash_index = std.mem.indexOfScalar(u8, spec, '/');
     const destination = if (slash_index) |index| spec[0..index] else spec;
     if (destination.len == 0) return error.InvalidTransportAddress;
+    const parsed_destination = try parseSshDestination(destination);
 
     const remote_spec = if (slash_index) |index|
         spec[index + 1 ..]
@@ -326,7 +369,8 @@ fn parseSsh(allocator: std.mem.Allocator, spec: []const u8) !Address.SshAddress 
         defaultRemoteTransportSpec();
 
     return .{
-        .destination = try allocator.dupe(u8, destination),
+        .destination = try allocator.dupe(u8, parsed_destination.destination),
+        .port = parsed_destination.port,
         .remote_spec = try allocator.dupe(u8, remote_spec),
     };
 }
@@ -363,6 +407,47 @@ fn writeTcpSpec(writer: anytype, host: []const u8, port: u16) !void {
     }
 }
 
+fn parseSshDestination(spec: []const u8) !struct { destination: []const u8, port: ?u16 } {
+    if (spec.len == 0) return error.InvalidTransportAddress;
+
+    const at_index = std.mem.lastIndexOfScalar(u8, spec, '@');
+    const host_start = if (at_index) |index| index + 1 else 0;
+    const host_part = spec[host_start..];
+    if (host_part.len == 0) return error.InvalidTransportAddress;
+
+    if (host_part[0] == '[') {
+        const close_index = std.mem.indexOfScalar(u8, host_part, ']') orelse return error.InvalidTransportAddress;
+        if (close_index == host_part.len - 1) {
+            return .{
+                .destination = spec,
+                .port = null,
+            };
+        }
+        if (host_part[close_index + 1] != ':') return error.InvalidTransportAddress;
+        return .{
+            .destination = spec[0 .. host_start + close_index + 1],
+            .port = try parsePort(host_part[close_index + 2 ..]),
+        };
+    }
+
+    const colon_index = std.mem.lastIndexOfScalar(u8, host_part, ':') orelse return .{
+        .destination = spec,
+        .port = null,
+    };
+
+    if (std.mem.indexOfScalar(u8, host_part[0..colon_index], ':') != null) {
+        return .{
+            .destination = spec,
+            .port = null,
+        };
+    }
+
+    return .{
+        .destination = spec[0 .. host_start + colon_index],
+        .port = try parsePort(host_part[colon_index + 1 ..]),
+    };
+}
+
 fn buildRemoteRelayCommand(
     allocator: std.mem.Allocator,
     remote_spec: []const u8,
@@ -371,12 +456,13 @@ fn buildRemoteRelayCommand(
     var command = std.array_list.Managed(u8).init(allocator);
     errdefer command.deinit();
 
-    try command.appendSlice("exec muxly transport relay --transport ");
+    try command.appendSlice("exec muxly --transport ");
     try appendShellSingleQuoted(command.writer(), remote_spec);
     if (allow_insecure_tcp) {
         try command.appendSlice(" ");
         try command.appendSlice(unsafe_tcp_flag);
     }
+    try command.appendSlice(" transport relay");
 
     return try command.toOwnedSlice();
 }
