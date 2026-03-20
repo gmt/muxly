@@ -16,6 +16,7 @@ pub const Node = struct {
     id: ids.NodeId,
     kind: types.NodeKind,
     title: []u8,
+    name: ?[]u8 = null,
     content: []u8,
     parent_id: ?ids.NodeId,
     children: std.ArrayListUnmanaged(ids.NodeId) = .{},
@@ -44,6 +45,7 @@ pub const Node = struct {
 
     pub fn deinit(self: *Node, allocator: std.mem.Allocator) void {
         allocator.free(self.title);
+        if (self.name) |name| allocator.free(name);
         allocator.free(self.content);
         self.children.deinit(allocator);
         self.source.deinit(allocator);
@@ -53,6 +55,19 @@ pub const Node = struct {
     pub fn setBackendId(self: *Node, allocator: std.mem.Allocator, value: []const u8) !void {
         if (self.backend_id) |bid| allocator.free(bid);
         self.backend_id = try allocator.dupe(u8, value);
+    }
+
+    pub fn setName(self: *Node, allocator: std.mem.Allocator, value: ?[]const u8) !void {
+        if (value) |name| {
+            if (!isValidNodeName(name)) return error.InvalidNodeName;
+            const owned = try allocator.dupe(u8, name);
+            if (self.name) |existing| allocator.free(existing);
+            self.name = owned;
+            return;
+        }
+
+        if (self.name) |existing| allocator.free(existing);
+        self.name = null;
     }
 
     pub fn setContent(self: *Node, allocator: std.mem.Allocator, content: []const u8) !void {
@@ -80,6 +95,10 @@ pub const Node = struct {
         try writer.print("\"kind\":\"{s}\",", .{@tagName(self.kind)});
         try writer.writeAll("\"title\":");
         try writeJsonString(writer, self.title);
+        if (self.name) |name| {
+            try writer.writeAll(",\"name\":");
+            try writeJsonString(writer, name);
+        }
         try writer.writeAll(",\"content\":");
         try writeJsonString(writer, self.content);
         try writer.print(",\"followTail\":{},", .{self.follow_tail});
@@ -95,10 +114,6 @@ pub const Node = struct {
         if (self.parent_id) |parent_id| {
             try writer.print(",\"parentId\":{d}", .{parent_id});
         }
-        if (self.backend_id) |bid| {
-            try writer.writeAll(",\"backendId\":");
-            try writeJsonString(writer, bid);
-        }
         try writer.writeAll("}");
     }
 
@@ -109,9 +124,9 @@ pub const Node = struct {
             @tagName(self.lifecycle),
             if (self.follow_tail) "true" else "false",
         });
-        if (self.backend_id) |bid| {
-            try writer.writeAll(" backendId=\"");
-            try escapeXml(bid, writer);
+        if (self.name) |name| {
+            try writer.writeAll(" name=\"");
+            try escapeXml(name, writer);
             try writer.writeAll("\"");
         }
         try writer.writeAll(">");
@@ -124,6 +139,84 @@ pub const Node = struct {
         try writer.writeAll("</content></node>");
     }
 };
+
+pub fn isValidNodeName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
+    if (looksLikeDirectNodeReference(name)) return false;
+    for (name) |char| {
+        if (!isValidNodeNameByte(char)) return false;
+    }
+    return true;
+}
+
+pub fn defaultNodeName(allocator: std.mem.Allocator, title: []const u8) !?[]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    defer buffer.deinit();
+
+    var needs_separator = false;
+    for (title) |char| {
+        if (std.ascii.isAlphanumeric(char)) {
+            if (needs_separator and buffer.items.len != 0 and buffer.items[buffer.items.len - 1] != '-') {
+                try buffer.append('-');
+            }
+            try buffer.append(std.ascii.toLower(char));
+            needs_separator = false;
+            continue;
+        }
+
+        switch (char) {
+            '.', '_', '~' => {
+                if (needs_separator and buffer.items.len != 0 and buffer.items[buffer.items.len - 1] != '-') {
+                    try buffer.append('-');
+                }
+                try buffer.append(char);
+                needs_separator = false;
+            },
+            '-' => {
+                if (buffer.items.len == 0 or buffer.items[buffer.items.len - 1] == '-') continue;
+                try buffer.append('-');
+                needs_separator = false;
+            },
+            else => {
+                if (buffer.items.len != 0) needs_separator = true;
+            },
+        }
+    }
+
+    while (buffer.items.len != 0 and buffer.items[buffer.items.len - 1] == '-') {
+        _ = buffer.pop();
+    }
+
+    if (buffer.items.len == 0) return null;
+    if (isValidNodeName(buffer.items)) return try buffer.toOwnedSlice();
+    return try std.fmt.allocPrint(allocator, "n-{s}", .{buffer.items});
+}
+
+fn isValidNodeNameByte(char: u8) bool {
+    if (std.ascii.isAlphanumeric(char)) return true;
+    return switch (char) {
+        '-', '.', '_', '~', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', ':', '@' => true,
+        else => false,
+    };
+}
+
+fn looksLikeDirectNodeReference(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.ascii.isDigit(name[0])) {
+        _ = std.fmt.parseInt(u64, name, 10) catch return false;
+        return true;
+    }
+    if (name[0] == '@' and name.len > 1) {
+        _ = std.fmt.parseInt(u64, name[1..], 10) catch return false;
+        return true;
+    }
+    if (std.mem.startsWith(u8, name, "node-") and name.len > "node-".len) {
+        _ = std.fmt.parseInt(u64, name["node-".len..], 10) catch return false;
+        return true;
+    }
+    return false;
+}
 
 pub fn writeSourceJson(source: source_mod.Source, writer: anytype) !void {
     switch (source) {

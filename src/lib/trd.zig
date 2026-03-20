@@ -310,11 +310,8 @@ fn resolveChildBySegment(nodes: []const std.json.Value, parent_id: u64, segment:
 }
 
 fn nodeMatchesSegment(node: std.json.ObjectMap, segment: []const u8) bool {
-    if (node.get("title")) |title_value| {
-        if (title_value == .string and std.mem.eql(u8, title_value.string, segment)) return true;
-    }
-    if (node.get("backendId")) |backend_id_value| {
-        if (backend_id_value == .string and std.mem.eql(u8, backend_id_value.string, segment)) return true;
+    if (node.get("name")) |name_value| {
+        if (name_value == .string and std.mem.eql(u8, name_value.string, segment)) return true;
     }
     if (node.get("id")) |id_value| {
         if (id_value == .integer) {

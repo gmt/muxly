@@ -88,7 +88,7 @@ test "tmux snapshot reconcile builds and updates one session subtree determinist
     try std.testing.expectEqualStrings("left-renamed", preserved_pane.title);
 }
 
-test "projected tmux identity uses backend_id and does not leak into content" {
+test "projected tmux identity keeps backend_id internal and publishes stable names" {
     var document = try muxly.document.Document.init(std.testing.allocator, 1, "demo");
     defer document.deinit();
 
@@ -120,7 +120,8 @@ test "projected tmux identity uses backend_id and does not leak into content" {
     var json = std.array_list.Managed(u8).init(std.testing.allocator);
     defer json.deinit();
     try session_node.writeJson(json.writer());
-    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"backendId\":\"tmux-session:$5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"name\":\"test-session\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"backendId\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"content\":\"\"") != null);
 
     const session_node_id_again = try reconcile.reconcileSessionSnapshots(&document, document.root_node_id, &snapshots);

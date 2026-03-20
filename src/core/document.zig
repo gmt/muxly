@@ -39,6 +39,7 @@ pub const Document = struct {
             null,
             .{ .none = {} },
         );
+        root_node.name = try muxml.defaultNodeName(allocator, title);
         root_node.follow_tail = false;
         try document.nodes.append(allocator, root_node);
         return document;
@@ -63,6 +64,7 @@ pub const Document = struct {
         const parent_index = self.findNodeIndex(parent_id) orelse return error.UnknownParent;
         const node_id = self.nextNodeId();
         var node = try muxml.Node.init(self.allocator, node_id, kind, title, parent_id, source);
+        node.name = try self.defaultChildName(parent_id, title);
         if (kind == .static_file_leaf) node.follow_tail = false;
         try self.nodes.append(self.allocator, node);
         try self.nodes.items[parent_index].children.append(self.allocator, node_id);
@@ -85,6 +87,17 @@ pub const Document = struct {
     pub fn setNodeTitle(self: *Document, node_id: ids.NodeId, title: []const u8) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         try self.nodes.items[index].setTitle(self.allocator, title);
+    }
+
+    /// Replaces a node's stable URL-segment name.
+    pub fn setNodeName(self: *Document, node_id: ids.NodeId, name: ?[]const u8) !void {
+        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        if (name) |value| {
+            if (self.siblingNameInUse(self.nodes.items[index].parent_id, node_id, value)) {
+                return error.DuplicateNodeName;
+            }
+        }
+        try self.nodes.items[index].setName(self.allocator, name);
     }
 
     /// Finds a mutable node pointer by id.
@@ -315,6 +328,38 @@ pub const Document = struct {
         const id = self.next_node_id;
         self.next_node_id += 1;
         return id;
+    }
+
+    fn defaultChildName(self: *const Document, parent_id: ids.NodeId, title: []const u8) !?[]u8 {
+        const base_name = try muxml.defaultNodeName(self.allocator, title) orelse return null;
+        if (!self.siblingNameInUse(parent_id, null, base_name)) return base_name;
+
+        var suffix: usize = 2;
+        while (true) : (suffix += 1) {
+            const candidate = try std.fmt.allocPrint(self.allocator, "{s}-{d}", .{ base_name, suffix });
+            if (!self.siblingNameInUse(parent_id, null, candidate)) {
+                self.allocator.free(base_name);
+                return candidate;
+            }
+            self.allocator.free(candidate);
+        }
+    }
+
+    fn siblingNameInUse(
+        self: *const Document,
+        parent_id: ?ids.NodeId,
+        exempt_node_id: ?ids.NodeId,
+        name: []const u8,
+    ) bool {
+        const resolved_parent_id = parent_id orelse return false;
+        const parent = self.findNodeConst(resolved_parent_id) orelse return false;
+        for (parent.children.items) |child_id| {
+            if (exempt_node_id != null and child_id == exempt_node_id.?) continue;
+            const child = self.findNodeConst(child_id) orelse continue;
+            const child_name = child.name orelse continue;
+            if (std.mem.eql(u8, child_name, name)) return true;
+        }
+        return false;
     }
 };
 
