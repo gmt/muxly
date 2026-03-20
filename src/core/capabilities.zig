@@ -20,6 +20,7 @@ pub const Capabilities = struct {
     supports_rehydrate: bool = false,
     supports_tmux_backend: bool = builtin.os.tag != .windows,
     supports_unix_socket: bool = builtin.os.tag != .windows,
+    supports_tcp_socket: bool = builtin.os.tag != .windows,
     supports_named_pipes: bool = false,
     supports_mouse: bool = true,
     supports_menu_projection: bool = false,
@@ -42,13 +43,18 @@ pub const Capabilities = struct {
         try writer.print("\"supportsRehydrate\":{},", .{self.supports_rehydrate});
         try writer.print("\"supportsTmuxBackend\":{},", .{self.supports_tmux_backend});
         try writer.print("\"supportsUnixSocket\":{},", .{self.supports_unix_socket});
+        try writer.print("\"supportsTcpSocket\":{},", .{self.supports_tcp_socket});
         try writer.print("\"supportsNamedPipes\":{},", .{self.supports_named_pipes});
         try writer.writeAll("\"implementedTransports\":[");
         if (self.supports_unix_socket) {
             try writer.writeAll("\"unix-domain-socket\"");
         }
-        if (self.supports_named_pipes) {
+        if (self.supports_tcp_socket) {
             if (self.supports_unix_socket) try writer.writeAll(",");
+            try writer.writeAll("\"tcp\"");
+        }
+        if (self.supports_named_pipes) {
+            if (self.supports_unix_socket or self.supports_tcp_socket) try writer.writeAll(",");
             try writer.writeAll("\"named-pipe\"");
         }
         try writer.writeAll("],");

@@ -26,7 +26,7 @@ pub const RegionInfo = struct {
 
 pub const ViewerSession = struct {
     allocator: std.mem.Allocator,
-    socket_path: []u8,
+    client: muxly.client.Client,
     mode: input_mod.InputMode = .navigate,
     selected_index: usize = 0,
     regions: std.ArrayListUnmanaged(RegionInfo) = .{},
@@ -34,17 +34,17 @@ pub const ViewerSession = struct {
     status_message: []const u8 = "",
     status_owned: ?[]u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) !ViewerSession {
+    pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !ViewerSession {
         return .{
             .allocator = allocator,
-            .socket_path = try allocator.dupe(u8, socket_path),
+            .client = try muxly.client.Client.init(allocator, transport_spec),
         };
     }
 
     pub fn deinit(self: *ViewerSession) void {
         self.clearRegions();
         if (self.status_owned) |owned| self.allocator.free(owned);
-        self.allocator.free(self.socket_path);
+        self.client.deinit();
     }
 
     pub fn refreshRegions(self: *ViewerSession, projection_value: std.json.Value) void {
@@ -159,7 +159,7 @@ pub const ViewerSession = struct {
     /// Returns an owned pane id for `node_id`; the caller must free it with
     /// this session's allocator.
     pub fn findPaneIdForNode(self: *ViewerSession, node_id: u64) ?[]u8 {
-        const response = muxly.api.nodeGet(self.allocator, self.socket_path, node_id) catch return null;
+        const response = muxly.api.nodeGetWithClient(&self.client, self.allocator, node_id) catch return null;
         defer self.allocator.free(response);
 
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{
@@ -178,7 +178,7 @@ pub const ViewerSession = struct {
     }
 
     fn callDaemon(self: *ViewerSession, method: []const u8, params: []const u8) void {
-        const response = muxly.api.request(self.allocator, self.socket_path, method, params) catch return;
+        const response = muxly.api.requestWithClient(&self.client, method, params) catch return;
         self.allocator.free(response);
     }
 

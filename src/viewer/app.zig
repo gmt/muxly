@@ -1,4 +1,5 @@
 const std = @import("std");
+const transport = @import("../lib/transport.zig");
 
 pub const default_refresh_ms: u32 = 150;
 
@@ -8,9 +9,10 @@ pub const RunMode = enum {
 };
 
 pub const Config = struct {
-    socket_path: []const u8,
+    transport_spec: []const u8,
     snapshot_requested: bool = false,
     refresh_ms: u32 = default_refresh_ms,
+    allow_insecure_tcp: bool = false,
 };
 
 pub const ParseError = error{
@@ -19,10 +21,13 @@ pub const ParseError = error{
 };
 
 pub const usage =
-    \\usage: muxview [--socket PATH] [--snapshot]
+    \\usage: muxview [--transport SPEC] [--socket PATH] [--snapshot] [--i-know-this-is-unencrypted-and-unauthenticated]
     \\
     \\  --snapshot    render one snapshot and exit
-    \\  --socket      connect to an explicit muxly socket
+    \\  --transport   connect using a unix, tcp, or ssh transport spec
+    \\  --socket      legacy alias for a unix-domain socket path
+    \\  --i-know-this-is-unencrypted-and-unauthenticated
+    \\                allow tcp transports outside loopback/link-local ranges
     \\  --help        show this help text
     \\
     \\interactive keys (live mode):
@@ -36,9 +41,9 @@ pub const usage =
     \\
 ;
 
-pub fn parseArgs(default_socket_path: []const u8, args: []const []const u8) ParseError!Config {
+pub fn parseArgs(default_transport_spec: []const u8, args: []const []const u8) ParseError!Config {
     var config = Config{
-        .socket_path = default_socket_path,
+        .transport_spec = default_transport_spec,
     };
 
     var index: usize = if (args.len > 0) 1 else 0;
@@ -48,10 +53,20 @@ pub fn parseArgs(default_socket_path: []const u8, args: []const []const u8) Pars
             config.snapshot_requested = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--transport")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArguments;
+            config.transport_spec = args[index];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--socket")) {
             index += 1;
             if (index >= args.len) return error.InvalidArguments;
-            config.socket_path = args[index];
+            config.transport_spec = args[index];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, transport.unsafe_tcp_flag)) {
+            config.allow_insecure_tcp = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {

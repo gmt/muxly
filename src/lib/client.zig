@@ -1,30 +1,31 @@
 //! Thin Zig client for talking to an external `muxlyd` process.
 //!
-//! This layer owns the transport conversation with the daemon. It currently
-//! uses Unix-domain sockets on Unix-like hosts and returns
-//! `error.UnsupportedPlatform` on Windows until the named-pipe transport is
-//! implemented.
+//! This layer owns the transport conversation with the daemon. Client handles
+//! now keep one transport session open and reuse it across requests until
+//! `deinit`, which is especially helpful for viewers and SSH relays.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const unix_socket = @import("../platform/unix_socket.zig");
+const transport = @import("transport.zig");
 
-/// Handle-based client bound to one daemon socket path.
+/// Handle-based client bound to one daemon transport address.
 pub const Client = struct {
     allocator: std.mem.Allocator,
-    socket_path: []u8,
+    address: transport.Address,
+    connection: ?transport.Connection = null,
+    next_request_id: u64 = 1,
 
-    /// Initializes a client that will talk to the daemon at `socket_path`.
-    pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) !Client {
+    /// Initializes a client that will talk to the daemon at `transport_spec`.
+    pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !Client {
         return .{
             .allocator = allocator,
-            .socket_path = try allocator.dupe(u8, socket_path),
+            .address = try transport.Address.parse(allocator, transport_spec),
         };
     }
 
-    /// Releases memory owned by the client handle.
+    /// Releases memory and any live transport session owned by the client.
     pub fn deinit(self: *Client) void {
-        self.allocator.free(self.socket_path);
+        if (self.connection) |*connection| connection.close();
+        self.address.deinit(self.allocator);
     }
 
     /// Sends one JSON-RPC request assembled from `method` and `params_json`.
@@ -34,10 +35,12 @@ pub const Client = struct {
     pub fn request(self: *Client, method: []const u8, params_json: []const u8) ![]u8 {
         const request_json = try std.fmt.allocPrint(
             self.allocator,
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}",
-            .{ method, params_json },
+            "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{s}}}",
+            .{ self.next_request_id, method, params_json },
         );
         defer self.allocator.free(request_json);
+
+        self.next_request_id += 1;
         return try self.requestJson(request_json);
     }
 
@@ -46,24 +49,21 @@ pub const Client = struct {
     /// This is the lowest-level Zig client entry point in the package. The
     /// returned slice is owned by the caller.
     pub fn requestJson(self: *Client, request_json: []const u8) ![]u8 {
-        if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
+        var connection = try self.ensureConnected();
+        try connection.writeAll(request_json);
+        try connection.writeAll("\n");
 
-        var stream = try unix_socket.connect(self.socket_path);
-        defer stream.close();
+        return (try transport.readMessageLine(
+            self.allocator,
+            connection,
+            transport.max_message_bytes,
+        )) orelse error.EndOfStream;
+    }
 
-        try stream.writeAll(request_json);
-        try stream.writeAll("\n");
-
-        var response = std.array_list.Managed(u8).init(self.allocator);
-        errdefer response.deinit();
-
-        var buffer: [4096]u8 = undefined;
-        while (true) {
-            const bytes_read = try stream.read(&buffer);
-            if (bytes_read == 0) break;
-            try response.appendSlice(buffer[0..bytes_read]);
+    fn ensureConnected(self: *Client) !*transport.Connection {
+        if (self.connection == null) {
+            self.connection = try transport.connect(self.allocator, &self.address);
         }
-
-        return try response.toOwnedSlice();
+        return &self.connection.?;
     }
 };

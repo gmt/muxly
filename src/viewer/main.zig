@@ -106,15 +106,20 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const default_socket_path = try muxly.api.socketPathFromEnv(allocator);
-    defer allocator.free(default_socket_path);
-    const config = viewer_app.parseArgs(default_socket_path, args) catch |err| switch (err) {
+    const default_transport_spec = try muxly.api.transportSpecFromEnv(allocator);
+    defer allocator.free(default_transport_spec);
+    const config = viewer_app.parseArgs(default_transport_spec, args) catch |err| switch (err) {
         error.ShowUsage => {
             try std.fs.File.stderr().writeAll(viewer_app.usage);
             return;
         },
         else => return err,
     };
+    const transport_spec = if (config.allow_insecure_tcp)
+        try muxly.transport.withUnsafeTcpPrefix(allocator, config.transport_spec)
+    else
+        try allocator.dupe(u8, config.transport_spec);
+    defer allocator.free(transport_spec);
 
     const stdout_file = std.fs.File.stdout();
     const run_mode = viewer_app.selectRunMode(
@@ -124,13 +129,13 @@ pub fn main() !void {
 
     switch (run_mode) {
         .snapshot => {
-            const frame = try buildFrame(allocator, config.socket_path, .{});
+            const frame = try buildFrame(allocator, transport_spec, .{});
             defer allocator.free(frame);
             try stdout_file.writeAll(frame);
         },
         .live => try runLiveViewer(
             allocator,
-            config.socket_path,
+            transport_spec,
             std.fs.File.stdin(),
             stdout_file,
             config.refresh_ms,
@@ -140,7 +145,7 @@ pub fn main() !void {
 
 fn runLiveViewer(
     allocator: std.mem.Allocator,
-    socket_path: []const u8,
+    transport_spec: []const u8,
     stdin_file: std.fs.File,
     stdout_file: std.fs.File,
     refresh_ms: u32,
@@ -151,7 +156,7 @@ fn runLiveViewer(
     var terminal_guard = try TerminalGuard.init(stdin_file, stdout_file);
     defer terminal_guard.deinit();
 
-    var session = try viewer_state.ViewerSession.init(allocator, socket_path);
+    var session = try viewer_state.ViewerSession.init(allocator, transport_spec);
     defer session.deinit();
 
     var viewport = readViewport(stdout_file);
@@ -174,7 +179,7 @@ fn runLiveViewer(
         const selected_region = session.selectedRegion();
         const focused_id: ?u64 = if (selected_region) |r| r.node_id else null;
 
-        const response = muxly.api.projectionGet(allocator, session.socket_path, .{
+        const response = muxly.api.projectionGetWithClient(&session.client, allocator, .{
             .rows = content_rows,
             .cols = viewport.cols,
             .local_state = .{ .focused_node_id = focused_id },
@@ -402,7 +407,7 @@ fn forwardInputToPane(session: *viewer_state.ViewerSession, input: []const u8) v
         escaped[0..escaped_len],
     }) catch return;
 
-    const response = muxly.api.request(session.allocator, session.socket_path, "pane.sendKeys", params) catch return;
+    const response = muxly.api.requestWithClient(&session.client, "pane.sendKeys", params) catch return;
     session.allocator.free(response);
 }
 

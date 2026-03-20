@@ -100,6 +100,19 @@ zig build muxguide
 When launched in a terminal, `muxview` now attaches live by default with
 interactive navigation. Press `q` to leave the attached viewer session.
 
+### Transport specs
+
+`muxly`, `muxlyd`, and `muxview` now accept `--transport` in addition to the
+legacy `--socket` flag. Supported specs are:
+
+- bare paths or `unix:///tmp/muxly.sock`
+- `tcp://169.254.10.20:4488`
+- `ssh://alice@example.com/tcp://169.254.10.20:4488`
+
+Plain TCP is intentionally restricted to loopback and link-local addresses
+unless you also pass
+`--i-know-this-is-unencrypted-and-unauthenticated`.
+
 ### Viewer keys, exremely preliminary
 
 - `j`/`k` or up/down arrows: select region

@@ -3,14 +3,19 @@ const config_mod = @import("config.zig");
 const server = @import("server.zig");
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
 
-    var config = try config_mod.Config.load(allocator);
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    var config = config_mod.Config.load(allocator, args) catch |err| switch (err) {
+        error.ShowUsage => {
+            try std.fs.File.stderr().writeAll(config_mod.usage);
+            return;
+        },
+        else => return err,
+    };
     defer config.deinit();
-
-    const stderr = std.fs.File.stderr().deprecatedWriter();
-    try stderr.print("muxlyd listening on {s}\n", .{config.socket_path});
     try server.serve(allocator, config);
 }

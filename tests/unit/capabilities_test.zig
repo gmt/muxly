@@ -14,10 +14,12 @@ test "capabilities describe current phase-2 semantics truthfully" {
 
     if (builtin.os.tag == .windows) {
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsUnixSocket\":false") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsTcpSocket\":false") != null);
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"implementedTransports\":[]") != null);
     } else {
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsUnixSocket\":true") != null);
-        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"implementedTransports\":[\"unix-domain-socket\"]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsTcpSocket\":true") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"implementedTransports\":[\"unix-domain-socket\",\"tcp\"]") != null);
     }
 
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsNamedPipes\":false") != null);

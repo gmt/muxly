@@ -1,20 +1,58 @@
 const std = @import("std");
+const transport = @import("../lib/transport.zig");
 
 pub const Parsed = struct {
-    socket_path: []const u8,
+    transport_spec: []const u8,
     command_index: usize,
+    allow_insecure_tcp: bool,
 };
 
-pub fn parse(argv: []const []const u8, default_socket_path: []const u8) Parsed {
-    if (argv.len >= 4 and std.mem.eql(u8, argv[1], "--socket")) {
+pub const ParseError = error{
+    InvalidArguments,
+    ShowUsage,
+};
+
+pub fn parse(argv: []const []const u8, default_transport_spec: []const u8) ParseError!Parsed {
+    var transport_spec = default_transport_spec;
+    var allow_insecure_tcp = false;
+
+    var index: usize = if (argv.len > 0) 1 else 0;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+
+        if (std.mem.eql(u8, arg, "--transport")) {
+            index += 1;
+            if (index >= argv.len) return error.InvalidArguments;
+            transport_spec = argv[index];
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--socket")) {
+            index += 1;
+            if (index >= argv.len) return error.InvalidArguments;
+            transport_spec = argv[index];
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, transport.unsafe_tcp_flag)) {
+            allow_insecure_tcp = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            return error.ShowUsage;
+        }
+
         return .{
-            .socket_path = argv[2],
-            .command_index = 3,
+            .transport_spec = transport_spec,
+            .command_index = index,
+            .allow_insecure_tcp = allow_insecure_tcp,
         };
     }
 
     return .{
-        .socket_path = default_socket_path,
-        .command_index = 1,
+        .transport_spec = transport_spec,
+        .command_index = index,
+        .allow_insecure_tcp = allow_insecure_tcp,
     };
 }

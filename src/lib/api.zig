@@ -499,24 +499,61 @@ pub fn request(
     return try client.request(method, params_json);
 }
 
-/// Returns the daemon socket path from `MUXLY_SOCKET`, falling back to the
-/// platform default when unset.
+/// Sends one raw JSON-RPC request using an existing persistent client handle.
+pub fn requestWithClient(client: *client_mod.Client, method: []const u8, params_json: []const u8) ![]u8 {
+    return try client.request(method, params_json);
+}
+
+/// Returns one node payload by id using an existing persistent client handle.
+pub fn nodeGetWithClient(client: *client_mod.Client, allocator: std.mem.Allocator, node_id: u64) ![]u8 {
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"nodeId\":{d}}}", .{node_id});
+    defer allocator.free(params_json);
+    return try requestWithClient(client, "node.get", params_json);
+}
+
+/// Returns a boxed viewer projection using an existing persistent client handle.
+pub fn projectionGetWithClient(
+    client: *client_mod.Client,
+    allocator: std.mem.Allocator,
+    request_value: projection_mod.Request,
+) ![]u8 {
+    var params = std.array_list.Managed(u8).init(allocator);
+    defer params.deinit();
+    try projection_mod.writeRequestJson(params.writer(), request_value);
+    return try requestWithClient(client, "projection.get", params.items);
+}
+
+/// Returns the daemon transport spec from `MUXLY_TRANSPORT`, falling back to
+/// `MUXLY_SOCKET` and then the platform default when unset.
 ///
-/// The returned path is owned by the caller.
-pub fn socketPathFromEnv(allocator: std.mem.Allocator) ![]u8 {
-    return std.process.getEnvVarOwned(allocator, "MUXLY_SOCKET") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => try allocator.dupe(u8, defaultSocketPath()),
-        else => return err,
+/// The returned spec is owned by the caller.
+pub fn transportSpecFromEnv(allocator: std.mem.Allocator) ![]u8 {
+    return std.process.getEnvVarOwned(allocator, "MUXLY_TRANSPORT") catch |transport_err| switch (transport_err) {
+        error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "MUXLY_SOCKET") catch |socket_err| switch (socket_err) {
+            error.EnvironmentVariableNotFound => try allocator.dupe(u8, defaultTransportSpec()),
+            else => return socket_err,
+        },
+        else => return transport_err,
     };
 }
 
-/// Returns the platform-default daemon transport address.
+/// Returns the platform-default daemon transport spec.
 ///
 /// Unix-like hosts use `/tmp/muxly.sock`. Windows uses the planned named-pipe
 /// path even though the current client transport is not implemented there yet.
-pub fn defaultSocketPath() []const u8 {
+pub fn defaultTransportSpec() []const u8 {
     return if (builtin.os.tag == .windows)
         "\\\\.\\pipe\\muxly"
     else
         "/tmp/muxly.sock";
+}
+
+/// Legacy alias retained for examples and existing callers.
+pub fn socketPathFromEnv(allocator: std.mem.Allocator) ![]u8 {
+    return try transportSpecFromEnv(allocator);
+}
+
+/// Legacy alias retained for examples and existing callers.
+pub fn defaultSocketPath() []const u8 {
+    return defaultTransportSpec();
 }

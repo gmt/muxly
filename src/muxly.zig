@@ -32,12 +32,16 @@ pub const keymap = @import("core/keymap.zig");
 pub const menu = @import("core/menu.zig");
 /// Viewer application loop building blocks.
 pub const viewer_app = @import("viewer/app.zig");
+/// CLI argument parsing helpers shared by tests and the CLI entrypoint.
+pub const cli_args = @import("cli/args.zig");
 /// Viewer rendering helpers.
 pub const viewer_render = @import("viewer/render.zig");
 /// Handle-based Zig client for talking to an external `muxlyd`.
 pub const client = @import("lib/client.zig");
 /// Stateless convenience wrappers over common daemon protocol operations.
 pub const api = @import("lib/api.zig");
+/// Shared transport parsing and stream helpers for clients, the daemon, and relays.
+pub const transport = @import("lib/transport.zig");
 
 /// Backend implementation modules used by the daemon.
 pub const daemon = struct {
