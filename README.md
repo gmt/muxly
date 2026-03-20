@@ -14,14 +14,15 @@ The web metaphor breaks down pretty quickly, however: I suppose muxly would be a
 
 ## No, *what?*
 
-The project is not really implemented yet; it's a work in progress.
+The project is not really implemented yet; it's a work in progress. It has:
 
-- there's a shared library with a C ABI
+- a shared library with a C ABI
 - an xml serialization format, sort of
-- an undocumented but well-defined JSON-RPC control protocol,
+- an undocumented but well-defined JSON-RPC control protocol
 - a daemon to hold the object model
-- a reference client to interact with it
-- and a bunch of glue for different languages and platforms
+- a command line to orchestrate daemons and manipulate the object model
+- a reference client to interact with and use muxly instances
+- a bunch of glue for different languages and platforms
 
 ## Cast and characters
 
@@ -33,15 +34,23 @@ muxly traffics in layout relationships, not program states; however event hooks 
 
 Instead, muxly gives you, the developer, a canvas. You paint layouts on the canvas. Then you put terminals in the layouts.
 
-Everything in the TOM is a node; nodes are rectangles made of text and you can stack rectangles in each other either vertically or horizontally. This forms a *visual hierarchy* which will also be present logically in the muxml representation. At the leaves of the tree of nodes are one of the following:
+Everything in the TOM is a node; nodes are rectangles made of text and you can stack rectangles in each other either vertically or horizontally. This forms a *visual hierarchy* which will also be present logically in the muxml representation. At the leaves of the tree of nodes are:
 
 - in-memory text objects are meant to be the only way to add textual content that lives in the TOM
 
 - file-backed text objects are meant to be read-only windows onto text files; they are a candidate for deletion from the model as I'm not sure these shouldn't be promoted to be terminals running less or something similar
 
-- terminals are pseudo-ttys to which programs may be multiplexed either via their stdin or stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be thought of as a terminal program and may, in fact, be one.
+- pseudo-ttys to which programs may be multiplexed via their stdin and stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be accessed in the viewer.
+  
+  Because programs attached to terminals need to know the dimensions of the terminal, this means there are three kinds of terminal viewers: 
+  
+   - detached ***virtual*** viewers simply hold the terminal at a given virtual size, while
+  
+   - ***primary*** viewers, whose physical terminal size is meant to optionally force virtual terminal resizing to change as the virtual size changes, and finally
+  
+   - ***secondary*** viewers, who may be thought of as spectators, have read-only connections and do not control virtual terminal size.
 
-The branch nodes all contain each other and consist of:
+The branch nodes all may contain each other and consist of:
 
 - horizontal containers, and
 
@@ -63,9 +72,6 @@ A muxly client enables the user to navigate the visual hierarchy both by scrolli
 
 **Appending**
 The canvas and layout are dynamic in the TOM. They can be changed arbitrarily but my suspicion is the thing we will want to do most is append to them and this is supposed to be efficient.
-
-
-
 
 ## Binaries
 
