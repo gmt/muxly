@@ -70,6 +70,22 @@ test "relative trd selectors stay on the current transport and document" {
     try std.testing.expectEqualStrings("welcome/child", resolved.selector.?);
 }
 
+test "relative trd selectors can stay lazy through request targets" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd:#welcome/child");
+    defer parsed.deinit(std.testing.allocator);
+
+    var resolved = try parsed.resolve(
+        std.testing.allocator,
+        "http://127.0.0.1:8080/rpc",
+        "/docs/demo",
+    );
+    defer resolved.deinit(std.testing.allocator);
+
+    const target = muxly.api.NodeRequestTarget.fromSelector(resolved.selector.?);
+    try std.testing.expect(target.node_id == null);
+    try std.testing.expectEqualStrings("welcome/child", target.selector.?);
+}
+
 test "trd explicit unix server defaults endpoint when omitted" {
     var parsed = try muxly.trd.parse(std.testing.allocator, "trd://unix|//x/y");
     defer parsed.deinit(std.testing.allocator);
