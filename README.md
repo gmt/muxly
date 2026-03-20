@@ -90,6 +90,8 @@ A muxly client enables the user to navigate the visual hierarchy both by scrolli
 ```sh
 zig build
 zig build test
+zig build test-ci
+zig build test-docker
 zig build docs
 zig build muxlyd
 zig build muxly
@@ -117,8 +119,19 @@ unless you also pass
 If you need a custom SSH client config for transport testing or host-specific
 identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
 
-You can exercise both TCP and SSH transports against a transient Docker-hosted
-daemon with:
+`zig build test` stays Docker-free and permission-free. For CI, use
+`zig build test-ci`; it runs the unit suite by default and only adds the Docker
+transport integration coverage when `MUXLY_ENABLE_DOCKER_TESTS=1` is present.
+
+To run the Docker-backed integration coverage explicitly, including the raw TCP
+path that requires
+`--i-know-this-is-unencrypted-and-unauthenticated`, use either:
+
+```sh
+zig build test-docker
+```
+
+or the underlying script directly:
 
 ```sh
 python3 tests/integration/docker_transport_test.py

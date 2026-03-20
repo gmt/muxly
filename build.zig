@@ -1,8 +1,22 @@
 const std = @import("std");
 
+fn envVarEnabled(allocator: std.mem.Allocator, name: []const u8) bool {
+    const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return false,
+    };
+    defer allocator.free(value);
+
+    return std.ascii.eqlIgnoreCase(value, "1") or
+        std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "yes") or
+        std.ascii.eqlIgnoreCase(value, "on");
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const docker_tests_enabled = envVarEnabled(b.allocator, "MUXLY_ENABLE_DOCKER_TESTS");
 
     const muxly_module = b.addModule("muxly", .{
         .root_source_file = b.path("src/muxly.zig"),
@@ -146,6 +160,30 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    const run_docker_transport_tests = b.addSystemCommand(&.{
+        "python3",
+        "tests/integration/docker_transport_test.py",
+        "--skip-build",
+    });
+    run_docker_transport_tests.setCwd(b.path("."));
+    run_docker_transport_tests.step.dependOn(&install_cli.step);
+    run_docker_transport_tests.step.dependOn(&install_daemon.step);
+
+    const test_docker_step = b.step(
+        "test-docker",
+        "Run Docker-backed transport integration tests",
+    );
+    test_docker_step.dependOn(&run_docker_transport_tests.step);
+
+    const test_ci_step = b.step(
+        "test-ci",
+        "Run CI tests; add Docker transport coverage when MUXLY_ENABLE_DOCKER_TESTS is enabled",
+    );
+    test_ci_step.dependOn(&run_unit_tests.step);
+    if (docker_tests_enabled) {
+        test_ci_step.dependOn(&run_docker_transport_tests.step);
+    }
 
     const example_deps_step = b.step(
         "example-deps",
