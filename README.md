@@ -1,54 +1,78 @@
 # muxly
 
-`muxly` is a Zig-first tmux-powered terminal window manager built around a live
-**TOM** (Terminal Object Model) with a serializable **muxml** representation.
+`muxly` is a tmux-powered terminal window manager built around a live **TOM** (Terminal Object Model) with a serializable **muxml** representation.
 
-## Status
+## What?
 
-This repository has a working implementation centered on:
+It's a web pun. This is a jargon-heavy project but if you understand the web, this is kind of like that. We have:
 
-- a `muxlyd` daemon
-- a public JSON-RPC control protocol
-- a `muxview` reference viewer that uses the same public surfaces as other
-  clients
-- a shared library / C ABI surface
-- a muxml model that can mix:
-  - TTY-backed live sources
-  - monitored text files
-  - static text files
+- A TOM that tracks an in memory construct meant to control the presentation of various piles of text-like information to a user
 
-## Core ideas
+- A human-readable `muxml` serialization format that can be converted to a TOM
 
-- **The daemon maintains a TOM.**
-  tmux sessions, windows, and panes are backend projections into a richer
-  terminal object model that can be serialized as muxml.
-- **TTYs are sources, not serialized program state.**
-  muxly serializes derived document/view state, not arbitrary process internals.
-  The durable artifact contract for dead/frozen terminal-backed nodes is
-  intentionally separate: muxly should distinguish recoverable live sources,
-  captured text/history artifacts, and captured surface artifacts instead of
-  treating tmux scrollback as the whole policy.
-- **Append mode matters.**
-  Terminal and log-like regions usually grow downward, so append-friendly
-  operations and tail-following views are first-class.
-- **The current cutline keeps semantics explicit.**
-  Follow-tail is currently a stored node preference, shared view root/elision
-  state lives in the daemon-backed document, and tmux interaction is currently
-  a hybrid of command-backed mutation/capture plus control-mode invalidation
-  even though tmux session/window/pane projection and snapshot-backed list
-  queries are now real inside the daemon.
-- **The reference viewer uses public surfaces.**
-  `muxview` should consume the same public surfaces as any third-party tool,
-  stay attached to a live TOM stage by default, and keep snapshot mode explicit
-  when a one-shot frame is the right tool.
+The web metaphor breaks down pretty quickly, however: I suppose muxly would be a text-only web browser, but with no actual text on most pages, nor any hyperlink support. The actual purpose is to help developers build TUI applications with rich containment hierarchies.
+
+## No, *what?*
+
+The project is not really implemented yet; it's a work in progress.
+
+- there's a shared library with a C ABI
+- an xml serialization format, sort of
+- an undocumented but well-defined JSON-RPC control protocol,
+- a daemon to hold the object model
+- a reference client to interact with it
+- and a bunch of glue for different languages and platforms
+
+## Cast and characters
+
+**The daemon is full of TOMs**
+Unlike the web, the muxly "object model" lives in the server. It works kind of like a MUD: clients connect and enter a shared universe. Except instead of orcs or voxels this world is full of ttys
+
+**TTYs are endpoints, not serialized program state**
+muxly traffics in layout relationships, not program states; however event hooks are (supposed to be) provided which would make it possible to treat muxly tty clients as if program state were "in" the document, if you wanted. You would have to provide the code to accomplish this, however.
+
+Instead, muxly gives you, the developer, a canvas. You paint layouts on the canvas. Then you put terminals in the layouts.
+
+Everything in the TOM is a node; nodes are rectangles made of text and you can stack rectangles in each other either vertically or horizontally. This forms a *visual hierarchy* which will also be present logically in the muxml representation. At the leaves of the tree of nodes are one of the following:
+
+- in-memory text objects are meant to be the only way to add textual content that lives in the TOM
+
+- file-backed text objects are meant to be read-only windows onto text files; they are a candidate for deletion from the model as I'm not sure these shouldn't be promoted to be terminals running less or something similar
+
+- terminals are pseudo-ttys to which programs may be multiplexed either via their stdin or stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be thought of as a terminal program and may, in fact, be one.
+
+The branch nodes all contain each other and consist of:
+
+- horizontal containers, and
+
+- vertical containers
+
+each has or will have various attributes including:
+
+- an optional elider which will do something other than crop the contents of the box when they do not fit
+
+- a vtail attribute that ties the viewport to the bottom (or top) of the canvas
+
+- an htail attribute that ties the viewport to the right (or left) of the canvas
+
+- a default origin which says, if not determiend by vtail or htail, where viewers land in the canvas coordinate space upon first encountering its node
+
+- fixity attribute which determines whether the origin is controlled by the viewer
+
+A muxly client enables the user to navigate the visual hierarchy both by scrolling virtually and horizontally in the virtual canvas space, or depthwise by viewing a node as if it were a canvas.
+
+**Appending**
+The canvas and layout are dynamic in the TOM. They can be changed arbitrarily but my suspicion is the thing we will want to do most is append to them and this is supposed to be efficient.
+
+
+
 
 ## Binaries
 
-- `muxlyd` — daemon
-- `muxly` — automation-first CLI
-- `muxview` — reference viewer / universal viewer
-- `muxguide` — synthetic guided-tour demo for the boxed viewer
-- `libmuxly` — shared library with a C ABI
+- `muxlyd` — daemon; unlike in a web client, the TOM is on the server
+- `muxly` — CLI for orchestrating servers and manipulating TOM from scripts
+- `muxview` — reference viewer
+- `libmuxly` — shared library
 
 ## Getting started
 
@@ -62,33 +86,17 @@ zig build muxview
 zig build muxguide
 ```
 
-Then, in another shell:
-
-```sh
-./zig-out/bin/muxlyd
-./zig-out/bin/muxly capabilities get
-./zig-out/bin/muxly document get
-./zig-out/bin/muxly session create demo "sh -lc 'printf hello\\n; sleep 30'"
-./zig-out/bin/muxly pane split %0 right "sh -lc 'printf split\\n; sleep 30'"
-./zig-out/bin/muxly pane send-keys %0 "echo from-cli" --enter
-./zig-out/bin/muxly pane scroll %0 -5 -1
-./zig-out/bin/muxly projection get 24 80
-./zig-out/bin/muxview
-./zig-out/bin/muxview --snapshot
-./zig-out/bin/muxguide --snapshot --step 2
-```
-
 When launched in a terminal, `muxview` now attaches live by default with
 interactive navigation. Press `q` to leave the attached viewer session.
 
-### Viewer keys
+### Viewer keys, exremely preliminary
 
 - `j`/`k` or up/down arrows: select region
 - `Enter` or right arrow: drill into selected region / enter focused pane mode
 - `Escape` or left arrow: back out / exit focused mode
-- `e`: toggle elide on selected region
+- `e`: elide selected region
 - `t`: toggle follow-tail on tty region
-- `r`: reset view (clear root and elision state)
+- `r`: reset view (clear root and elision state); soon to be removed
 - `q`: quit
 - mouse click: select region by position
 
@@ -107,40 +115,8 @@ interactive navigation. Press `q` to leave the attached viewer session.
 - `docs/neovim-integration.md`
 - `docs/demos.md`
 
-Generated API docs can be built with:
+## Examples, such as they are
 
-```sh
-zig build docs
-```
-
-This installs:
-
-- Zig API docs under `zig-out/docs/api/`
-- C / FFI docs under `zig-out/docs/ffi/`
-
-The FFI docs require `doxygen` to be installed. `graphviz` is optional.
-
-## Roadmap
-
-Milestones and roadmap follow-ons live in `phased-planning/`, which now
-distinguishes active work from deferred backlog and archived implemented
-material:
-
-- `changelog.md` summarizes completed phase work plus archived first-pass
-  completions
-- `phase-4-control-mode-and-state-recovery.md` has been substantially completed:
-  projected tmux identity uses `backendId` instead of marker content, one
-  incremental event family is shipped, and rebuild remains the correctness
-  backstop
-- `phase-5-keybindings-menu-nvim.md` is a deferred backlog/reference doc for
-  bindings, menu/modeline, and Neovim ideas
-- `phase-6-terminal-capture-and-persistence.md` is archived first-pass-complete
-  material for the terminal artifact contract and `node.freeze`
-
-## Examples
-
-- `examples/README.md` — example taxonomy and intended structure
-- `examples/artifacts/` — durable text/surface artifact witnesses for Phase 6
 - `examples/artifacts/freeze-demo/` — runnable `node.freeze` text/surface demo
 - `examples/artifacts/c-freeze/` — C `libmuxly` artifact freeze playbook
 - `examples/artifacts/python-freeze/` — Python `ctypes` artifact freeze playbook
@@ -148,43 +124,5 @@ material:
 - `examples/tom/zig/` — Zig "hello TOM" playbook
 - `examples/tom/c/` — C "hello TOM" playbook
 - `examples/tom/python/` — Python "hello TOM" playbook
-- `examples/tty/basic-nesting/` — live attached stage with several active
-  tty-backed regions
-- `examples/guided-tour/` — synthetic boxed-stage tour with deterministic steps
-
-The playbook wrappers use dedicated example sockets by default so they can be
-run locally without colliding with a long-lived `muxlyd` on `/tmp/muxly.sock`.
-They also target `zig build example-deps` so the examples only build the daemon,
-CLI, shared library, and header they actually need.
-
-## Phase 3 C ABI Surface
-
-The intentional phase-3 `libmuxly` surface is:
-
-- a handle-based client lifecycle in `muxly.h`
-- document/graph/status inspection helpers
-- synthetic node/view editing helpers
-- selected tmux helpers for capture and session/pane creation
-- shipped C / Zig / Python examples that use only that documented surface
-
-Current daemon-lifecycle posture:
-
-- `libmuxly` is currently a client library for an external `muxlyd`
-- library calls expect a daemon to already be listening on the chosen socket
-- the example/playbook wrappers may auto-launch `muxlyd`, but the library does
-  not currently do so on its own
-- a more transparent downstream-consumer experience likely wants an explicit
-  daemon discovery/autostart policy rather than leaving that behavior implicit
-
-The default verification path for the shipped binding examples is:
-
-```sh
-zig build example-deps
-python3 scripts/run_binding_examples.py
-```
-
-The default verification path for the shipped terminal-artifact examples is:
-
-```sh
-python3 scripts/run_artifact_examples.py
-```
+- `examples/tty/basic-nesting/` — a more visually fun example application
+- `examples/guided-tour/` — synthetic "tour" of muxly features
