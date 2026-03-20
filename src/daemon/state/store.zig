@@ -74,9 +74,8 @@ pub const Store = struct {
         document_path: []const u8,
         title: ?[]const u8,
     ) !*document_mod.Document {
-        if (document_path.len == 0 or document_path[0] != '/') return error.InvalidDocumentPath;
+        if (!muxly.protocol.isCanonicalDocumentPath(document_path)) return error.InvalidDocumentPath;
         if (std.mem.eql(u8, document_path, root_document_path)) return error.DocumentAlreadyExists;
-        if (document_path.len > 1 and document_path[document_path.len - 1] == '/') return error.InvalidDocumentPath;
 
         for (self.documents.items) |entry| {
             if (std.mem.eql(u8, entry.path, document_path)) return error.DocumentAlreadyExists;

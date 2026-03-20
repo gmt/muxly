@@ -62,7 +62,7 @@ pub fn requestDocumentPath(request: RequestEnvelope) ![]const u8 {
     else
         default_document_path;
 
-    if (document_path.len == 0 or document_path[0] != '/') {
+    if (!isCanonicalDocumentPath(document_path)) {
         return error.InvalidDocumentPath;
     }
 
@@ -101,7 +101,7 @@ pub fn writeClientRequestTarget(
     params_json: []const u8,
 ) !void {
     const document_path = target.documentPath orelse default_document_path;
-    if (document_path.len == 0 or document_path[0] != '/') {
+    if (!isCanonicalDocumentPath(document_path)) {
         return error.InvalidDocumentPath;
     }
 
@@ -121,6 +121,20 @@ pub fn writeClientRequestTarget(
     try writer.writeAll(",\"params\":");
     try writer.writeAll(params_json);
     try writer.writeAll("}");
+}
+
+pub fn isCanonicalDocumentPath(document_path: []const u8) bool {
+    if (document_path.len == 0 or document_path[0] != '/') return false;
+    if (std.mem.eql(u8, document_path, default_document_path)) return true;
+    if (document_path[document_path.len - 1] == '/') return false;
+
+    var segments = std.mem.splitScalar(u8, document_path[1..], '/');
+    while (segments.next()) |segment| {
+        if (segment.len == 0) return false;
+        if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return false;
+    }
+
+    return true;
 }
 
 /// Returns a string borrowed from `params` and therefore from the owning parsed

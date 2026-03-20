@@ -34,6 +34,27 @@ test "protocol request parsing keeps optional node target fields" {
     try std.testing.expectEqualStrings("left/pane", parsed.value.target.?.selector.?);
 }
 
+test "protocol document targets must be canonical absolute paths" {
+    const trailing_payload =
+        \\{"jsonrpc":"2.0","id":7,"target":{"documentPath":"/docs/demo/"},"method":"document.get","params":{}}
+    ;
+    const trailing = try muxly.protocol.parseRequest(std.testing.allocator, trailing_payload);
+    defer trailing.deinit();
+    try std.testing.expectError(error.InvalidDocumentPath, muxly.protocol.requestDocumentPath(trailing.value));
+
+    const dotted_payload =
+        \\{"jsonrpc":"2.0","id":8,"target":{"documentPath":"/docs/./demo"},"method":"document.get","params":{}}
+    ;
+    const dotted = try muxly.protocol.parseRequest(std.testing.allocator, dotted_payload);
+    defer dotted.deinit();
+    try std.testing.expectError(error.InvalidDocumentPath, muxly.protocol.requestDocumentPath(dotted.value));
+
+    try std.testing.expect(muxly.protocol.isCanonicalDocumentPath("/"));
+    try std.testing.expect(muxly.protocol.isCanonicalDocumentPath("/docs/demo"));
+    try std.testing.expect(!muxly.protocol.isCanonicalDocumentPath("/docs//demo"));
+    try std.testing.expect(!muxly.protocol.isCanonicalDocumentPath("/docs/../demo"));
+}
+
 test "protocol client request writer emits document target" {
     var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buffer.deinit();
@@ -76,4 +97,20 @@ test "protocol client request writer emits node target fields" {
     try std.testing.expectEqualStrings("/docs/demo", try muxly.protocol.requestDocumentPath(parsed.value));
     try std.testing.expectEqual(@as(i64, 12), try muxly.protocol.requestTargetNodeId(parsed.value, "nodeId"));
     try std.testing.expectEqualStrings("left/pane", parsed.value.target.?.selector.?);
+}
+
+test "protocol client request writer rejects non-canonical document paths" {
+    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buffer.deinit();
+
+    try std.testing.expectError(
+        error.InvalidDocumentPath,
+        muxly.protocol.writeClientRequestTarget(
+            buffer.writer(),
+            44,
+            .{ .documentPath = "/docs/demo/" },
+            "document.get",
+            "{}",
+        ),
+    );
 }

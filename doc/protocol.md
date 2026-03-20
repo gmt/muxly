@@ -83,8 +83,15 @@ explicit, testable, and debuggable.
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
+- document `path` is the public document handle for now; internal numeric
+  document ids remain introspection/status data, not caller-facing identity
+- the root document `/` is built in, selected by default, and not creatable via
+  `document.create`
 - `document.create` currently accepts:
-  - `path`: absolute non-root document path without a trailing slash
+  - `path`: canonical absolute non-root document path
+    - must start with `/`
+    - must not end with `/`
+    - must not contain empty, `.` or `..` segments
   - optional `title`
 - `document.list` returns the daemon's registered document catalog, including
   each document's path, id, title, lifecycle, root node id, and node count
@@ -92,6 +99,9 @@ explicit, testable, and debuggable.
   - `documentPath`
   - optional `nodeId`
   - optional `selector`
+- `target.documentPath` currently follows the same canonical absolute-path rule
+  as `document.create`, except that `/` is valid and selects the built-in root
+  document
 - daemon-owned node-targeted methods currently prefer `target.nodeId` over
   legacy `params.nodeId` when both are present
 - when `target.selector` is present, daemon-owned node-targeted methods now

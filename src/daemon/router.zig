@@ -44,7 +44,7 @@ pub fn handleRequest(
         const title = protocol.getString(parsed.value.params, "title");
         const document = store.createDocument(path, title) catch |err| switch (err) {
             error.InvalidDocumentPath => {
-                return try buildError(allocator, parsed.value.id, .invalid_params, "path must be an absolute non-root path without a trailing slash");
+                return try buildError(allocator, parsed.value.id, .invalid_params, "path must be a canonical absolute non-root path");
             },
             error.DocumentAlreadyExists => {
                 return try buildError(allocator, parsed.value.id, .invalid_params, "document path already exists");
@@ -59,7 +59,7 @@ pub fn handleRequest(
     }
 
     const document_path = protocol.requestDocumentPath(parsed.value) catch {
-        return try buildError(allocator, parsed.value.id, .invalid_params, "target.documentPath must be an absolute path");
+        return try buildError(allocator, parsed.value.id, .invalid_params, "target.documentPath must be a canonical absolute path");
     };
     const document = store.documentForPath(document_path) catch |err| switch (err) {
         error.UnsupportedDocumentPath => {
