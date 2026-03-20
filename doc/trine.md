@@ -44,6 +44,10 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 
 ### TRD grammar is document-first
 
+This section is the normative home for TRD semantics. Other docs may summarize
+or teach the syntax, but when examples drift or implementation questions come
+up, this section wins.
+
 - a TRD has three logical slots:
   - `$srv`: transport plus optional authority/path details
   - `$doc`: document path
@@ -53,6 +57,24 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - `#` introduces `$nod`
 - `|` introduces an explicit `$srv`
 - `//` after `$srv` introduces `$doc`
+
+Inheritance rules:
+
+- `trd://foo` means default transport, document `/foo`, no selector
+- `trd://foo#bar` means default transport, document `/foo`, selector `bar`
+- `trd://#bar` means default transport, document `/`, selector `bar`
+- `trd:#bar` means current transport, current document, selector `bar`
+- relative selectors inherit the current document only; they do **not** inherit
+  an ambient current node
+- path-targeted descriptors and node-targeted descriptors are the same shape:
+  the document comes first, then optional `#selector` narrowing
+
+Canonicality rules:
+
+- document paths are canonical absolute paths
+- `/` is the built-in root document
+- non-root document paths do not end with `/`
+- document paths do not contain empty, `.` or `..` segments
 
 Examples:
 
@@ -81,6 +103,14 @@ Public transport names should be written consistently:
 
 Short aliases such as `ux` and `wt` may be accepted for compatibility, but
 they are not the preferred public spelling.
+
+CLI docs should distinguish between:
+
+- arguments that genuinely accept lazy TRDs/selectors
+- arguments that still require a concrete numeric node id today
+
+The CLI may be temporarily more restrictive than the underlying target model,
+but the docs should say so plainly instead of hand-waving it.
 
 ### Projection over mutation
 

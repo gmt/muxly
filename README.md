@@ -156,22 +156,17 @@ python3 tests/integration/docker_transport_test.py
 ### TRD descriptors
 
 TOM Resource Descriptors combine a transport, a document path, and an optional
-TOM selector into one string:
+TOM selector into one string. The short version is:
 
 - `trd://builds/demo`
 - `trd://webtransport|host.lan:4433/mux?sha256=...//doc/path#node/path`
 - `trd://http|127.0.0.1:8080/rpc//#welcome`
 - `trd:#welcome/child`
 
-Absolute TRDs are document-first:
-
-- `trd://<document>[#<selector>]`
-- `trd://<transport>|<endpoint>//<document>[#<selector>]`
-
-If there is no `|`, everything after `trd://` is treated as the document path.
-If there is a `|`, the left side is the explicit server reference and the right
-side is the document path. Relative TRDs use `trd:#...` and stay on the current
-transport and current document.
+- document comes first, selector comes after `#`
+- `trd://...` is absolute
+- `trd:#...` stays on the current transport and current document
+- `trd://#...` means selector within the root document on the runtime-default transport
 
 Supported public transport names are `unix`, `tcp`, `ssh`, `http`, and
 `webtransport`. `ux` and `wt` remain accepted as aliases.
@@ -187,9 +182,9 @@ Defaults:
 - `trd://webtransport|//` defaults the endpoint to `localhost`
 - `trd://tcp|//` defaults to `localhost:4488`
 
-CLI commands that normally take node ids now also accept TRDs. See
-[doc/trine.md](doc/trine.md) for the design doctrine and the current TRD
-grammar.
+See [doc/trine.md](doc/trine.md) for the normative TRD doctrine and full
+grammar. Some CLI arguments already accept lazy selector-bearing TRDs; a few
+id-only paths still require numeric node ids and say so in their command help.
 
 ### Viewer keys, exremely preliminary
 
@@ -204,18 +199,7 @@ grammar.
 
 ## Documentation
 
-- `doc/architecture.md`
-- `doc/trine.md`
-- `doc/tom.md`
-- `doc/platform-matrix.md`
-- `doc/muxml.md`
-- `doc/terminal-artifacts.md`
-- `doc/protocol.md`
-- `doc/tmux-backend.md`
-- `doc/viewer-architecture.md`
-- `doc/keybinding-model.md`
-- `doc/neovim-integration.md`
-- `doc/demos.md`
+Start with [doc/README.md](doc/README.md) for the source-tree documentation map.
 
 ## Examples, such as they are
 
