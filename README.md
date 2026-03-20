@@ -27,12 +27,20 @@ The project is not really implemented yet; it's a work in progress. It has:
 ## Cast and characters
 
 **The daemon is full of TOMs**
+
 Unlike the web, the muxly "object model" lives in the server. It works kind of like a MUD: clients connect and enter a shared universe. Except instead of orcs or voxels this world is full of ttys
 
+
+
 **TTYs are endpoints, not serialized program state**
+
 muxly traffics in layout relationships, not program states; however event hooks are (supposed to be) provided which would make it possible to treat muxly tty clients as if program state were "in" the document, if you wanted. You would have to provide the code to accomplish this, however.
 
 Instead, muxly gives you, the developer, a canvas. You paint layouts on the canvas. Then you put terminals in the layouts.
+
+
+
+**The TOM**
 
 Everything in the TOM is a node; nodes are rectangles made of text and you can stack rectangles in each other either vertically or horizontally. This forms a *visual hierarchy* which will also be present logically in the muxml representation. At the leaves of the tree of nodes are:
 
@@ -68,10 +76,7 @@ each has or will have various attributes including:
 
 - fixity attribute which determines whether the origin is controlled by the viewer
 
-A muxly client enables the user to navigate the visual hierarchy both by scrolling virtually and horizontally in the virtual canvas space, or depthwise by viewing a node as if it were a canvas.
-
-**Appending**
-The canvas and layout are dynamic in the TOM. They can be changed arbitrarily but my suspicion is the thing we will want to do most is append to them and this is supposed to be efficient.
+A muxly client enables the user to navigate the visual hierarchy both by scrolling virtually and horizontally in the virtual canvas space, or depthwise by viewing a node as if it were a canvas. The canvas and layout are dynamic in the TOM. They can be changed arbitrarily but my suspicion is the thing we will want to do most is append to them and this is supposed to be efficient.
 
 ## Binaries
 
