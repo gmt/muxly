@@ -106,8 +106,11 @@ they are not the preferred public spelling.
 
 CLI docs should distinguish between:
 
-- arguments that genuinely accept lazy TRDs/selectors
-- arguments that still require a concrete numeric node id today
+- `document-or-node` target slots, where `trd://doc` means the document root
+- `explicit-node` target slots, where callers must provide `#selector` or a
+  concrete node id
+- commands that still take backend-scoped pane/session/window ids rather than
+  TOM targets at all
 
 The CLI may be temporarily more restrictive than the underlying target model,
 but the docs should say so plainly instead of hand-waving it.

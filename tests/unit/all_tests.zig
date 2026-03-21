@@ -4,6 +4,7 @@ const muxly = @import("muxly");
 comptime {
     _ = @import("capabilities_test.zig");
     _ = @import("cli_args_test.zig");
+    _ = @import("cli_target_arg_test.zig");
     _ = @import("protocol_test.zig");
     _ = @import("router_document_test.zig");
     _ = @import("transport_test.zig");

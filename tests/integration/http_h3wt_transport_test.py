@@ -74,6 +74,22 @@ def transport_to_absolute_trd(transport_spec: str, selector: str) -> str:
     raise AssertionError(f"unexpected transport spec {transport_spec!r}")
 
 
+def transport_to_absolute_document_trd(transport_spec: str, document_path: str) -> str:
+    normalized = document_path if document_path.startswith("/") else f"/{document_path}"
+    if normalized == "/":
+        doc_suffix = ""
+    else:
+        doc_suffix = normalized[1:]
+
+    if transport_spec.startswith("http://"):
+        endpoint = transport_spec[len("http://") :]
+        return f"trd://http|{endpoint}//{doc_suffix}"
+    if transport_spec.startswith("h3wt://"):
+        endpoint = transport_spec[len("h3wt://") :]
+        return f"trd://wt|{endpoint}//{doc_suffix}"
+    raise AssertionError(f"unexpected transport spec {transport_spec!r}")
+
+
 def read_listening_spec(proc: subprocess.Popen[str], timeout: float = 120.0) -> str:
     assert proc.stderr is not None
     fd = proc.stderr.fileno()
@@ -333,6 +349,75 @@ def assert_node_target_shape(
     assert "does not match any node" in responses[2]["error"]["message"]
 
 
+def assert_cli_trd_target_modes(
+    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+) -> None:
+    run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "document.create",
+                "params": {"path": "/docs/demo"},
+            },
+        ],
+    )
+
+    doc_trd = transport_to_absolute_document_trd(transport_spec, "/docs/demo")
+    root_node = run_cli(cwd, env, "--transport", transport_spec, "node", "get", doc_trd)
+    assert root_node["result"]["kind"] == "document"
+    assert root_node["result"]["title"] == "demo"
+
+    appended_under_root = run_cli(
+        cwd,
+        env,
+        "--transport",
+        transport_spec,
+        "node",
+        "append",
+        doc_trd,
+        "scroll_region",
+        "doc-root-child",
+    )
+    assert appended_under_root["result"]["kind"] == "scroll_region"
+
+    appended_under_selector = run_cli(
+        cwd,
+        env,
+        "--transport",
+        transport_spec,
+        "node",
+        "append",
+        "trd:#welcome",
+        "scroll_region",
+        "welcome-child",
+    )
+    assert appended_under_selector["result"]["kind"] == "scroll_region"
+
+    appended_doc = run_transport_relay(
+        cwd,
+        env,
+        transport_spec,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "target": {"documentPath": "/docs/demo"},
+                "method": "document.get",
+                "params": {},
+            },
+        ],
+    )[0]
+    appended_titles = [node["title"] for node in appended_doc["result"]["nodes"]]
+    assert "doc-root-child" in appended_titles
+
+    selector_child = run_cli(cwd, env, "--transport", transport_spec, "node", "get", "trd:#welcome/welcome-child")
+    assert selector_child["result"]["title"] == "welcome-child"
+
+
 def exercise_transport(
     cwd: pathlib.Path,
     env: dict[str, str],
@@ -346,6 +431,7 @@ def exercise_transport(
         assert_document_target_handling(cwd, env, actual_transport)
         assert_document_catalog_and_scoping(cwd, env, actual_transport)
         assert_node_target_shape(cwd, env, actual_transport)
+        assert_cli_trd_target_modes(cwd, env, actual_transport)
     finally:
         stop_process(proc)
 

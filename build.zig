@@ -167,6 +167,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "muxly", .module = muxly_module },
+                .{ .name = "cli_target_arg", .module = b.createModule(.{
+                    .root_source_file = b.path("src/cli/target_arg.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "muxly", .module = muxly_module },
+                    },
+                }) },
                 .{ .name = "daemon_router", .module = b.createModule(.{
                     .root_source_file = b.path("src/daemon/router.zig"),
                     .target = target,

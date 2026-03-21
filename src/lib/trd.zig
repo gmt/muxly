@@ -170,15 +170,33 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Parsed {
             document_path = endpoint_and_document[doc_sep + 2 ..];
         }
 
+        const owned_transport_code = if (transport_code.len != 0)
+            try allocator.dupe(u8, transport_code)
+        else
+            null;
+        errdefer if (owned_transport_code) |value| allocator.free(value);
+
+        const owned_endpoint = try allocator.dupe(u8, endpoint);
+        errdefer allocator.free(owned_endpoint);
+
+        const owned_document_path = if (document_path) |value|
+            try normalizeDocumentPathOwned(allocator, value)
+        else
+            null;
+        errdefer if (owned_document_path) |value| allocator.free(value);
+
+        const owned_selector = if (selector) |value|
+            try allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (owned_selector) |value| allocator.free(value);
+
         return .{
             .kind = .absolute,
-            .transport_code = if (transport_code.len != 0) try allocator.dupe(u8, transport_code) else null,
-            .endpoint = try allocator.dupe(u8, endpoint),
-            .document_path = if (document_path) |value|
-                try normalizeDocumentPathOwned(allocator, value)
-            else
-                null,
-            .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
+            .transport_code = owned_transport_code,
+            .endpoint = owned_endpoint,
+            .document_path = owned_document_path,
+            .selector = owned_selector,
         };
     }
 
@@ -252,8 +270,18 @@ fn transportSpecFromReference(
 
 fn normalizeDocumentPathOwned(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     if (value.len == 0) return try allocator.dupe(u8, protocol.default_document_path);
-    if (value[0] == '/') return try allocator.dupe(u8, value);
-    return try std.fmt.allocPrint(allocator, "/{s}", .{value});
+
+    const document_path = if (value[0] == '/')
+        try allocator.dupe(u8, value)
+    else
+        try std.fmt.allocPrint(allocator, "/{s}", .{value});
+    errdefer allocator.free(document_path);
+
+    if (!protocol.isCanonicalDocumentPath(document_path)) {
+        return error.InvalidDocumentPath;
+    }
+
+    return document_path;
 }
 
 fn tcpEndpointWithDefaultPortOwned(allocator: std.mem.Allocator, endpoint: []const u8) ![]u8 {

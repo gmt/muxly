@@ -188,3 +188,18 @@ test "trd explicit tcp server defaults localhost and the canonical muxly tcp por
     try std.testing.expectEqualStrings("/", resolved.document_path);
     try std.testing.expect(resolved.selector == null);
 }
+
+test "trd parser rejects non-canonical document paths at parse time" {
+    const invalid = [_][]const u8{
+        "trd://docs/demo/",
+        "trd://docs//demo",
+        "trd://docs/./demo",
+        "trd://docs/../demo",
+        "trd://unix|//docs/demo/",
+        "trd://http|host.lan/rpc//docs/../demo",
+    };
+
+    for (invalid) |text| {
+        try std.testing.expectError(error.InvalidDocumentPath, muxly.trd.parse(std.testing.allocator, text));
+    }
+}
