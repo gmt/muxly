@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const protocol = @import("../core/protocol.zig");
+const conversation_router = @import("conversation_router.zig");
 const transport = @import("transport.zig");
 
 pub const default_tty_rows: u16 = 24;
@@ -118,6 +119,7 @@ pub const RpcConversation = struct {
     target: protocol.RequestTarget,
 
     pub fn deinit(self: *RpcConversation) void {
+        self.client.frame_router.unregisterConversation(self.conversation_id);
         self.client.allocator.free(self.conversation_id);
         if (self.target.documentPath) |value| self.client.allocator.free(value);
         if (self.target.selector) |value| self.client.allocator.free(value);
@@ -138,10 +140,8 @@ pub const RpcConversation = struct {
 
         // The logical envelope exists now even though the current transport
         // compatibility path still emits plain JSON-RPC over the wire.
-        var envelope_json = std.array_list.Managed(u8).init(self.client.allocator);
-        defer envelope_json.deinit();
-        try protocol.writeConversationEnvelope(
-            envelope_json.writer(),
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.client.allocator,
             self.conversation_id,
             request_id,
             self.target,
@@ -150,9 +150,26 @@ pub const RpcConversation = struct {
             true,
             null,
         );
+        defer self.client.allocator.free(envelope_json);
 
         self.client.rpc_client.next_request_id += 1;
-        return try self.client.rpc_client.requestJson(request_json.items);
+        const response_json = try self.client.rpc_client.requestJson(request_json.items);
+        defer self.client.allocator.free(response_json);
+
+        const response_envelope = try protocol.allocConversationEnvelope(
+            self.client.allocator,
+            self.conversation_id,
+            request_id,
+            self.target,
+            .rpc,
+            response_json,
+            true,
+            null,
+        );
+        defer self.client.allocator.free(response_envelope);
+
+        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
+        return try self.client.frame_router.takePayloadForRequest(self.conversation_id, request_id);
     }
 };
 
@@ -177,6 +194,7 @@ pub const TtyConversation = struct {
     pane_id: []u8,
 
     pub fn deinit(self: *TtyConversation) void {
+        self.client.frame_router.unregisterConversation(self.info.conversation_id);
         self.info.deinit(self.client.allocator);
         self.client.allocator.free(self.session_name);
         self.client.allocator.free(self.pane_id);
@@ -196,10 +214,8 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(params_json);
 
-        var envelope_json = std.array_list.Managed(u8).init(self.client.allocator);
-        defer envelope_json.deinit();
-        try protocol.writeConversationEnvelope(
-            envelope_json.writer(),
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.client.allocator,
             self.info.conversation_id,
             null,
             .{
@@ -211,9 +227,29 @@ pub const TtyConversation = struct {
             false,
             null,
         );
+        defer self.client.allocator.free(envelope_json);
 
         const response = try self.client.rpc_client.request("pane.sendKeys", params_json);
         defer self.client.allocator.free(response);
+
+        const response_envelope = try protocol.allocConversationEnvelope(
+            self.client.allocator,
+            self.info.conversation_id,
+            null,
+            .{
+                .documentPath = self.info.document_path,
+                .nodeId = self.info.node_id,
+            },
+            .tty_data,
+            response,
+            true,
+            null,
+        );
+        defer self.client.allocator.free(response_envelope);
+
+        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
+        const routed_response = try self.client.frame_router.takePayloadForRequest(self.info.conversation_id, null);
+        defer self.client.allocator.free(routed_response);
     }
 
     pub fn setFollowTail(self: *TtyConversation, enabled: bool) !void {
@@ -228,10 +264,8 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(params_json);
 
-        var envelope_json = std.array_list.Managed(u8).init(self.client.allocator);
-        defer envelope_json.deinit();
-        try protocol.writeConversationEnvelope(
-            envelope_json.writer(),
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.client.allocator,
             self.info.conversation_id,
             null,
             .{
@@ -243,9 +277,29 @@ pub const TtyConversation = struct {
             true,
             null,
         );
+        defer self.client.allocator.free(envelope_json);
 
         const response = try self.client.rpc_client.request("pane.followTail", params_json);
         defer self.client.allocator.free(response);
+
+        const response_envelope = try protocol.allocConversationEnvelope(
+            self.client.allocator,
+            self.info.conversation_id,
+            null,
+            .{
+                .documentPath = self.info.document_path,
+                .nodeId = self.info.node_id,
+            },
+            .tty_control,
+            response,
+            true,
+            null,
+        );
+        defer self.client.allocator.free(response_envelope);
+
+        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
+        const routed_response = try self.client.frame_router.takePayloadForRequest(self.info.conversation_id, null);
+        defer self.client.allocator.free(routed_response);
     }
 
     pub fn requestSize(self: *TtyConversation, rows: u16, cols: u16) TtySize {
@@ -262,6 +316,7 @@ pub const TtyConversation = struct {
 pub const ConversationClient = struct {
     allocator: std.mem.Allocator,
     rpc_client: Client,
+    frame_router: conversation_router.ConversationRouter,
     next_conversation_id: u64 = 1,
 
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !ConversationClient {
@@ -276,10 +331,12 @@ pub const ConversationClient = struct {
         return .{
             .allocator = allocator,
             .rpc_client = try Client.initForDocument(allocator, transport_spec, document_path),
+            .frame_router = conversation_router.ConversationRouter.init(allocator),
         };
     }
 
     pub fn deinit(self: *ConversationClient) void {
+        self.frame_router.deinit();
         self.rpc_client.deinit();
     }
 
@@ -305,9 +362,13 @@ pub const ConversationClient = struct {
     }
 
     pub fn openRpc(self: *ConversationClient, target: protocol.RequestTarget) !RpcConversation {
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
         return .{
             .client = self,
-            .conversation_id = try self.nextConversationId(),
+            .conversation_id = conversation_id,
             .target = .{
                 .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.rpc_client.document_path),
                 .nodeId = target.nodeId,
@@ -327,11 +388,15 @@ pub const ConversationClient = struct {
             .selector = target.selector,
         });
         errdefer resolved.deinit(self.allocator);
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
 
         return .{
             .client = self,
             .info = .{
-                .conversation_id = try self.nextConversationId(),
+                .conversation_id = conversation_id,
                 .document_path = resolved.document_path,
                 .node_id = resolved.node_id,
                 .requested_rows = options.rows,

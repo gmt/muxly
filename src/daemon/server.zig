@@ -56,6 +56,7 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
 
     var request_reader = muxly.transport.MessageReader.init(allocator);
     defer request_reader.deinit();
+    var broker = muxly.conversation_broker.Broker.init();
 
     while (true) {
         const request = try request_reader.readMessageLine(
@@ -66,15 +67,25 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
         if (request.len == 0) continue;
 
         context.store_mutex.lock();
-        const response = router.handleRequest(allocator, context.store, request) catch |err| {
+        var responses = broker.handleLine(allocator, request, context.store, routeRequest) catch |err| {
             context.store_mutex.unlock();
             return err;
         };
+        defer responses.deinit();
         context.store_mutex.unlock();
-        defer allocator.free(response);
 
-        try connection.stream.writeAll(response);
-        try connection.stream.writeAll("\n");
+        for (responses.frames.items) |response| {
+            try connection.stream.writeAll(response.bytes);
+            try connection.stream.writeAll("\n");
+        }
         if (context.single_request_per_connection) break;
     }
+}
+
+fn routeRequest(
+    allocator: std.mem.Allocator,
+    store: *store_mod.Store,
+    request_json: []const u8,
+) ![]u8 {
+    return try router.handleRequest(allocator, store, request_json);
 }

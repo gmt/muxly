@@ -18,6 +18,8 @@ pub const document = @import("core/document.zig");
 pub const json = @import("core/json.zig");
 /// JSON-RPC protocol helpers shared by daemon-side request handling.
 pub const protocol = @import("core/protocol.zig");
+/// Logical conversation broker helpers that sit between transport framing and request execution.
+pub const conversation_broker = @import("core/conversation_broker.zig");
 /// Shared RPC error codes.
 pub const errors = @import("core/errors.zig");
 /// Capability reporting for clients that need to adapt to platform support.
@@ -42,6 +44,8 @@ pub const client = @import("lib/client.zig");
 pub const api = @import("lib/api.zig");
 /// Shared transport parsing and stream helpers for clients, the daemon, and relays.
 pub const transport = @import("lib/transport.zig");
+/// Client-side logical conversation response routing helpers.
+pub const conversation_router = @import("lib/conversation_router.zig");
 /// TOM resource descriptor parsing and selector resolution helpers.
 pub const trd = @import("lib/trd.zig");
 

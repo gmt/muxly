@@ -97,6 +97,31 @@ pub fn writeConversationEnvelope(
     try writer.writeAll("}");
 }
 
+pub fn allocConversationEnvelope(
+    allocator: std.mem.Allocator,
+    conversation_id: []const u8,
+    request_id: ?u64,
+    target: ?RequestTarget,
+    kind: ConversationKind,
+    payload_json: []const u8,
+    fin: bool,
+    err: ?ConversationError,
+) ![]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    errdefer buffer.deinit();
+    try writeConversationEnvelope(
+        buffer.writer(),
+        conversation_id,
+        request_id,
+        target,
+        kind,
+        payload_json,
+        fin,
+        err,
+    );
+    return try buffer.toOwnedSlice();
+}
+
 pub fn writeSuccess(
     writer: anytype,
     id: ?std.json.Value,
