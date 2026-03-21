@@ -179,11 +179,18 @@ fn runLiveViewer(
         const selected_region = session.selectedRegion();
         const focused_id: ?u64 = if (selected_region) |r| r.node_id else null;
 
-        const response = muxly.api.projectionGetWithClient(&session.client, allocator, .{
+        var projection_params = std.array_list.Managed(u8).init(allocator);
+        defer projection_params.deinit();
+        muxly.projection.writeRequestJson(projection_params.writer(), .{
             .rows = content_rows,
             .cols = viewport.cols,
             .local_state = .{ .focused_node_id = focused_id },
         }) catch {
+            std.Thread.sleep(@as(u64, refresh_ms) * 1_000_000);
+            continue;
+        };
+
+        const response = session.client.request("projection.get", projection_params.items) catch {
             std.Thread.sleep(@as(u64, refresh_ms) * 1_000_000);
             continue;
         };
@@ -337,7 +344,7 @@ fn pollInput(stdin_file: std.fs.File, session: *viewer_state.ViewerSession, time
         if (bytes_read >= 3 and input[0] == 0x1b and input[1] == '[') {
             if (bytes_read >= 4 and input[2] == '1' and input[3] == '~') return .back_out;
         }
-        forwardInputToPane(session, input);
+        session.sendFocusedTtyInput(input);
         return .pane_input;
     }
 
@@ -372,43 +379,6 @@ fn pollInput(stdin_file: std.fs.File, session: *viewer_state.ViewerSession, time
     }
 
     return .none;
-}
-
-fn forwardInputToPane(session: *viewer_state.ViewerSession, input: []const u8) void {
-    const region = session.selectedRegion() orelse return;
-    if (!region.is_tty) return;
-
-    var escaped: [256]u8 = undefined;
-    var escaped_len: usize = 0;
-    for (input) |byte| {
-        if (byte == '"' or byte == '\\') {
-            if (escaped_len + 2 > escaped.len) break;
-            escaped[escaped_len] = '\\';
-            escaped_len += 1;
-            escaped[escaped_len] = byte;
-            escaped_len += 1;
-        } else if (byte < 0x20) {
-            if (escaped_len + 6 > escaped.len) break;
-            const hex = std.fmt.bufPrint(escaped[escaped_len..], "\\u{x:0>4}", .{byte}) catch break;
-            escaped_len += hex.len;
-        } else {
-            if (escaped_len + 1 > escaped.len) break;
-            escaped[escaped_len] = byte;
-            escaped_len += 1;
-        }
-    }
-
-    const pane_id = session.findPaneIdForNode(region.node_id) orelse return;
-    defer session.allocator.free(pane_id);
-
-    var params_buf: [512]u8 = undefined;
-    const params = std.fmt.bufPrint(&params_buf, "{{\"paneId\":\"{s}\",\"keys\":\"{s}\"}}", .{
-        pane_id,
-        escaped[0..escaped_len],
-    }) catch return;
-
-    const response = muxly.api.requestWithClient(&session.client, "pane.sendKeys", params) catch return;
-    session.allocator.free(response);
 }
 
 fn enableMouseTracking(stdout_file: std.fs.File) void {

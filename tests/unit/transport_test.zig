@@ -184,3 +184,104 @@ test "persistent client reuses one tcp connection for multiple requests" {
     try std.testing.expectEqual(@as(usize, 1), server.accept_count);
     try std.testing.expectEqual(@as(usize, 2), server.request_count);
 }
+
+test "conversation client opens rpc and tty conversations over one compatibility transport" {
+    const MockServer = struct {
+        allocator: std.mem.Allocator,
+        listener: std.net.Server,
+        accept_count: usize = 0,
+        request_count: usize = 0,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.runImpl() catch |err| {
+                self.failure = err;
+            };
+        }
+
+        fn runImpl(self: *@This()) !void {
+            var connection = try self.listener.accept();
+            self.accept_count += 1;
+            defer connection.stream.close();
+            var request_reader = muxly.transport.MessageReader.init(self.allocator);
+            defer request_reader.deinit();
+
+            while (self.request_count < 4) : (self.request_count += 1) {
+                const request = try request_reader.readMessageLine(
+                    connection.stream,
+                    muxly.transport.max_message_bytes,
+                ) orelse break;
+                defer self.allocator.free(request);
+
+                switch (self.request_count) {
+                    0 => {
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"ping\"") != null);
+                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"pong\":true}}\n");
+                    },
+                    1 => {
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"node.get\"") != null);
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"nodeId\":7") != null);
+                        try connection.stream.writeAll(
+                            \\{"jsonrpc":"2.0","id":2,"result":{"id":7,"kind":"tty_leaf","title":"shell","content":"","followTail":false,"lifecycle":"live","source":{"kind":"tty","sessionName":"demo","paneId":"%1"},"children":[],"parentId":1}}
+                        );
+                        try connection.stream.writeAll("\n");
+                    },
+                    2 => {
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"pane.sendKeys\"") != null);
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"paneId\":\"%1\"") != null);
+                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}\n");
+                    },
+                    3 => {
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"pane.followTail\"") != null);
+                        try std.testing.expect(std.mem.indexOf(u8, request, "\"enabled\":true") != null);
+                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true}}\n");
+                    },
+                    else => unreachable,
+                }
+            }
+        }
+    };
+
+    const localhost = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = MockServer{
+        .allocator = std.testing.allocator,
+        .listener = try localhost.listen(.{ .reuse_address = true }),
+    };
+    defer server.listener.deinit();
+
+    var thread = try std.Thread.spawn(.{}, MockServer.run, .{&server});
+    errdefer thread.join();
+
+    const port = server.listener.listen_address.getPort();
+    const spec = try std.fmt.allocPrint(std.testing.allocator, "tcp://127.0.0.1:{d}", .{port});
+    defer std.testing.allocator.free(spec);
+
+    var client = try muxly.client.ConversationClient.init(std.testing.allocator, spec);
+    defer client.deinit();
+
+    const ping = try client.request("ping", "{}");
+    defer std.testing.allocator.free(ping);
+    try std.testing.expect(std.mem.indexOf(u8, ping, "\"pong\":true") != null);
+
+    var tty = try client.openTty(.{
+        .documentPath = "/",
+        .nodeId = 7,
+    }, .{
+        .rows = 40,
+        .cols = 120,
+    });
+    defer tty.deinit();
+
+    try std.testing.expectEqual(@as(u64, 7), tty.info.node_id);
+    try std.testing.expectEqual(@as(u16, 40), tty.info.size.rows);
+    try std.testing.expectEqual(@as(u16, 120), tty.info.size.cols);
+    try std.testing.expectEqualStrings("/", tty.info.document_path);
+
+    try tty.sendInput("ls\n");
+    try tty.setFollowTail(true);
+
+    thread.join();
+    if (server.failure) |err| return err;
+    try std.testing.expectEqual(@as(usize, 1), server.accept_count);
+    try std.testing.expectEqual(@as(usize, 4), server.request_count);
+}

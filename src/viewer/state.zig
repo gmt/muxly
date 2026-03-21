@@ -26,7 +26,8 @@ pub const RegionInfo = struct {
 
 pub const ViewerSession = struct {
     allocator: std.mem.Allocator,
-    client: muxly.client.Client,
+    client: muxly.client.ConversationClient,
+    tty_session: ?muxly.client.TtyConversation = null,
     mode: input_mod.InputMode = .navigate,
     selected_index: usize = 0,
     regions: std.ArrayListUnmanaged(RegionInfo) = .{},
@@ -37,13 +38,14 @@ pub const ViewerSession = struct {
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !ViewerSession {
         return .{
             .allocator = allocator,
-            .client = try muxly.client.Client.init(allocator, transport_spec),
+            .client = try muxly.client.ConversationClient.init(allocator, transport_spec),
         };
     }
 
     pub fn deinit(self: *ViewerSession) void {
         self.clearRegions();
         if (self.status_owned) |owned| self.allocator.free(owned);
+        if (self.tty_session) |*tty| tty.deinit();
         self.client.deinit();
     }
 
@@ -102,6 +104,10 @@ pub const ViewerSession = struct {
         if (!region.has_children and !region.is_tty) return;
 
         if (region.is_tty) {
+            _ = self.ensureTtySessionForNode(region.node_id) catch {
+                self.setStatus("tty focus unavailable");
+                return;
+            };
             self.mode = .focused_pane;
             self.setStatus("focused pane mode -- press Escape to return");
             return;
@@ -115,6 +121,10 @@ pub const ViewerSession = struct {
 
     pub fn backOut(self: *ViewerSession) void {
         if (self.mode == .focused_pane) {
+            if (self.tty_session) |*tty| {
+                tty.deinit();
+                self.tty_session = null;
+            }
             self.mode = .navigate;
             self.setStatus("navigation mode");
             return;
@@ -139,15 +149,8 @@ pub const ViewerSession = struct {
     pub fn toggleFollowTail(self: *ViewerSession) void {
         const region = self.selectedRegion() orelse return;
         if (!region.is_tty) return;
-        const pane_id = self.findPaneIdForNode(region.node_id) orelse return;
-        defer self.allocator.free(pane_id);
-        const params = std.fmt.allocPrint(
-            self.allocator,
-            "{{\"paneId\":\"{s}\",\"enabled\":{s}}}",
-            .{ pane_id, if (region.follow_tail) "false" else "true" },
-        ) catch return;
-        defer self.allocator.free(params);
-        self.callDaemon("pane.followTail", params);
+        var tty = self.ensureTtySessionForNode(region.node_id) catch return;
+        tty.setFollowTail(!region.follow_tail) catch return;
     }
 
     pub fn resetView(self: *ViewerSession) void {
@@ -156,30 +159,31 @@ pub const ViewerSession = struct {
         self.setStatus("view reset");
     }
 
-    /// Returns an owned pane id for `node_id`; the caller must free it with
-    /// this session's allocator.
-    pub fn findPaneIdForNode(self: *ViewerSession, node_id: u64) ?[]u8 {
-        const response = muxly.api.nodeGetWithClient(&self.client, self.allocator, node_id) catch return null;
-        defer self.allocator.free(response);
+    pub fn sendFocusedTtyInput(self: *ViewerSession, input: []const u8) void {
+        const region = self.selectedRegion() orelse return;
+        if (!region.is_tty) return;
 
-        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, response, .{
-            .allocate = .alloc_always,
-        }) catch return null;
-        defer parsed.deinit();
-
-        if (parsed.value != .object) return null;
-        const result = parsed.value.object.get("result") orelse return null;
-        if (result != .object) return null;
-        const source = result.object.get("source") orelse return null;
-        if (source != .object) return null;
-        const pane_id = source.object.get("paneId") orelse return null;
-        if (pane_id != .string) return null;
-        return self.allocator.dupe(u8, pane_id.string) catch null;
+        var tty = self.ensureTtySessionForNode(region.node_id) catch return;
+        tty.sendInput(input) catch return;
     }
 
     fn callDaemon(self: *ViewerSession, method: []const u8, params: []const u8) void {
-        const response = muxly.api.requestWithClient(&self.client, method, params) catch return;
+        const response = self.client.request(method, params) catch return;
         self.allocator.free(response);
+    }
+
+    fn ensureTtySessionForNode(self: *ViewerSession, node_id: u64) !*muxly.client.TtyConversation {
+        if (self.tty_session) |*tty| {
+            if (tty.info.node_id == node_id) return tty;
+            tty.deinit();
+            self.tty_session = null;
+        }
+
+        self.tty_session = try self.client.openTty(.{
+            .documentPath = self.client.documentPath(),
+            .nodeId = node_id,
+        }, .{});
+        return &self.tty_session.?;
     }
 
     fn setStatus(self: *ViewerSession, message: []const u8) void {

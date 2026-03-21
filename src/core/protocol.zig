@@ -12,6 +12,27 @@ pub const RequestTarget = struct {
     selector: ?[]const u8 = null,
 };
 
+pub const ConversationKind = enum {
+    rpc,
+    tty_control,
+    tty_data,
+};
+
+pub const ConversationError = struct {
+    code: i64,
+    message: []const u8,
+};
+
+pub const ConversationEnvelope = struct {
+    conversationId: []const u8,
+    requestId: ?u64 = null,
+    target: ?RequestTarget = null,
+    kind: ConversationKind,
+    payload: std.json.Value,
+    fin: bool = true,
+    conversationError: ?ConversationError = null,
+};
+
 pub const RequestEnvelope = struct {
     jsonrpc: []const u8,
     id: ?std.json.Value = null,
@@ -28,6 +49,52 @@ pub fn parseRequest(
         .allocate = .alloc_always,
         .ignore_unknown_fields = true,
     });
+}
+
+pub fn parseConversationEnvelope(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+) !std.json.Parsed(ConversationEnvelope) {
+    return try std.json.parseFromSlice(ConversationEnvelope, allocator, bytes, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+}
+
+pub fn writeConversationEnvelope(
+    writer: anytype,
+    conversation_id: []const u8,
+    request_id: ?u64,
+    target: ?RequestTarget,
+    kind: ConversationKind,
+    payload_json: []const u8,
+    fin: bool,
+    err: ?ConversationError,
+) !void {
+    try writer.writeAll("{\"conversationId\":");
+    try writer.print("{f}", .{std.json.fmt(conversation_id, .{})});
+    try writer.writeAll(",\"requestId\":");
+    if (request_id) |value| {
+        try writer.print("{d}", .{value});
+    } else {
+        try writer.writeAll("null");
+    }
+    if (target) |resolved_target| {
+        try writer.writeAll(",\"target\":");
+        try writeRequestTarget(writer, resolved_target);
+    }
+    try writer.writeAll(",\"kind\":\"");
+    try writer.writeAll(@tagName(kind));
+    try writer.writeAll("\",\"payload\":");
+    try writer.writeAll(payload_json);
+    try writer.print(",\"fin\":{}", .{fin});
+    if (err) |value| {
+        try writer.writeAll(",\"conversationError\":{");
+        try writer.print("\"code\":{d},\"message\":", .{value.code});
+        try writer.print("{f}", .{std.json.fmt(value.message, .{})});
+        try writer.writeAll("}");
+    }
+    try writer.writeAll("}");
 }
 
 pub fn writeSuccess(
@@ -107,16 +174,13 @@ pub fn writeClientRequestTarget(
 
     try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
     try writer.print("{d}", .{request_id});
-    try writer.writeAll(",\"target\":{\"documentPath\":");
-    try writer.print("{f}", .{std.json.fmt(document_path, .{})});
-    if (target.nodeId) |node_id| {
-        try writer.print(",\"nodeId\":{d}", .{node_id});
-    }
-    if (target.selector) |selector| {
-        try writer.writeAll(",\"selector\":");
-        try writer.print("{f}", .{std.json.fmt(selector, .{})});
-    }
-    try writer.writeAll("},\"method\":");
+    try writer.writeAll(",\"target\":");
+    try writeRequestTarget(writer, .{
+        .documentPath = document_path,
+        .nodeId = target.nodeId,
+        .selector = target.selector,
+    });
+    try writer.writeAll(",\"method\":");
     try writer.print("{f}", .{std.json.fmt(method, .{})});
     try writer.writeAll(",\"params\":");
     try writer.writeAll(params_json);
@@ -176,4 +240,18 @@ fn writeId(writer: anytype, id: ?std.json.Value) !void {
     } else {
         try writer.writeAll("null");
     }
+}
+
+fn writeRequestTarget(writer: anytype, target: RequestTarget) !void {
+    const document_path = target.documentPath orelse default_document_path;
+    try writer.writeAll("{\"documentPath\":");
+    try writer.print("{f}", .{std.json.fmt(document_path, .{})});
+    if (target.nodeId) |node_id| {
+        try writer.print(",\"nodeId\":{d}", .{node_id});
+    }
+    if (target.selector) |selector| {
+        try writer.writeAll(",\"selector\":");
+        try writer.print("{f}", .{std.json.fmt(selector, .{})});
+    }
+    try writer.writeAll("}");
 }

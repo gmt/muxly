@@ -9,6 +9,9 @@ pub const Capabilities = struct {
     protocol_version: []const u8 = "muxly/0.1",
     append_mode_default: bool = true,
     ordinary_client_viewer: bool = true,
+    conversation_api: []const u8 = "library-first",
+    tty_api_shape: []const u8 = "neutral-conversation",
+    tty_size_negotiation: []const u8 = "requested-vs-actual",
     tty_source_serialization: []const u8 = "derived-state-only",
     follow_tail_semantics: []const u8 = "stored-node-preference",
     view_state_scope: []const u8 = "shared-document",
@@ -33,6 +36,9 @@ pub const Capabilities = struct {
         try writer.print("\"protocolVersion\":\"{s}\",", .{self.protocol_version});
         try writer.print("\"appendModeDefault\":{},", .{self.append_mode_default});
         try writer.print("\"ordinaryClientViewer\":{},", .{self.ordinary_client_viewer});
+        try writer.print("\"conversationApi\":\"{s}\",", .{self.conversation_api});
+        try writer.print("\"ttyApiShape\":\"{s}\",", .{self.tty_api_shape});
+        try writer.print("\"ttySizeNegotiation\":\"{s}\",", .{self.tty_size_negotiation});
         try writer.print("\"ttySerialization\":\"{s}\",", .{self.tty_source_serialization});
         try writer.print("\"followTailSemantics\":\"{s}\",", .{self.follow_tail_semantics});
         try writer.print("\"viewStateScope\":\"{s}\",", .{self.view_state_scope});

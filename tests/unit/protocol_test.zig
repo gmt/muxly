@@ -124,3 +124,73 @@ test "protocol client request writer rejects non-canonical document paths" {
         ),
     );
 }
+
+test "conversation envelope round-trips rpc kind and target metadata" {
+    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buffer.deinit();
+
+    try muxly.protocol.writeConversationEnvelope(
+        buffer.writer(),
+        "c-1",
+        42,
+        .{
+            .documentPath = "/docs/demo",
+            .nodeId = 12,
+            .selector = "left/pane",
+        },
+        .rpc,
+        \\{"jsonrpc":"2.0","id":42,"method":"document.get","params":{}}
+    ,
+        true,
+        null,
+    );
+
+    const parsed = try muxly.protocol.parseConversationEnvelope(std.testing.allocator, buffer.items);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("c-1", parsed.value.conversationId);
+    try std.testing.expectEqual(@as(?u64, 42), parsed.value.requestId);
+    try std.testing.expectEqual(muxly.protocol.ConversationKind.rpc, parsed.value.kind);
+    try std.testing.expect(parsed.value.fin);
+    try std.testing.expectEqualStrings("/docs/demo", parsed.value.target.?.documentPath.?);
+    try std.testing.expectEqual(@as(u64, 12), parsed.value.target.?.nodeId.?);
+    try std.testing.expectEqualStrings("left/pane", parsed.value.target.?.selector.?);
+    try std.testing.expect(parsed.value.payload == .object);
+}
+
+test "conversation envelope parses tty conversation kinds and conversation-local errors" {
+    const payload =
+        \\{"conversationId":"c-tty","requestId":null,"kind":"tty_data","payload":{"chunk":"hello"},"fin":false}
+    ;
+    const parsed = try muxly.protocol.parseConversationEnvelope(std.testing.allocator, payload);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("c-tty", parsed.value.conversationId);
+    try std.testing.expectEqual(@as(?u64, null), parsed.value.requestId);
+    try std.testing.expectEqual(muxly.protocol.ConversationKind.tty_data, parsed.value.kind);
+    try std.testing.expect(!parsed.value.fin);
+
+    var error_buffer = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer error_buffer.deinit();
+    try muxly.protocol.writeConversationEnvelope(
+        error_buffer.writer(),
+        "c-ctrl",
+        null,
+        null,
+        .tty_control,
+        \\{"enabled":true}
+    ,
+        true,
+        .{
+            .code = -32001,
+            .message = "tty focus unavailable",
+        },
+    );
+
+    const parsed_error = try muxly.protocol.parseConversationEnvelope(std.testing.allocator, error_buffer.items);
+    defer parsed_error.deinit();
+
+    try std.testing.expectEqual(muxly.protocol.ConversationKind.tty_control, parsed_error.value.kind);
+    try std.testing.expectEqual(@as(i64, -32001), parsed_error.value.conversationError.?.code);
+    try std.testing.expectEqualStrings("tty focus unavailable", parsed_error.value.conversationError.?.message);
+}
