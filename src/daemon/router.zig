@@ -8,6 +8,32 @@ pub const Store = store_mod.Store;
 
 const document_retention_policy = "daemon-lifetime";
 
+pub const ExecutionLane = union(enum) {
+    root,
+    document: []u8,
+
+    pub fn deinit(self: *ExecutionLane, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .root => {},
+            .document => |path| allocator.free(path),
+        }
+    }
+};
+
+pub fn classifyExecutionLane(
+    allocator: std.mem.Allocator,
+    request_bytes: []const u8,
+) !ExecutionLane {
+    const parsed = protocol.parseRequest(allocator, request_bytes) catch return .root;
+    defer parsed.deinit();
+
+    const document_path = protocol.requestDocumentPath(parsed.value) catch return .root;
+    if (std.mem.eql(u8, document_path, "/")) return .root;
+    if (!requestRunsOnDocumentLane(parsed.value.method, parsed.value.params)) return .root;
+
+    return .{ .document = try allocator.dupe(u8, document_path) };
+}
+
 pub fn handleRequest(
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
@@ -63,29 +89,39 @@ pub fn handleRequest(
     const document_path = protocol.requestDocumentPath(parsed.value) catch {
         return try buildError(allocator, parsed.value.id, .invalid_params, "target.documentPath must be a canonical absolute path");
     };
-    const document = store.documentForPath(document_path) catch |err| switch (err) {
-        error.UnsupportedDocumentPath => {
-            const message = try std.fmt.allocPrint(
-                allocator,
-                "document path {f} is not supported yet",
-                .{std.json.fmt(document_path, .{})},
-            );
-            defer allocator.free(message);
-            return try buildError(allocator, parsed.value.id, .unsupported, message);
-        },
-        else => return err,
-    };
+    const document_entry = if (std.mem.eql(u8, document_path, "/"))
+        null
+    else
+        store.documentEntryForPath(document_path) catch |err| switch (err) {
+            error.UnsupportedDocumentPath => {
+                const message = try std.fmt.allocPrint(
+                    allocator,
+                    "document path {f} is not supported yet",
+                    .{std.json.fmt(document_path, .{})},
+                );
+                defer allocator.free(message);
+                return try buildError(allocator, parsed.value.id, .unsupported, message);
+            },
+            else => return err,
+        };
+    if (document_entry) |entry| {
+        entry.mutex.lock();
+        defer entry.mutex.unlock();
+    }
+    const document = if (document_entry) |entry| &entry.document else store.rootDocument();
 
-    store.pumpTmuxBackend() catch |err| switch (err) {
-        error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
-        else => return err,
-    };
+    if (std.mem.eql(u8, document_path, "/")) {
+        store.pumpTmuxBackend() catch |err| switch (err) {
+            error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
+            else => return err,
+        };
+    }
 
     if (std.mem.eql(u8, parsed.value.method, "document.get") or
         std.mem.eql(u8, parsed.value.method, "graph.get") or
         std.mem.eql(u8, parsed.value.method, "view.get"))
     {
-        try store.refreshSources();
+        try store.refreshSourcesForDocument(document);
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
         try document.writeJson(result.writer());
@@ -93,7 +129,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "projection.get")) {
-        try store.refreshSources();
+        try store.refreshSourcesForDocument(document);
         const request_value = parseProjectionRequest(allocator, parsed.value.params) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "invalid projection params: {s}", .{@errorName(err)});
             defer allocator.free(message);
@@ -150,7 +186,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "document.serialize")) {
-        try store.refreshSources();
+        try store.refreshSourcesForDocument(document);
         var xml = std.array_list.Managed(u8).init(allocator);
         defer xml.deinit();
         try document.writeXml(xml.writer());
@@ -607,10 +643,16 @@ fn rootOnlyTargetGuard(
 }
 
 fn writeDocumentList(store: *store_mod.Store, writer: anytype) !void {
+    const entries = try store.snapshotDocumentEntries();
+    defer store.allocator.free(entries);
     try writer.writeAll("[");
-    for (store.documents.items, 0..) |entry, index| {
+    for (entries, 0..) |entry, index| {
         if (index != 0) try writer.writeAll(",");
-        try writeDocumentSummary(entry.path, &entry.document, writer);
+        entry.mutex.lock();
+        {
+            defer entry.mutex.unlock();
+            try writeDocumentSummary(entry.path, &entry.document, writer);
+        }
     }
     try writer.writeAll("]");
 }
@@ -759,6 +801,39 @@ fn parseTerminalArtifactKind(name: []const u8) ?muxly.source.TerminalArtifactKin
     if (std.mem.eql(u8, name, "text")) return .text;
     if (std.mem.eql(u8, name, "surface")) return .surface;
     return null;
+}
+
+fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
+    if (std.mem.eql(u8, method, "document.get") or
+        std.mem.eql(u8, method, "graph.get") or
+        std.mem.eql(u8, method, "view.get") or
+        std.mem.eql(u8, method, "projection.get") or
+        std.mem.eql(u8, method, "document.status") or
+        std.mem.eql(u8, method, "document.serialize") or
+        std.mem.eql(u8, method, "document.freeze") or
+        std.mem.eql(u8, method, "node.get") or
+        std.mem.eql(u8, method, "node.append") or
+        std.mem.eql(u8, method, "node.update") or
+        std.mem.eql(u8, method, "node.freeze") or
+        std.mem.eql(u8, method, "node.remove") or
+        std.mem.eql(u8, method, "view.setRoot") or
+        std.mem.eql(u8, method, "view.clearRoot") or
+        std.mem.eql(u8, method, "view.elide") or
+        std.mem.eql(u8, method, "view.expand") or
+        std.mem.eql(u8, method, "view.reset") or
+        std.mem.eql(u8, method, "leaf.source.get") or
+        std.mem.eql(u8, method, "file.capture") or
+        std.mem.eql(u8, method, "file.followTail"))
+    {
+        return true;
+    }
+
+    if (std.mem.eql(u8, method, "leaf.source.attach")) {
+        const kind = protocol.getString(params, "kind") orelse return false;
+        return std.mem.eql(u8, kind, "static-file") or std.mem.eql(u8, kind, "monitored-file");
+    }
+
+    return false;
 }
 
 fn requestNodeIdOrError(document: *const muxly.document.Document, request: protocol.RequestEnvelope) !i64 {

@@ -40,6 +40,109 @@ pub const ResponseBatch = struct {
     }
 };
 
+pub const DispatchRequest = struct {
+    allocator: std.mem.Allocator,
+    request_json: []u8,
+    response_mode: ResponseMode,
+
+    pub const ResponseMode = union(enum) {
+        json_rpc,
+        envelope: EnvelopeResponse,
+    };
+
+    pub const EnvelopeResponse = struct {
+        conversation_id: []u8,
+        request_id: ?u64,
+        target: ?protocol.RequestTarget,
+        kind: protocol.ConversationKind,
+
+        fn deinit(self: *EnvelopeResponse, allocator: std.mem.Allocator) void {
+            allocator.free(self.conversation_id);
+            if (self.target) |target| {
+                if (target.documentPath) |value| allocator.free(value);
+                if (target.selector) |value| allocator.free(value);
+            }
+        }
+    };
+
+    pub fn deinit(self: *DispatchRequest) void {
+        self.allocator.free(self.request_json);
+        switch (self.response_mode) {
+            .json_rpc => {},
+            .envelope => |*value| value.deinit(self.allocator),
+        }
+    }
+
+    pub fn buildSuccessFrameOwned(
+        self: *const DispatchRequest,
+        allocator: std.mem.Allocator,
+        response_json: []u8,
+    ) !OutboundFrame {
+        return switch (self.response_mode) {
+            .json_rpc => .{
+                .wire_kind = .json_rpc,
+                .bytes = response_json,
+            },
+            .envelope => |response| blk: {
+                const envelope = try protocol.allocConversationEnvelope(
+                    allocator,
+                    response.conversation_id,
+                    response.request_id,
+                    response.target,
+                    response.kind,
+                    response_json,
+                    true,
+                    null,
+                );
+                allocator.free(response_json);
+                break :blk .{
+                    .wire_kind = .envelope,
+                    .bytes = envelope,
+                };
+            },
+        };
+    }
+
+    pub fn buildFailureFrame(
+        self: *const DispatchRequest,
+        allocator: std.mem.Allocator,
+        message: []const u8,
+    ) !OutboundFrame {
+        return switch (self.response_mode) {
+            .json_rpc => .{
+                .wire_kind = .json_rpc,
+                .bytes = try buildJsonRpcErrorForRequest(
+                    allocator,
+                    self.request_json,
+                    .internal_error,
+                    message,
+                ),
+            },
+            .envelope => |response| .{
+                .wire_kind = .envelope,
+                .bytes = try protocol.allocConversationEnvelope(
+                    allocator,
+                    response.conversation_id,
+                    response.request_id,
+                    response.target,
+                    response.kind,
+                    "null",
+                    true,
+                    .{
+                        .code = @intFromEnum(errors.RpcErrorCode.internal_error),
+                        .message = message,
+                    },
+                ),
+            },
+        };
+    }
+};
+
+pub const HandleLineResult = union(enum) {
+    immediate: ResponseBatch,
+    dispatch: DispatchRequest,
+};
+
 pub const Broker = struct {
     next_compat_conversation_id: u64 = 1,
     next_generated_request_id: u64 = 1,
@@ -55,6 +158,32 @@ pub const Broker = struct {
         context: anytype,
         handler: anytype,
     ) !ResponseBatch {
+        var handled = try self.acceptLine(allocator, line);
+        switch (handled) {
+            .immediate => |batch| return batch,
+            .dispatch => |*request| {
+                defer request.deinit();
+                const response_json = callHandler(allocator, request.request_json, context, handler) catch |err| {
+                    const message = try std.fmt.allocPrint(allocator, "conversation handler failed: {s}", .{@errorName(err)});
+                    defer allocator.free(message);
+                    var batch = ResponseBatch.init(allocator);
+                    const frame = try request.buildFailureFrame(allocator, message);
+                    try batch.append(frame.wire_kind, frame.bytes);
+                    return batch;
+                };
+                const frame = try request.buildSuccessFrameOwned(allocator, response_json);
+                var batch = ResponseBatch.init(allocator);
+                try batch.append(frame.wire_kind, frame.bytes);
+                return batch;
+            },
+        }
+    }
+
+    pub fn acceptLine(
+        self: *Broker,
+        allocator: std.mem.Allocator,
+        line: []const u8,
+    ) !HandleLineResult {
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{
             .allocate = .alloc_always,
         }) catch {
@@ -68,38 +197,36 @@ pub const Broker = struct {
                     "invalid JSON payload",
                 ),
             );
-            return batch;
+            return .{ .immediate = batch };
         };
         defer parsed.deinit();
 
         if (parsed.value != .object or parsed.value.object.get("conversationId") == null) {
-            return try self.handleCompatibilityLine(allocator, line, context, handler);
+            return .{ .dispatch = try self.acceptCompatibilityLine(allocator, line) };
         }
 
-        return try self.handleEnvelopeLine(allocator, line, parsed.value, context, handler);
+        return try self.acceptEnvelopeLine(allocator, line, parsed.value);
     }
 
-    fn handleCompatibilityLine(
+    fn acceptCompatibilityLine(
         self: *Broker,
         allocator: std.mem.Allocator,
         line: []const u8,
-        context: anytype,
-        handler: anytype,
-    ) !ResponseBatch {
+    ) !DispatchRequest {
         _ = self.nextCompatConversationId();
-        var batch = ResponseBatch.init(allocator);
-        try batch.append(.json_rpc, try callHandler(allocator, line, context, handler));
-        return batch;
+        return .{
+            .allocator = allocator,
+            .request_json = try allocator.dupe(u8, line),
+            .response_mode = .json_rpc,
+        };
     }
 
-    fn handleEnvelopeLine(
+    fn acceptEnvelopeLine(
         self: *Broker,
         allocator: std.mem.Allocator,
         line: []const u8,
         parsed_json: std.json.Value,
-        context: anytype,
-        handler: anytype,
-    ) !ResponseBatch {
+    ) !HandleLineResult {
         const conversation_id = extractConversationId(parsed_json) orelse "invalid-conversation";
         const conversation_kind = extractConversationKind(parsed_json) orelse .rpc;
 
@@ -121,7 +248,7 @@ pub const Broker = struct {
                     },
                 ),
             );
-            return batch;
+            return .{ .immediate = batch };
         };
         defer envelope.deinit();
 
@@ -143,49 +270,18 @@ pub const Broker = struct {
                     },
                 ),
             );
-            return batch;
+            return .{ .immediate = batch };
         };
-        defer allocator.free(request_json);
-
-        const response_json = callHandler(allocator, request_json, context, handler) catch |err| {
-            var batch = ResponseBatch.init(allocator);
-            const message = try std.fmt.allocPrint(allocator, "conversation handler failed: {s}", .{@errorName(err)});
-            defer allocator.free(message);
-            try batch.append(
-                .envelope,
-                try protocol.allocConversationEnvelope(
-                    allocator,
-                    envelope.value.conversationId,
-                    envelope.value.requestId,
-                    envelope.value.target,
-                    envelope.value.kind,
-                    "null",
-                    true,
-                    .{
-                        .code = @intFromEnum(errors.RpcErrorCode.internal_error),
-                        .message = message,
-                    },
-                ),
-            );
-            return batch;
-        };
-
-        var batch = ResponseBatch.init(allocator);
-        try batch.append(
-            .envelope,
-            try protocol.allocConversationEnvelope(
-                allocator,
-                envelope.value.conversationId,
-                envelope.value.requestId,
-                envelope.value.target,
-                envelope.value.kind,
-                response_json,
-                true,
-                null,
-            ),
-        );
-        allocator.free(response_json);
-        return batch;
+        return .{ .dispatch = .{
+            .allocator = allocator,
+            .request_json = request_json,
+            .response_mode = .{ .envelope = .{
+                .conversation_id = try allocator.dupe(u8, envelope.value.conversationId),
+                .request_id = envelope.value.requestId,
+                .target = if (envelope.value.target) |target| try duplicateTarget(allocator, target) else null,
+                .kind = envelope.value.kind,
+            } },
+        } };
     }
 
     fn nextCompatConversationId(self: *Broker) u64 {
@@ -278,6 +374,30 @@ fn buildJsonRpcError(
     errdefer buffer.deinit();
     try protocol.writeError(buffer.writer(), id, code, message);
     return try buffer.toOwnedSlice();
+}
+
+fn buildJsonRpcErrorForRequest(
+    allocator: std.mem.Allocator,
+    request_json: []const u8,
+    code: errors.RpcErrorCode,
+    message: []const u8,
+) ![]u8 {
+    const parsed = protocol.parseRequest(allocator, request_json) catch {
+        return try buildJsonRpcError(allocator, null, code, message);
+    };
+    defer parsed.deinit();
+    return try buildJsonRpcError(allocator, parsed.value.id, code, message);
+}
+
+fn duplicateTarget(
+    allocator: std.mem.Allocator,
+    target: protocol.RequestTarget,
+) !protocol.RequestTarget {
+    return .{
+        .documentPath = if (target.documentPath) |value| try allocator.dupe(u8, value) else null,
+        .nodeId = target.nodeId,
+        .selector = if (target.selector) |value| try allocator.dupe(u8, value) else null,
+    };
 }
 
 fn extractConversationId(value: std.json.Value) ?[]const u8 {

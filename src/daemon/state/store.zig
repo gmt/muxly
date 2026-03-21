@@ -23,20 +23,23 @@ const TmuxProjectionState = enum {
 
 const root_document_path = "/";
 
-const DocumentEntry = struct {
+pub const DocumentEntry = struct {
+    mutex: std.Thread.Mutex = .{},
     path: []u8,
     document: document_mod.Document,
 
     fn deinit(self: *DocumentEntry, allocator: std.mem.Allocator) void {
         self.document.deinit();
         allocator.free(self.path);
+        allocator.destroy(self);
     }
 };
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
     capabilities: capabilities_mod.Capabilities = .{},
-    documents: std.ArrayListUnmanaged(DocumentEntry) = .{},
+    documents: std.ArrayListUnmanaged(*DocumentEntry) = .{},
+    documents_mutex: std.Thread.Mutex = .{},
     next_document_id: ids.DocumentId = 2,
     tmux_pane_snapshots: std.ArrayListUnmanaged(tmux_events.PaneSnapshot) = .{},
     control_connection: ?control_mode.ControlConnection = null,
@@ -55,18 +58,34 @@ pub const Store = struct {
         };
         errdefer store.deinit();
 
-        try store.documents.append(allocator, .{
+        const entry = try allocator.create(DocumentEntry);
+        errdefer allocator.destroy(entry);
+        entry.* = .{
             .path = try allocator.dupe(u8, root_document_path),
             .document = document,
-        });
+        };
+        try store.documents.append(allocator, entry);
         return store;
     }
 
     pub fn documentForPath(self: *Store, document_path: []const u8) !*document_mod.Document {
-        for (self.documents.items) |*entry| {
-            if (std.mem.eql(u8, entry.path, document_path)) return &entry.document;
+        const entry = try self.documentEntryForPath(document_path);
+        return &entry.document;
+    }
+
+    pub fn documentEntryForPath(self: *Store, document_path: []const u8) !*DocumentEntry {
+        self.documents_mutex.lock();
+        defer self.documents_mutex.unlock();
+        for (self.documents.items) |entry| {
+            if (std.mem.eql(u8, entry.path, document_path)) return entry;
         }
         return error.UnsupportedDocumentPath;
+    }
+
+    pub fn snapshotDocumentEntries(self: *Store) ![]*DocumentEntry {
+        self.documents_mutex.lock();
+        defer self.documents_mutex.unlock();
+        return try self.allocator.dupe(*DocumentEntry, self.documents.items);
     }
 
     pub fn createDocument(
@@ -76,6 +95,9 @@ pub const Store = struct {
     ) !*document_mod.Document {
         if (!muxly.protocol.isCanonicalDocumentPath(document_path)) return error.InvalidDocumentPath;
         if (std.mem.eql(u8, document_path, root_document_path)) return error.DocumentAlreadyExists;
+
+        self.documents_mutex.lock();
+        defer self.documents_mutex.unlock();
 
         for (self.documents.items) |entry| {
             if (std.mem.eql(u8, entry.path, document_path)) return error.DocumentAlreadyExists;
@@ -91,11 +113,14 @@ pub const Store = struct {
         var document = try document_mod.Document.init(self.allocator, document_id, resolved_title);
         errdefer document.deinit();
 
-        try self.documents.append(self.allocator, .{
+        const entry = try self.allocator.create(DocumentEntry);
+        errdefer self.allocator.destroy(entry);
+        entry.* = .{
             .path = try self.allocator.dupe(u8, document_path),
             .document = document,
-        });
-        return &self.documents.items[self.documents.items.len - 1].document;
+        };
+        try self.documents.append(self.allocator, entry);
+        return &entry.document;
     }
 
     pub fn deinit(self: *Store) void {
@@ -104,7 +129,7 @@ pub const Store = struct {
             self.control_connection = null;
         }
         self.clearTmuxPaneSnapshots();
-        for (self.documents.items) |*entry| entry.deinit(self.allocator);
+        for (self.documents.items) |entry| entry.deinit(self.allocator);
         self.documents.deinit(self.allocator);
     }
 
@@ -155,47 +180,57 @@ pub const Store = struct {
     }
 
     pub fn refreshSources(self: *Store) !void {
-        for (self.documents.items) |*entry| {
-            for (entry.document.nodes.items) |*node| {
-                switch (node.source) {
-                    .none => {},
-                    .tty => |tty| {
-                        if (tty.pane_id) |pane_id| {
-                            const capture = tmux.capturePane(self.allocator, pane_id) catch {
-                                var fallback = std.array_list.Managed(u8).init(self.allocator);
-                                defer fallback.deinit();
-                                try fallback.writer().print("tty source unavailable for pane {s} in session {s}", .{
-                                    pane_id,
-                                    tty.session_name,
-                                });
-                                try node.setContent(self.allocator, fallback.items);
-                                continue;
-                            };
-                            defer self.allocator.free(capture);
-                            try node.setContent(self.allocator, capture);
-                        } else {
-                            var buffer = std.array_list.Managed(u8).init(self.allocator);
-                            defer buffer.deinit();
-                            try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
-                            try node.setContent(self.allocator, buffer.items);
-                        }
-                    },
-                    .terminal_artifact => {},
-                    .file => |file| {
-                        const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
+        const entries = try self.snapshotDocumentEntries();
+        defer self.allocator.free(entries);
+        for (entries) |entry| {
+            entry.mutex.lock();
+            {
+                defer entry.mutex.unlock();
+                try self.refreshSourcesForDocument(&entry.document);
+            }
+        }
+    }
+
+    pub fn refreshSourcesForDocument(self: *Store, document: *document_mod.Document) !void {
+        for (document.nodes.items) |*node| {
+            switch (node.source) {
+                .none => {},
+                .tty => |tty| {
+                    if (tty.pane_id) |pane_id| {
+                        const capture = tmux.capturePane(self.allocator, pane_id) catch {
                             var fallback = std.array_list.Managed(u8).init(self.allocator);
                             defer fallback.deinit();
-                            try fallback.writer().print("file source unavailable at {s}: {s}", .{
-                                file.path,
-                                @errorName(err),
+                            try fallback.writer().print("tty source unavailable for pane {s} in session {s}", .{
+                                pane_id,
+                                tty.session_name,
                             });
                             try node.setContent(self.allocator, fallback.items);
                             continue;
                         };
-                        defer self.allocator.free(content);
-                        try node.setContent(self.allocator, content);
-                    },
-                }
+                        defer self.allocator.free(capture);
+                        try node.setContent(self.allocator, capture);
+                    } else {
+                        var buffer = std.array_list.Managed(u8).init(self.allocator);
+                        defer buffer.deinit();
+                        try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
+                        try node.setContent(self.allocator, buffer.items);
+                    }
+                },
+                .terminal_artifact => {},
+                .file => |file| {
+                    const content = readPathAlloc(self.allocator, file.path, 1 << 20) catch |err| {
+                        var fallback = std.array_list.Managed(u8).init(self.allocator);
+                        defer fallback.deinit();
+                        try fallback.writer().print("file source unavailable at {s}: {s}", .{
+                            file.path,
+                            @errorName(err),
+                        });
+                        try node.setContent(self.allocator, fallback.items);
+                        continue;
+                    };
+                    defer self.allocator.free(content);
+                    try node.setContent(self.allocator, content);
+                },
             }
         }
     }
@@ -227,7 +262,7 @@ pub const Store = struct {
             path,
             .{ .file = .{ .path = @constCast(path), .mode = mode } },
         );
-        try self.refreshSources();
+        try self.refreshSourcesForDocument(document);
         return node_id;
     }
 
@@ -365,7 +400,7 @@ pub const Store = struct {
     }
 
     pub fn captureFileNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) ![]u8 {
-        try self.refreshSources();
+        try self.refreshSourcesForDocument(document);
         const node = document.findNode(node_id) orelse return error.UnknownNode;
         switch (node.source) {
             .file => {},
@@ -437,7 +472,7 @@ pub const Store = struct {
                 .pane_id = if (pane_ref.pane_id.len == 0) null else pane_ref.pane_id,
             } },
         );
-        try self.refreshSources();
+        try self.refreshSourcesForDocument(document);
         return node_id;
     }
 
