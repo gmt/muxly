@@ -11,6 +11,7 @@ const transport = @import("transport.zig");
 
 pub const default_tty_rows: u16 = 24;
 pub const default_tty_cols: u16 = 80;
+pub const pooled_transport_connection_limit: usize = 4;
 
 /// Handle-based client bound to one daemon transport address.
 pub const Client = struct {
@@ -113,12 +114,165 @@ pub const TtySize = struct {
     cols: u16,
 };
 
+pub const CompatibilityTransportMode = enum {
+    shared_connection,
+    pooled_connections,
+};
+
+pub const ClientLease = struct {
+    pool: *CompatibilityClientPool,
+    client: *Client,
+    mode: CompatibilityTransportMode,
+    released: bool = false,
+
+    pub fn deinit(self: *ClientLease) void {
+        if (self.released) return;
+        self.released = true;
+        self.pool.releaseLease(self);
+    }
+};
+
+pub const CompatibilityClientPool = struct {
+    allocator: std.mem.Allocator,
+    transport_spec: []u8,
+    document_path: []u8,
+    mode: CompatibilityTransportMode,
+    max_connections: usize,
+    shared_client: ?Client = null,
+    shared_in_use: bool = false,
+    pooled_available: std.array_list.Managed(*Client),
+    pooled_all: std.array_list.Managed(*Client),
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        document_path: []const u8,
+    ) !CompatibilityClientPool {
+        var address = try transport.Address.parse(allocator, transport_spec);
+        defer address.deinit(allocator);
+
+        const mode = transportModeForAddress(address);
+        var pool = CompatibilityClientPool{
+            .allocator = allocator,
+            .transport_spec = try allocator.dupe(u8, transport_spec),
+            .document_path = try allocator.dupe(u8, document_path),
+            .mode = mode,
+            .max_connections = switch (mode) {
+                .shared_connection => 1,
+                .pooled_connections => pooled_transport_connection_limit,
+            },
+            .pooled_available = std.array_list.Managed(*Client).init(allocator),
+            .pooled_all = std.array_list.Managed(*Client).init(allocator),
+        };
+        errdefer allocator.free(pool.transport_spec);
+        errdefer allocator.free(pool.document_path);
+        errdefer pool.pooled_available.deinit();
+        errdefer pool.pooled_all.deinit();
+
+        try pool.pooled_available.ensureTotalCapacity(pool.max_connections);
+        try pool.pooled_all.ensureTotalCapacity(pool.max_connections);
+
+        if (mode == .shared_connection) {
+            pool.shared_client = try Client.initForDocument(
+                allocator,
+                transport_spec,
+                document_path,
+            );
+        }
+
+        return pool;
+    }
+
+    pub fn deinit(self: *CompatibilityClientPool) void {
+        if (self.shared_client) |*client| client.deinit();
+        for (self.pooled_all.items) |client| {
+            client.deinit();
+            self.allocator.destroy(client);
+        }
+        self.pooled_available.deinit();
+        self.pooled_all.deinit();
+        self.allocator.free(self.transport_spec);
+        self.allocator.free(self.document_path);
+    }
+
+    pub fn documentPath(self: *const CompatibilityClientPool) []const u8 {
+        return self.document_path;
+    }
+
+    pub fn checkout(self: *CompatibilityClientPool) !ClientLease {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while (true) {
+            switch (self.mode) {
+                .shared_connection => {
+                    if (!self.shared_in_use) {
+                        self.shared_in_use = true;
+                        return .{
+                            .pool = self,
+                            .client = &self.shared_client.?,
+                            .mode = .shared_connection,
+                        };
+                    }
+                },
+                .pooled_connections => {
+                    if (self.pooled_available.items.len > 0) {
+                        return .{
+                            .pool = self,
+                            .client = self.pooled_available.pop().?,
+                            .mode = .pooled_connections,
+                        };
+                    }
+                    if (self.pooled_all.items.len < self.max_connections) {
+                        const client = try self.allocator.create(Client);
+                        errdefer self.allocator.destroy(client);
+                        client.* = try Client.initForDocument(
+                            self.allocator,
+                            self.transport_spec,
+                            self.document_path,
+                        );
+                        self.pooled_all.appendAssumeCapacity(client);
+                        return .{
+                            .pool = self,
+                            .client = client,
+                            .mode = .pooled_connections,
+                        };
+                    }
+                },
+            }
+            self.condition.wait(&self.mutex);
+        }
+    }
+
+    fn releaseLease(self: *CompatibilityClientPool, lease: *const ClientLease) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        switch (lease.mode) {
+            .shared_connection => self.shared_in_use = false,
+            .pooled_connections => self.pooled_available.appendAssumeCapacity(lease.client),
+        }
+        self.condition.signal();
+    }
+};
+
+fn transportModeForAddress(address: transport.Address) CompatibilityTransportMode {
+    return switch (address.target) {
+        .http, .ssh => .pooled_connections,
+        .unix, .tcp, .h3wt => .shared_connection,
+    };
+}
+
 pub const RpcConversation = struct {
     client: *ConversationClient,
     conversation_id: []u8,
     target: protocol.RequestTarget,
+    lease: ?ClientLease = null,
 
     pub fn deinit(self: *RpcConversation) void {
+        if (self.lease) |*lease| lease.deinit();
         self.client.frame_router.unregisterConversation(self.conversation_id);
         self.client.allocator.free(self.conversation_id);
         if (self.target.documentPath) |value| self.client.allocator.free(value);
@@ -126,7 +280,8 @@ pub const RpcConversation = struct {
     }
 
     pub fn request(self: *RpcConversation, method: []const u8, params_json: []const u8) ![]u8 {
-        const request_id = self.client.rpc_client.next_request_id;
+        const rpc_client = try self.ensureLease();
+        const request_id = rpc_client.next_request_id;
 
         var request_json = std.array_list.Managed(u8).init(self.client.allocator);
         defer request_json.deinit();
@@ -152,8 +307,8 @@ pub const RpcConversation = struct {
         );
         defer self.client.allocator.free(envelope_json);
 
-        self.client.rpc_client.next_request_id += 1;
-        const response_json = try self.client.rpc_client.requestJson(request_json.items);
+        rpc_client.next_request_id += 1;
+        const response_json = try rpc_client.requestJson(request_json.items);
         defer self.client.allocator.free(response_json);
 
         const response_envelope = try protocol.allocConversationEnvelope(
@@ -170,6 +325,13 @@ pub const RpcConversation = struct {
 
         try self.client.frame_router.pushEnvelopeBytes(response_envelope);
         return try self.client.frame_router.takePayloadForRequest(self.conversation_id, request_id);
+    }
+
+    fn ensureLease(self: *RpcConversation) !*Client {
+        if (self.lease == null) {
+            self.lease = try self.client.client_pool.checkout();
+        }
+        return self.lease.?.client;
     }
 };
 
@@ -192,8 +354,10 @@ pub const TtyConversation = struct {
     info: TtySessionInfo,
     session_name: []u8,
     pane_id: []u8,
+    lease: ClientLease,
 
     pub fn deinit(self: *TtyConversation) void {
+        self.lease.deinit();
         self.client.frame_router.unregisterConversation(self.info.conversation_id);
         self.info.deinit(self.client.allocator);
         self.client.allocator.free(self.session_name);
@@ -229,7 +393,7 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(envelope_json);
 
-        const response = try self.client.rpc_client.request("pane.sendKeys", params_json);
+        const response = try self.lease.client.request("pane.sendKeys", params_json);
         defer self.client.allocator.free(response);
 
         const response_envelope = try protocol.allocConversationEnvelope(
@@ -279,7 +443,7 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(envelope_json);
 
-        const response = try self.client.rpc_client.request("pane.followTail", params_json);
+        const response = try self.lease.client.request("pane.followTail", params_json);
         defer self.client.allocator.free(response);
 
         const response_envelope = try protocol.allocConversationEnvelope(
@@ -315,7 +479,7 @@ pub const TtyConversation = struct {
 
 pub const ConversationClient = struct {
     allocator: std.mem.Allocator,
-    rpc_client: Client,
+    client_pool: CompatibilityClientPool,
     frame_router: conversation_router.ConversationRouter,
     next_conversation_id: u64 = 1,
 
@@ -330,23 +494,23 @@ pub const ConversationClient = struct {
     ) !ConversationClient {
         return .{
             .allocator = allocator,
-            .rpc_client = try Client.initForDocument(allocator, transport_spec, document_path),
+            .client_pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path),
             .frame_router = conversation_router.ConversationRouter.init(allocator),
         };
     }
 
     pub fn deinit(self: *ConversationClient) void {
         self.frame_router.deinit();
-        self.rpc_client.deinit();
+        self.client_pool.deinit();
     }
 
     pub fn documentPath(self: *const ConversationClient) []const u8 {
-        return self.rpc_client.document_path;
+        return self.client_pool.documentPath();
     }
 
     pub fn request(self: *ConversationClient, method: []const u8, params_json: []const u8) ![]u8 {
         return try self.requestTarget(.{
-            .documentPath = self.rpc_client.document_path,
+            .documentPath = self.client_pool.documentPath(),
         }, method, params_json);
     }
 
@@ -370,7 +534,7 @@ pub const ConversationClient = struct {
             .client = self,
             .conversation_id = conversation_id,
             .target = .{
-                .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.rpc_client.document_path),
+                .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.client_pool.documentPath()),
                 .nodeId = target.nodeId,
                 .selector = if (target.selector) |value| try self.allocator.dupe(u8, value) else null,
             },
@@ -382,8 +546,10 @@ pub const ConversationClient = struct {
         target: protocol.RequestTarget,
         options: TtyOpenOptions,
     ) !TtyConversation {
-        var resolved = try resolveTtyTarget(self.allocator, &self.rpc_client, .{
-            .documentPath = target.documentPath orelse self.rpc_client.document_path,
+        var lease = try self.client_pool.checkout();
+        errdefer lease.deinit();
+        var resolved = try resolveTtyTarget(self.allocator, lease.client, .{
+            .documentPath = target.documentPath orelse self.client_pool.documentPath(),
             .nodeId = target.nodeId,
             .selector = target.selector,
         });
@@ -408,6 +574,7 @@ pub const ConversationClient = struct {
             },
             .session_name = resolved.session_name,
             .pane_id = resolved.pane_id,
+            .lease = lease,
         };
     }
 

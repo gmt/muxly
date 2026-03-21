@@ -4,6 +4,7 @@ const muxly = @import("muxly");
 comptime {
     _ = @import("api_tmux_target_test.zig");
     _ = @import("capabilities_test.zig");
+    _ = @import("client_pool_test.zig");
     _ = @import("cli_args_test.zig");
     _ = @import("cli_target_arg_test.zig");
     _ = @import("conversation_broker_test.zig");
