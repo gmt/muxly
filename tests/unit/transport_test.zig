@@ -213,28 +213,95 @@ test "conversation client opens rpc and tty conversations over one compatibility
                 ) orelse break;
                 defer self.allocator.free(request);
 
+                const envelope = try muxly.protocol.parseConversationEnvelope(self.allocator, request);
+                defer envelope.deinit();
+
                 switch (self.request_count) {
                     0 => {
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"ping\"") != null);
-                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"pong\":true}}\n");
+                        try std.testing.expectEqual(muxly.protocol.ConversationKind.rpc, envelope.value.kind);
+                        try std.testing.expect(envelope.value.payload == .object);
+                        try std.testing.expect(std.mem.eql(
+                            u8,
+                            envelope.value.payload.object.get("method").?.string,
+                            "ping",
+                        ));
+                        const response = try muxly.protocol.allocConversationEnvelope(
+                            self.allocator,
+                            envelope.value.conversationId,
+                            envelope.value.requestId,
+                            envelope.value.target,
+                            envelope.value.kind,
+                            \\{"jsonrpc":"2.0","id":1,"result":{"pong":true}}
+                        ,
+                            true,
+                            null,
+                        );
+                        defer self.allocator.free(response);
+                        try connection.stream.writeAll(response);
+                        try connection.stream.writeAll("\n");
                     },
                     1 => {
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"node.get\"") != null);
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"nodeId\":7") != null);
-                        try connection.stream.writeAll(
+                        try std.testing.expectEqual(muxly.protocol.ConversationKind.rpc, envelope.value.kind);
+                        try std.testing.expect(std.mem.eql(
+                            u8,
+                            envelope.value.payload.object.get("method").?.string,
+                            "node.get",
+                        ));
+                        try std.testing.expectEqual(@as(u64, 7), envelope.value.target.?.nodeId.?);
+                        const response = try muxly.protocol.allocConversationEnvelope(
+                            self.allocator,
+                            envelope.value.conversationId,
+                            envelope.value.requestId,
+                            envelope.value.target,
+                            envelope.value.kind,
                             \\{"jsonrpc":"2.0","id":2,"result":{"id":7,"kind":"tty_leaf","title":"shell","content":"","followTail":false,"lifecycle":"live","source":{"kind":"tty","sessionName":"demo","paneId":"%1"},"children":[],"parentId":1}}
+                        ,
+                            true,
+                            null,
                         );
+                        defer self.allocator.free(response);
+                        try connection.stream.writeAll(response);
                         try connection.stream.writeAll("\n");
                     },
                     2 => {
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"pane.sendKeys\"") != null);
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"paneId\":\"%1\"") != null);
-                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}\n");
+                        try std.testing.expectEqual(muxly.protocol.ConversationKind.tty_data, envelope.value.kind);
+                        try std.testing.expect(std.mem.eql(
+                            u8,
+                            envelope.value.payload.object.get("paneId").?.string,
+                            "%1",
+                        ));
+                        const response = try muxly.protocol.allocConversationEnvelope(
+                            self.allocator,
+                            envelope.value.conversationId,
+                            envelope.value.requestId,
+                            envelope.value.target,
+                            envelope.value.kind,
+                            \\{"jsonrpc":"2.0","id":3,"result":{"ok":true}}
+                        ,
+                            true,
+                            null,
+                        );
+                        defer self.allocator.free(response);
+                        try connection.stream.writeAll(response);
+                        try connection.stream.writeAll("\n");
                     },
                     3 => {
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"method\":\"pane.followTail\"") != null);
-                        try std.testing.expect(std.mem.indexOf(u8, request, "\"enabled\":true") != null);
-                        try connection.stream.writeAll("{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true}}\n");
+                        try std.testing.expectEqual(muxly.protocol.ConversationKind.tty_control, envelope.value.kind);
+                        try std.testing.expect(envelope.value.payload.object.get("enabled").?.bool);
+                        const response = try muxly.protocol.allocConversationEnvelope(
+                            self.allocator,
+                            envelope.value.conversationId,
+                            envelope.value.requestId,
+                            envelope.value.target,
+                            envelope.value.kind,
+                            \\{"jsonrpc":"2.0","id":4,"result":{"ok":true}}
+                        ,
+                            true,
+                            null,
+                        );
+                        defer self.allocator.free(response);
+                        try connection.stream.writeAll(response);
+                        try connection.stream.writeAll("\n");
                     },
                     else => unreachable,
                 }

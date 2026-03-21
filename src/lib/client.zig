@@ -269,10 +269,8 @@ pub const RpcConversation = struct {
     client: *ConversationClient,
     conversation_id: []u8,
     target: protocol.RequestTarget,
-    lease: ?ClientLease = null,
 
     pub fn deinit(self: *RpcConversation) void {
-        if (self.lease) |*lease| lease.deinit();
         self.client.frame_router.unregisterConversation(self.conversation_id);
         self.client.allocator.free(self.conversation_id);
         if (self.target.documentPath) |value| self.client.allocator.free(value);
@@ -280,8 +278,7 @@ pub const RpcConversation = struct {
     }
 
     pub fn request(self: *RpcConversation, method: []const u8, params_json: []const u8) ![]u8 {
-        const rpc_client = try self.ensureLease();
-        const request_id = rpc_client.next_request_id;
+        const request_id = self.client.nextRpcRequestId();
 
         var request_json = std.array_list.Managed(u8).init(self.client.allocator);
         defer request_json.deinit();
@@ -293,45 +290,14 @@ pub const RpcConversation = struct {
             params_json,
         );
 
-        // The logical envelope exists now even though the current transport
-        // compatibility path still emits plain JSON-RPC over the wire.
-        const envelope_json = try protocol.allocConversationEnvelope(
-            self.client.allocator,
+        return try self.client.sendEnvelopeAndWait(
             self.conversation_id,
             request_id,
             self.target,
             .rpc,
             request_json.items,
             true,
-            null,
         );
-        defer self.client.allocator.free(envelope_json);
-
-        rpc_client.next_request_id += 1;
-        const response_json = try rpc_client.requestJson(request_json.items);
-        defer self.client.allocator.free(response_json);
-
-        const response_envelope = try protocol.allocConversationEnvelope(
-            self.client.allocator,
-            self.conversation_id,
-            request_id,
-            self.target,
-            .rpc,
-            response_json,
-            true,
-            null,
-        );
-        defer self.client.allocator.free(response_envelope);
-
-        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
-        return try self.client.frame_router.takePayloadForRequest(self.conversation_id, request_id);
-    }
-
-    fn ensureLease(self: *RpcConversation) !*Client {
-        if (self.lease == null) {
-            self.lease = try self.client.client_pool.checkout();
-        }
-        return self.lease.?.client;
     }
 };
 
@@ -354,10 +320,8 @@ pub const TtyConversation = struct {
     info: TtySessionInfo,
     session_name: []u8,
     pane_id: []u8,
-    lease: ClientLease,
 
     pub fn deinit(self: *TtyConversation) void {
-        self.lease.deinit();
         self.client.frame_router.unregisterConversation(self.info.conversation_id);
         self.info.deinit(self.client.allocator);
         self.client.allocator.free(self.session_name);
@@ -393,11 +357,7 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(envelope_json);
 
-        const response = try self.lease.client.request("pane.sendKeys", params_json);
-        defer self.client.allocator.free(response);
-
-        const response_envelope = try protocol.allocConversationEnvelope(
-            self.client.allocator,
+        const routed_response = try self.client.sendEnvelopeAndWait(
             self.info.conversation_id,
             null,
             .{
@@ -405,14 +365,9 @@ pub const TtyConversation = struct {
                 .nodeId = self.info.node_id,
             },
             .tty_data,
-            response,
-            true,
-            null,
+            params_json,
+            false,
         );
-        defer self.client.allocator.free(response_envelope);
-
-        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
-        const routed_response = try self.client.frame_router.takePayloadForRequest(self.info.conversation_id, null);
         defer self.client.allocator.free(routed_response);
     }
 
@@ -443,11 +398,7 @@ pub const TtyConversation = struct {
         );
         defer self.client.allocator.free(envelope_json);
 
-        const response = try self.lease.client.request("pane.followTail", params_json);
-        defer self.client.allocator.free(response);
-
-        const response_envelope = try protocol.allocConversationEnvelope(
-            self.client.allocator,
+        const routed_response = try self.client.sendEnvelopeAndWait(
             self.info.conversation_id,
             null,
             .{
@@ -455,14 +406,9 @@ pub const TtyConversation = struct {
                 .nodeId = self.info.node_id,
             },
             .tty_control,
-            response,
+            params_json,
             true,
-            null,
         );
-        defer self.client.allocator.free(response_envelope);
-
-        try self.client.frame_router.pushEnvelopeBytes(response_envelope);
-        const routed_response = try self.client.frame_router.takePayloadForRequest(self.info.conversation_id, null);
         defer self.client.allocator.free(routed_response);
     }
 
@@ -479,9 +425,13 @@ pub const TtyConversation = struct {
 
 pub const ConversationClient = struct {
     allocator: std.mem.Allocator,
-    client_pool: CompatibilityClientPool,
+    document_path: []u8,
+    client_pool: ?CompatibilityClientPool = null,
+    native_h3wt_session: ?*NativeH3wtSession = null,
     frame_router: conversation_router.ConversationRouter,
     next_conversation_id: u64 = 1,
+    next_request_id: u64 = 1,
+    request_id_mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !ConversationClient {
         return try initForDocument(allocator, transport_spec, protocol.default_document_path);
@@ -492,25 +442,47 @@ pub const ConversationClient = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !ConversationClient {
-        return .{
+        var client = ConversationClient{
             .allocator = allocator,
-            .client_pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path),
+            .document_path = try allocator.dupe(u8, document_path),
             .frame_router = conversation_router.ConversationRouter.init(allocator),
         };
+        errdefer allocator.free(client.document_path);
+        errdefer client.frame_router.deinit();
+
+        var address = try transport.Address.parse(allocator, transport_spec);
+        defer address.deinit(allocator);
+
+        switch (address.target) {
+            .h3wt => |h3wt| {
+                client.native_h3wt_session = try NativeH3wtSession.init(
+                    allocator,
+                    h3wt,
+                    &client.frame_router,
+                );
+            },
+            else => {
+                client.client_pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path);
+            },
+        }
+
+        return client;
     }
 
     pub fn deinit(self: *ConversationClient) void {
+        if (self.native_h3wt_session) |session| session.deinit();
+        if (self.client_pool) |*pool| pool.deinit();
         self.frame_router.deinit();
-        self.client_pool.deinit();
+        self.allocator.free(self.document_path);
     }
 
     pub fn documentPath(self: *const ConversationClient) []const u8 {
-        return self.client_pool.documentPath();
+        return self.document_path;
     }
 
     pub fn request(self: *ConversationClient, method: []const u8, params_json: []const u8) ![]u8 {
         return try self.requestTarget(.{
-            .documentPath = self.client_pool.documentPath(),
+            .documentPath = self.document_path,
         }, method, params_json);
     }
 
@@ -534,7 +506,7 @@ pub const ConversationClient = struct {
             .client = self,
             .conversation_id = conversation_id,
             .target = .{
-                .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.client_pool.documentPath()),
+                .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.document_path),
                 .nodeId = target.nodeId,
                 .selector = if (target.selector) |value| try self.allocator.dupe(u8, value) else null,
             },
@@ -546,10 +518,8 @@ pub const ConversationClient = struct {
         target: protocol.RequestTarget,
         options: TtyOpenOptions,
     ) !TtyConversation {
-        var lease = try self.client_pool.checkout();
-        errdefer lease.deinit();
-        var resolved = try resolveTtyTarget(self.allocator, lease.client, .{
-            .documentPath = target.documentPath orelse self.client_pool.documentPath(),
+        var resolved = try resolveTtyTarget(self, .{
+            .documentPath = target.documentPath orelse self.document_path,
             .nodeId = target.nodeId,
             .selector = target.selector,
         });
@@ -574,7 +544,6 @@ pub const ConversationClient = struct {
             },
             .session_name = resolved.session_name,
             .pane_id = resolved.pane_id,
-            .lease = lease,
         };
     }
 
@@ -582,6 +551,50 @@ pub const ConversationClient = struct {
         const id = try std.fmt.allocPrint(self.allocator, "c-{d}", .{self.next_conversation_id});
         self.next_conversation_id += 1;
         return id;
+    }
+
+    fn nextRpcRequestId(self: *ConversationClient) u64 {
+        self.request_id_mutex.lock();
+        defer self.request_id_mutex.unlock();
+        const id = self.next_request_id;
+        self.next_request_id += 1;
+        return id;
+    }
+
+    fn sendEnvelopeAndWait(
+        self: *ConversationClient,
+        conversation_id: []const u8,
+        request_id: ?u64,
+        target: protocol.RequestTarget,
+        kind: protocol.ConversationKind,
+        payload_json: []const u8,
+        fin: bool,
+    ) ![]u8 {
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.allocator,
+            conversation_id,
+            request_id,
+            target,
+            kind,
+            payload_json,
+            fin,
+            null,
+        );
+        defer self.allocator.free(envelope_json);
+
+        if (self.native_h3wt_session) |session| {
+            try session.sendEnvelope(envelope_json);
+        } else if (self.client_pool) |*pool| {
+            var lease = try pool.checkout();
+            defer lease.deinit();
+            const response_envelope = try lease.client.requestJson(envelope_json);
+            defer self.allocator.free(response_envelope);
+            try self.frame_router.pushEnvelopeBytes(response_envelope);
+        } else {
+            return error.MissingConversationTransport;
+        }
+
+        return try self.frame_router.waitForPayloadForRequest(conversation_id, request_id);
     }
 };
 
@@ -598,15 +611,82 @@ const ResolvedTtyTarget = struct {
     }
 };
 
-fn resolveTtyTarget(
+const NativeH3wtSession = struct {
     allocator: std.mem.Allocator,
-    rpc_client: *Client,
+    router: *conversation_router.ConversationRouter,
+    process: transport.ProcessSession,
+    write_mutex: std.Thread.Mutex = .{},
+    reader_thread: ?std.Thread = null,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        h3wt: transport.Address.H3wtAddress,
+        router: *conversation_router.ConversationRouter,
+    ) !*NativeH3wtSession {
+        const session = try allocator.create(NativeH3wtSession);
+        errdefer allocator.destroy(session);
+
+        session.* = .{
+            .allocator = allocator,
+            .router = router,
+            .process = try transport.ProcessSession.initH3wtConversation(allocator, h3wt),
+        };
+        errdefer {
+            session.process.close();
+        }
+
+        session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
+        return session;
+    }
+
+    fn deinit(self: *NativeH3wtSession) void {
+        self.router.close();
+        self.write_mutex.lock();
+        self.process.stdin_file.close();
+        self.write_mutex.unlock();
+        _ = self.process.child.kill() catch {};
+        if (self.reader_thread) |thread| thread.join();
+        self.process.stdout_file.close();
+        _ = self.process.child.wait() catch {};
+        self.allocator.destroy(self);
+    }
+
+    fn sendEnvelope(self: *NativeH3wtSession, envelope_json: []const u8) !void {
+        self.write_mutex.lock();
+        defer self.write_mutex.unlock();
+        try self.process.writeAll(envelope_json);
+        try self.process.writeAll("\n");
+    }
+
+    fn readerMain(self: *NativeH3wtSession) void {
+        self.readerLoop() catch {};
+        self.router.close();
+    }
+
+    fn readerLoop(self: *NativeH3wtSession) !void {
+        var reader = transport.MessageReader.init(self.allocator);
+        defer reader.deinit();
+
+        while (true) {
+            const line = try reader.readMessageLine(&self.process, transport.max_message_bytes) orelse break;
+            defer self.allocator.free(line);
+            if (line.len == 0) continue;
+            self.router.pushEnvelopeBytes(line) catch |err| switch (err) {
+                error.UnknownConversation => {},
+                else => return err,
+            };
+        }
+    }
+};
+
+fn resolveTtyTarget(
+    client: *ConversationClient,
     target: protocol.RequestTarget,
 ) !ResolvedTtyTarget {
-    const response = try rpc_client.requestTarget(target, "node.get", "{}");
-    defer allocator.free(response);
+    const response = try client.requestTarget(target, "node.get", "{}");
+    defer client.allocator.free(response);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{
+    const parsed = try std.json.parseFromSlice(std.json.Value, client.allocator, response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
@@ -631,15 +711,15 @@ fn resolveTtyTarget(
     const pane_id_value = source_value.object.get("paneId");
 
     return .{
-        .document_path = try allocator.dupe(u8, target.documentPath orelse rpc_client.document_path),
+        .document_path = try client.allocator.dupe(u8, target.documentPath orelse client.document_path),
         .node_id = @intCast(node_id_value.integer),
-        .session_name = try allocator.dupe(u8, session_name_value.string),
+        .session_name = try client.allocator.dupe(u8, session_name_value.string),
         .pane_id = if (pane_id_value) |value|
             if (value == .string)
-                try allocator.dupe(u8, value.string)
+                try client.allocator.dupe(u8, value.string)
             else
                 return error.InvalidResponse
         else
-            try allocator.dupe(u8, ""),
+            try client.allocator.dupe(u8, ""),
     };
 }

@@ -33,6 +33,9 @@ pub const OwnedEnvelope = struct {
 pub const ConversationRouter = struct {
     allocator: std.mem.Allocator,
     mailboxes: std.array_list.Managed(Mailbox),
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+    closed: bool = false,
 
     const Mailbox = struct {
         conversation_id: []u8,
@@ -60,16 +63,21 @@ pub const ConversationRouter = struct {
     }
 
     pub fn deinit(self: *ConversationRouter) void {
+        self.close();
         for (self.mailboxes.items) |*mailbox| mailbox.deinit(self.allocator);
         self.mailboxes.deinit();
     }
 
     pub fn registerConversation(self: *ConversationRouter, conversation_id: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.mailboxIndex(conversation_id) != null) return;
         try self.mailboxes.append(try Mailbox.init(self.allocator, conversation_id));
     }
 
     pub fn unregisterConversation(self: *ConversationRouter, conversation_id: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const index = self.mailboxIndex(conversation_id) orelse return;
         var mailbox = self.mailboxes.orderedRemove(index);
         mailbox.deinit(self.allocator);
@@ -82,11 +90,51 @@ pub const ConversationRouter = struct {
     }
 
     pub fn pushEnvelope(self: *ConversationRouter, envelope: protocol.ConversationEnvelope) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const index = self.mailboxIndex(envelope.conversationId) orelse return error.UnknownConversation;
         try self.mailboxes.items[index].envelopes.append(try ownedEnvelopeFromBorrowed(self.allocator, envelope));
+        self.condition.broadcast();
     }
 
     pub fn takeEnvelope(
+        self: *ConversationRouter,
+        conversation_id: []const u8,
+        request_id: ?u64,
+    ) !OwnedEnvelope {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.takeEnvelopeLocked(conversation_id, request_id);
+    }
+
+    pub fn waitForEnvelope(
+        self: *ConversationRouter,
+        conversation_id: []const u8,
+        request_id: ?u64,
+    ) !OwnedEnvelope {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        while (true) {
+            if (self.takeEnvelopeLocked(conversation_id, request_id)) |envelope| {
+                return envelope;
+            } else |err| switch (err) {
+                error.ConversationResponseNotFound => {},
+                else => return err,
+            }
+
+            if (self.closed) return error.EndOfStream;
+            self.condition.wait(&self.mutex);
+        }
+    }
+
+    pub fn close(self: *ConversationRouter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.closed = true;
+        self.condition.broadcast();
+    }
+
+    fn takeEnvelopeLocked(
         self: *ConversationRouter,
         conversation_id: []const u8,
         request_id: ?u64,
@@ -107,6 +155,19 @@ pub const ConversationRouter = struct {
         request_id: ?u64,
     ) ![]u8 {
         var envelope = try self.takeEnvelope(conversation_id, request_id);
+        defer envelope.deinit(self.allocator);
+
+        const payload_json = envelope.payload_json;
+        envelope.payload_json = try self.allocator.dupe(u8, "");
+        return payload_json;
+    }
+
+    pub fn waitForPayloadForRequest(
+        self: *ConversationRouter,
+        conversation_id: []const u8,
+        request_id: ?u64,
+    ) ![]u8 {
+        var envelope = try self.waitForEnvelope(conversation_id, request_id);
         defer envelope.deinit(self.allocator);
 
         const payload_json = envelope.payload_json;

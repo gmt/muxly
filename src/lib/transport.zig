@@ -354,6 +354,28 @@ pub const ProcessSession = struct {
         return try spawn(allocator, argv.items);
     }
 
+    pub fn initH3wtConversation(allocator: std.mem.Allocator, h3wt: Address.H3wtAddress) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h3wt.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h3wt-session-client");
+        try argv.append("--host");
+        try argv.append(h3wt.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(h3wt.path);
+        if (h3wt.certificate_hash) |hash| {
+            try argv.append("--sha256");
+            try argv.append(hash);
+        }
+        return try spawn(allocator, argv.items);
+    }
+
     pub fn close(self: *ProcessSession) void {
         self.stdin_file.close();
         self.stdout_file.close();

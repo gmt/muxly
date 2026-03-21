@@ -18,6 +18,7 @@ enum Command {
     HttpClient(HttpClientArgs),
     HttpServer(HttpServerArgs),
     H3wtClient(H3wtClientArgs),
+    H3wtSessionClient(H3wtClientArgs),
     H3wtServer(H3wtServerArgs),
 }
 
@@ -81,6 +82,7 @@ async fn real_main() -> Result<()> {
         Command::HttpClient(args) => run_http_client(args).await,
         Command::HttpServer(args) => run_http_server(args).await,
         Command::H3wtClient(args) => run_h3wt_client(args).await,
+        Command::H3wtSessionClient(args) => run_h3wt_session_client(args).await,
         Command::H3wtServer(args) => run_h3wt_server(args).await,
     }
 }
@@ -123,6 +125,14 @@ fn parse_args() -> Result<Command> {
             ready_file: PathBuf::from(required(&values, "ready-file")?),
         })),
         "h3wt-client" => Ok(Command::H3wtClient(H3wtClientArgs {
+            host: required(&values, "host")?,
+            port: required(&values, "port")?
+                .parse()
+                .context("invalid --port")?,
+            path: required(&values, "path")?,
+            sha256: values.get("sha256").cloned(),
+        })),
+        "h3wt-session-client" => Ok(Command::H3wtSessionClient(H3wtClientArgs {
             host: required(&values, "host")?,
             port: required(&values, "port")?
                 .parse()
@@ -277,6 +287,73 @@ async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
         stdout.write_all(&response).await?;
         stdout.write_all(b"\n").await?;
         stdout.flush().await?;
+    }
+
+    connection.close(VarInt::from_u32(0), b"muxly client done");
+    let _ = timeout(Duration::from_secs(1), connection.closed()).await;
+
+    Ok(())
+}
+
+async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let client_config = build_h3wt_client_config(&args.host, args.sha256.as_deref()).await?;
+    let endpoint = Endpoint::client(client_config)?;
+    let url = format!(
+        "https://{}{}{}",
+        authority(&args.host, args.port),
+        args.path,
+        ""
+    );
+    let connection = timeout(Duration::from_secs(5), endpoint.connect(&url))
+        .await
+        .context("timed out while connecting WebTransport session")??;
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
+    let mut tasks = Vec::new();
+
+    while let Some(request) = read_line_message(&mut stdin).await? {
+        trace(&format!(
+            "h3wt session client request bytes={}",
+            request.len()
+        ));
+        let connection = connection.clone();
+        let stdout = stdout.clone();
+        tasks.push(tokio::spawn(async move {
+            let stream = timeout(Duration::from_secs(5), connection.open_bi())
+                .await
+                .context("timed out while opening WebTransport request stream")??;
+            let (mut send_stream, recv_stream) =
+                timeout(Duration::from_secs(5), stream)
+                    .await
+                    .context("timed out while awaiting WebTransport request stream readiness")??;
+
+            send_stream.write_all(&request).await?;
+            send_stream.write_all(b"\n").await?;
+            send_stream.flush().await?;
+            send_stream.finish().await?;
+
+            let mut recv_reader = BufReader::new(recv_stream);
+            let response = read_line_message(&mut recv_reader)
+                .await?
+                .ok_or_else(|| anyhow!("missing WebTransport session response body"))?;
+            trace(&format!(
+                "h3wt session client response bytes={}",
+                response.len()
+            ));
+
+            let mut stdout = stdout.lock().await;
+            stdout.write_all(&response).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+            Result::<()>::Ok(())
+        }));
+    }
+
+    for task in tasks {
+        task.await??;
     }
 
     connection.close(VarInt::from_u32(0), b"muxly client done");
