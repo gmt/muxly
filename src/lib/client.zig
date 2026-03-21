@@ -265,39 +265,167 @@ fn transportModeForAddress(address: transport.Address) CompatibilityTransportMod
     };
 }
 
-pub const RpcConversation = struct {
-    client: *ConversationClient,
+pub const RpcRequestPoll = union(enum) {
+    pending,
+    ready: []u8,
+    canceled,
+};
+
+const PendingHandleStatus = enum {
+    active,
+    canceled,
+    consumed,
+    released,
+};
+
+pub const PendingRpcRequest = struct {
+    state_owner: *ConversationClientState,
     conversation_id: []u8,
+    request_id: u64,
+    mutex: std.Thread.Mutex = .{},
+    status: PendingHandleStatus = .active,
+    released: bool = false,
+
+    pub fn poll(self: *PendingRpcRequest) !RpcRequestPoll {
+        switch (self.currentStatus()) {
+            .active => {},
+            .canceled => return .canceled,
+            .consumed => return error.RequestResultConsumed,
+            .released => return error.InvalidPendingRequest,
+        }
+
+        var envelope = self.state_owner.frame_router.takeEnvelope(
+            self.conversation_id,
+            self.request_id,
+        ) catch |err| switch (err) {
+            error.ConversationResponseNotFound => return .pending,
+            error.UnknownConversation => return switch (self.currentStatus()) {
+                .canceled => .canceled,
+                .consumed => error.RequestResultConsumed,
+                .released => error.InvalidPendingRequest,
+                .active => .pending,
+            },
+            else => return err,
+        };
+        return .{
+            .ready = try self.consumeEnvelope(&envelope),
+        };
+    }
+
+    pub fn wait(self: *PendingRpcRequest) ![]u8 {
+        switch (self.currentStatus()) {
+            .active => {},
+            .canceled => return error.RequestCanceled,
+            .consumed => return error.RequestResultConsumed,
+            .released => return error.InvalidPendingRequest,
+        }
+
+        var envelope = self.state_owner.frame_router.waitForEnvelope(
+            self.conversation_id,
+            self.request_id,
+        ) catch |err| switch (err) {
+            error.UnknownConversation, error.EndOfStream => return switch (self.currentStatus()) {
+                .canceled => error.RequestCanceled,
+                .consumed => error.RequestResultConsumed,
+                .released => error.InvalidPendingRequest,
+                .active => err,
+            },
+            else => return err,
+        };
+        return try self.consumeEnvelope(&envelope);
+    }
+
+    pub fn cancel(self: *PendingRpcRequest) void {
+        if (!self.setCanceled()) return;
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+    }
+
+    pub fn deinit(self: *PendingRpcRequest) void {
+        self.mutex.lock();
+        if (self.released) {
+            self.mutex.unlock();
+            return;
+        }
+        self.released = true;
+        if (self.status == .active) self.status = .canceled;
+        self.mutex.unlock();
+
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+        self.state_owner.allocator.free(self.conversation_id);
+    }
+
+    fn consumeEnvelope(
+        self: *PendingRpcRequest,
+        envelope: *conversation_router.OwnedEnvelope,
+    ) ![]u8 {
+        defer envelope.deinit(self.state_owner.allocator);
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+
+        switch (self.tryMarkConsumed()) {
+            .active => {},
+            .canceled => return error.RequestCanceled,
+            .consumed => return error.RequestResultConsumed,
+            .released => return error.InvalidPendingRequest,
+        }
+
+        if (envelope.conversation_error != null) {
+            return error.RequestFailed;
+        }
+
+        return try self.state_owner.allocator.dupe(u8, envelope.payload_json);
+    }
+
+    fn currentStatus(self: *PendingRpcRequest) PendingHandleStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return if (self.released) .released else self.status;
+    }
+
+    fn setCanceled(self: *PendingRpcRequest) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.released or self.status != .active) return false;
+        self.status = .canceled;
+        return true;
+    }
+
+    fn tryMarkConsumed(self: *PendingRpcRequest) PendingHandleStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.released) return .released;
+        switch (self.status) {
+            .active => {
+                self.status = .consumed;
+                return .active;
+            },
+            .canceled => return .canceled,
+            .consumed => return .consumed,
+            .released => unreachable,
+        }
+    }
+};
+
+pub const RpcConversation = struct {
+    state_owner: *ConversationClientState,
     target: protocol.RequestTarget,
 
     pub fn deinit(self: *RpcConversation) void {
-        self.client.frame_router.unregisterConversation(self.conversation_id);
-        self.client.allocator.free(self.conversation_id);
-        if (self.target.documentPath) |value| self.client.allocator.free(value);
-        if (self.target.selector) |value| self.client.allocator.free(value);
+        if (self.target.documentPath) |value| self.state_owner.allocator.free(value);
+        if (self.target.selector) |value| self.state_owner.allocator.free(value);
+    }
+
+    pub fn startRequest(
+        self: *RpcConversation,
+        method: []const u8,
+        params_json: []const u8,
+    ) !PendingRpcRequest {
+        return try self.state_owner.startRpcRequest(self.target, method, params_json);
     }
 
     pub fn request(self: *RpcConversation, method: []const u8, params_json: []const u8) ![]u8 {
-        const request_id = self.client.nextRpcRequestId();
-
-        var request_json = std.array_list.Managed(u8).init(self.client.allocator);
-        defer request_json.deinit();
-        try protocol.writeClientRequestTarget(
-            request_json.writer(),
-            request_id,
-            self.target,
-            method,
-            params_json,
-        );
-
-        return try self.client.sendEnvelopeAndWait(
-            self.conversation_id,
-            request_id,
-            self.target,
-            .rpc,
-            request_json.items,
-            true,
-        );
+        var pending = try self.startRequest(method, params_json);
+        defer pending.deinit();
+        return try pending.wait();
     }
 };
 
@@ -316,48 +444,33 @@ pub const TtySessionInfo = struct {
 };
 
 pub const TtyConversation = struct {
-    client: *ConversationClient,
+    state_owner: *ConversationClientState,
     info: TtySessionInfo,
     session_name: []u8,
     pane_id: []u8,
 
     pub fn deinit(self: *TtyConversation) void {
-        self.client.frame_router.unregisterConversation(self.info.conversation_id);
-        self.info.deinit(self.client.allocator);
-        self.client.allocator.free(self.session_name);
-        self.client.allocator.free(self.pane_id);
+        self.state_owner.frame_router.unregisterConversation(self.info.conversation_id);
+        self.info.deinit(self.state_owner.allocator);
+        self.state_owner.allocator.free(self.session_name);
+        self.state_owner.allocator.free(self.pane_id);
     }
 
     pub fn sendInput(self: *TtyConversation, input: []const u8) !void {
         if (self.pane_id.len == 0) return error.UnsupportedTtyBackendHandle;
 
-        const pane_id_json = try std.json.Stringify.valueAlloc(self.client.allocator, self.pane_id, .{});
-        defer self.client.allocator.free(pane_id_json);
-        const input_json = try std.json.Stringify.valueAlloc(self.client.allocator, input, .{});
-        defer self.client.allocator.free(input_json);
+        const pane_id_json = try std.json.Stringify.valueAlloc(self.state_owner.allocator, self.pane_id, .{});
+        defer self.state_owner.allocator.free(pane_id_json);
+        const input_json = try std.json.Stringify.valueAlloc(self.state_owner.allocator, input, .{});
+        defer self.state_owner.allocator.free(input_json);
         const params_json = try std.fmt.allocPrint(
-            self.client.allocator,
+            self.state_owner.allocator,
             "{{\"paneId\":{s},\"keys\":{s}}}",
             .{ pane_id_json, input_json },
         );
-        defer self.client.allocator.free(params_json);
+        defer self.state_owner.allocator.free(params_json);
 
-        const envelope_json = try protocol.allocConversationEnvelope(
-            self.client.allocator,
-            self.info.conversation_id,
-            null,
-            .{
-                .documentPath = self.info.document_path,
-                .nodeId = self.info.node_id,
-            },
-            .tty_data,
-            params_json,
-            false,
-            null,
-        );
-        defer self.client.allocator.free(envelope_json);
-
-        const routed_response = try self.client.sendEnvelopeAndWait(
+        const response = try self.state_owner.sendEnvelopeAndWait(
             self.info.conversation_id,
             null,
             .{
@@ -368,37 +481,22 @@ pub const TtyConversation = struct {
             params_json,
             false,
         );
-        defer self.client.allocator.free(routed_response);
+        defer self.state_owner.allocator.free(response);
     }
 
     pub fn setFollowTail(self: *TtyConversation, enabled: bool) !void {
         if (self.pane_id.len == 0) return error.UnsupportedTtyBackendHandle;
 
-        const pane_id_json = try std.json.Stringify.valueAlloc(self.client.allocator, self.pane_id, .{});
-        defer self.client.allocator.free(pane_id_json);
+        const pane_id_json = try std.json.Stringify.valueAlloc(self.state_owner.allocator, self.pane_id, .{});
+        defer self.state_owner.allocator.free(pane_id_json);
         const params_json = try std.fmt.allocPrint(
-            self.client.allocator,
+            self.state_owner.allocator,
             "{{\"paneId\":{s},\"enabled\":{s}}}",
             .{ pane_id_json, if (enabled) "true" else "false" },
         );
-        defer self.client.allocator.free(params_json);
+        defer self.state_owner.allocator.free(params_json);
 
-        const envelope_json = try protocol.allocConversationEnvelope(
-            self.client.allocator,
-            self.info.conversation_id,
-            null,
-            .{
-                .documentPath = self.info.document_path,
-                .nodeId = self.info.node_id,
-            },
-            .tty_control,
-            params_json,
-            true,
-            null,
-        );
-        defer self.client.allocator.free(envelope_json);
-
-        const routed_response = try self.client.sendEnvelopeAndWait(
+        const response = try self.state_owner.sendEnvelopeAndWait(
             self.info.conversation_id,
             null,
             .{
@@ -409,7 +507,7 @@ pub const TtyConversation = struct {
             params_json,
             true,
         );
-        defer self.client.allocator.free(routed_response);
+        defer self.state_owner.allocator.free(response);
     }
 
     pub fn requestSize(self: *TtyConversation, rows: u16, cols: u16) TtySize {
@@ -424,14 +522,7 @@ pub const TtyConversation = struct {
 };
 
 pub const ConversationClient = struct {
-    allocator: std.mem.Allocator,
-    document_path: []u8,
-    client_pool: ?CompatibilityClientPool = null,
-    native_h3wt_session: ?*NativeH3wtSession = null,
-    frame_router: conversation_router.ConversationRouter,
-    next_conversation_id: u64 = 1,
-    next_request_id: u64 = 1,
-    request_id_mutex: std.Thread.Mutex = .{},
+    state: *ConversationClientState,
 
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !ConversationClient {
         return try initForDocument(allocator, transport_spec, protocol.default_document_path);
@@ -442,47 +533,31 @@ pub const ConversationClient = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !ConversationClient {
-        var client = ConversationClient{
-            .allocator = allocator,
-            .document_path = try allocator.dupe(u8, document_path),
-            .frame_router = conversation_router.ConversationRouter.init(allocator),
+        return .{
+            .state = try ConversationClientState.init(allocator, transport_spec, document_path),
         };
-        errdefer allocator.free(client.document_path);
-        errdefer client.frame_router.deinit();
-
-        var address = try transport.Address.parse(allocator, transport_spec);
-        defer address.deinit(allocator);
-
-        switch (address.target) {
-            .h3wt => |h3wt| {
-                client.native_h3wt_session = try NativeH3wtSession.init(
-                    allocator,
-                    h3wt,
-                    &client.frame_router,
-                );
-            },
-            else => {
-                client.client_pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path);
-            },
-        }
-
-        return client;
     }
 
     pub fn deinit(self: *ConversationClient) void {
-        if (self.native_h3wt_session) |session| session.deinit();
-        if (self.client_pool) |*pool| pool.deinit();
-        self.frame_router.deinit();
-        self.allocator.free(self.document_path);
+        self.state.deinit();
     }
 
     pub fn documentPath(self: *const ConversationClient) []const u8 {
-        return self.document_path;
+        return self.state.document_path;
+    }
+
+    pub fn startRequest(
+        self: *ConversationClient,
+        target: protocol.RequestTarget,
+        method: []const u8,
+        params_json: []const u8,
+    ) !PendingRpcRequest {
+        return try self.state.startRpcRequest(target, method, params_json);
     }
 
     pub fn request(self: *ConversationClient, method: []const u8, params_json: []const u8) ![]u8 {
         return try self.requestTarget(.{
-            .documentPath = self.document_path,
+            .documentPath = self.state.document_path,
         }, method, params_json);
     }
 
@@ -492,23 +567,18 @@ pub const ConversationClient = struct {
         method: []const u8,
         params_json: []const u8,
     ) ![]u8 {
-        var conversation = try self.openRpc(target);
-        defer conversation.deinit();
-        return try conversation.request(method, params_json);
+        var pending = try self.startRequest(target, method, params_json);
+        defer pending.deinit();
+        return try pending.wait();
     }
 
     pub fn openRpc(self: *ConversationClient, target: protocol.RequestTarget) !RpcConversation {
-        const conversation_id = try self.nextConversationId();
-        errdefer self.allocator.free(conversation_id);
-        try self.frame_router.registerConversation(conversation_id);
-        errdefer self.frame_router.unregisterConversation(conversation_id);
         return .{
-            .client = self,
-            .conversation_id = conversation_id,
+            .state_owner = self.state,
             .target = .{
-                .documentPath = try self.allocator.dupe(u8, target.documentPath orelse self.document_path),
+                .documentPath = try self.state.allocator.dupe(u8, target.documentPath orelse self.state.document_path),
                 .nodeId = target.nodeId,
-                .selector = if (target.selector) |value| try self.allocator.dupe(u8, value) else null,
+                .selector = if (target.selector) |value| try self.state.allocator.dupe(u8, value) else null,
             },
         };
     }
@@ -518,42 +588,206 @@ pub const ConversationClient = struct {
         target: protocol.RequestTarget,
         options: TtyOpenOptions,
     ) !TtyConversation {
-        var resolved = try resolveTtyTarget(self, .{
-            .documentPath = target.documentPath orelse self.document_path,
-            .nodeId = target.nodeId,
-            .selector = target.selector,
-        });
-        errdefer resolved.deinit(self.allocator);
-        const conversation_id = try self.nextConversationId();
-        errdefer self.allocator.free(conversation_id);
-        try self.frame_router.registerConversation(conversation_id);
-        errdefer self.frame_router.unregisterConversation(conversation_id);
+        return try self.state.openTty(target, options);
+    }
+};
 
-        return .{
-            .client = self,
-            .info = .{
-                .conversation_id = conversation_id,
-                .document_path = resolved.document_path,
-                .node_id = resolved.node_id,
-                .requested_rows = options.rows,
-                .requested_cols = options.cols,
-                .size = .{
-                    .rows = options.rows orelse default_tty_rows,
-                    .cols = options.cols orelse default_tty_cols,
-                },
-            },
-            .session_name = resolved.session_name,
-            .pane_id = resolved.pane_id,
+const ResolvedTtyTarget = struct {
+    document_path: []u8,
+    node_id: u64,
+    session_name: []u8,
+    pane_id: []u8,
+
+    fn deinit(self: *ResolvedTtyTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.document_path);
+        allocator.free(self.session_name);
+        allocator.free(self.pane_id);
+    }
+};
+
+const CompatibilityWorkerJob = struct {
+    envelope_json: []u8,
+};
+
+const CompatibilityAsyncDispatcher = struct {
+    state_owner: *ConversationClientState,
+    allocator: std.mem.Allocator,
+    pool: CompatibilityClientPool,
+    jobs: std.array_list.Managed(CompatibilityWorkerJob),
+    worker_threads: std.array_list.Managed(std.Thread),
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+    closing: bool = false,
+
+    fn init(
+        state_owner: *ConversationClientState,
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        document_path: []const u8,
+    ) !*CompatibilityAsyncDispatcher {
+        const dispatcher = try allocator.create(CompatibilityAsyncDispatcher);
+        errdefer allocator.destroy(dispatcher);
+
+        dispatcher.* = .{
+            .state_owner = state_owner,
+            .allocator = allocator,
+            .pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path),
+            .jobs = std.array_list.Managed(CompatibilityWorkerJob).init(allocator),
+            .worker_threads = std.array_list.Managed(std.Thread).init(allocator),
         };
+        errdefer dispatcher.pool.deinit();
+        errdefer dispatcher.jobs.deinit();
+        errdefer dispatcher.worker_threads.deinit();
+
+        try dispatcher.jobs.ensureTotalCapacity(dispatcher.pool.max_connections * 4);
+        try dispatcher.worker_threads.ensureTotalCapacity(dispatcher.pool.max_connections);
+        try dispatcher.startWorkers();
+        return dispatcher;
     }
 
-    fn nextConversationId(self: *ConversationClient) ![]u8 {
+    fn deinit(self: *CompatibilityAsyncDispatcher) void {
+        self.mutex.lock();
+        self.closing = true;
+        for (self.jobs.items) |job| {
+            self.state_owner.completeFailedCompatibilityRequest(
+                job.envelope_json,
+                error.ClientShuttingDown,
+            );
+            self.allocator.free(job.envelope_json);
+        }
+        self.jobs.clearRetainingCapacity();
+        self.condition.broadcast();
+        self.mutex.unlock();
+
+        for (self.worker_threads.items) |thread| thread.join();
+        self.pool.deinit();
+        self.jobs.deinit();
+        self.worker_threads.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn submit(self: *CompatibilityAsyncDispatcher, envelope_json: []u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.closing) return error.ClientShuttingDown;
+        try self.jobs.append(.{
+            .envelope_json = envelope_json,
+        });
+        self.condition.signal();
+    }
+
+    fn startWorkers(self: *CompatibilityAsyncDispatcher) !void {
+        var count: usize = 0;
+        while (count < self.pool.max_connections) : (count += 1) {
+            const thread = try std.Thread.spawn(.{}, workerMain, .{self});
+            self.worker_threads.appendAssumeCapacity(thread);
+        }
+    }
+
+    fn workerMain(self: *CompatibilityAsyncDispatcher) void {
+        self.workerLoop() catch {};
+    }
+
+    fn workerLoop(self: *CompatibilityAsyncDispatcher) !void {
+        while (true) {
+            self.mutex.lock();
+            while (self.jobs.items.len == 0 and !self.closing) {
+                self.condition.wait(&self.mutex);
+            }
+            if (self.jobs.items.len == 0 and self.closing) {
+                self.mutex.unlock();
+                return;
+            }
+            const job = self.jobs.orderedRemove(0);
+            self.mutex.unlock();
+
+            var lease = self.pool.checkout() catch |err| {
+                self.state_owner.completeFailedCompatibilityRequest(job.envelope_json, err);
+                self.allocator.free(job.envelope_json);
+                continue;
+            };
+            defer lease.deinit();
+
+            const response_envelope = lease.client.requestJson(job.envelope_json) catch |err| {
+                self.state_owner.completeFailedCompatibilityRequest(job.envelope_json, err);
+                self.allocator.free(job.envelope_json);
+                continue;
+            };
+            defer self.allocator.free(response_envelope);
+            self.allocator.free(job.envelope_json);
+
+            self.state_owner.pushEnvelopeBytes(response_envelope) catch |err| switch (err) {
+                error.UnknownConversation => {},
+                else => return err,
+            };
+        }
+    }
+};
+
+const ConversationClientState = struct {
+    allocator: std.mem.Allocator,
+    document_path: []u8,
+    compatibility_dispatcher: ?*CompatibilityAsyncDispatcher = null,
+    native_h3wt_session: ?*NativeH3wtSession = null,
+    frame_router: conversation_router.ConversationRouter,
+    next_conversation_id: u64 = 1,
+    next_request_id: u64 = 1,
+    conversation_id_mutex: std.Thread.Mutex = .{},
+    request_id_mutex: std.Thread.Mutex = .{},
+
+    fn init(
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        document_path: []const u8,
+    ) !*ConversationClientState {
+        const state = try allocator.create(ConversationClientState);
+        errdefer allocator.destroy(state);
+
+        state.* = .{
+            .allocator = allocator,
+            .document_path = try allocator.dupe(u8, document_path),
+            .frame_router = conversation_router.ConversationRouter.init(allocator),
+        };
+        errdefer allocator.free(state.document_path);
+        errdefer state.frame_router.deinit();
+
+        var address = try transport.Address.parse(allocator, transport_spec);
+        defer address.deinit(allocator);
+
+        switch (address.target) {
+            .h3wt => |h3wt| {
+                state.native_h3wt_session = try NativeH3wtSession.init(state, h3wt);
+            },
+            else => {
+                state.compatibility_dispatcher = try CompatibilityAsyncDispatcher.init(
+                    state,
+                    allocator,
+                    transport_spec,
+                    document_path,
+                );
+            },
+        }
+
+        return state;
+    }
+
+    fn deinit(self: *ConversationClientState) void {
+        if (self.native_h3wt_session) |session| session.deinit();
+        if (self.compatibility_dispatcher) |dispatcher| dispatcher.deinit();
+        self.frame_router.deinit();
+        self.allocator.free(self.document_path);
+        self.allocator.destroy(self);
+    }
+
+    fn nextConversationId(self: *ConversationClientState) ![]u8 {
+        self.conversation_id_mutex.lock();
+        defer self.conversation_id_mutex.unlock();
         const id = try std.fmt.allocPrint(self.allocator, "c-{d}", .{self.next_conversation_id});
         self.next_conversation_id += 1;
         return id;
     }
 
-    fn nextRpcRequestId(self: *ConversationClient) u64 {
+    fn nextRpcRequestId(self: *ConversationClientState) u64 {
         self.request_id_mutex.lock();
         defer self.request_id_mutex.unlock();
         const id = self.next_request_id;
@@ -561,8 +795,45 @@ pub const ConversationClient = struct {
         return id;
     }
 
+    fn startRpcRequest(
+        self: *ConversationClientState,
+        target: protocol.RequestTarget,
+        method: []const u8,
+        params_json: []const u8,
+    ) !PendingRpcRequest {
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
+        const request_id = self.nextRpcRequestId();
+
+        var request_json = std.array_list.Managed(u8).init(self.allocator);
+        defer request_json.deinit();
+        try protocol.writeClientRequestTarget(
+            request_json.writer(),
+            request_id,
+            target,
+            method,
+            params_json,
+        );
+
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.allocator,
+            conversation_id,
+            request_id,
+            target,
+            .rpc,
+            request_json.items,
+            true,
+            null,
+        );
+
+        try self.submitEnvelopeOwned(envelope_json);
+        return .{ .state_owner = self, .conversation_id = conversation_id, .request_id = request_id };
+    }
+
     fn sendEnvelopeAndWait(
-        self: *ConversationClient,
+        self: *ConversationClientState,
         conversation_id: []const u8,
         request_id: ?u64,
         target: protocol.RequestTarget,
@@ -580,67 +851,127 @@ pub const ConversationClient = struct {
             fin,
             null,
         );
-        defer self.allocator.free(envelope_json);
 
-        if (self.native_h3wt_session) |session| {
-            try session.sendEnvelope(envelope_json);
-        } else if (self.client_pool) |*pool| {
-            var lease = try pool.checkout();
-            defer lease.deinit();
-            const response_envelope = try lease.client.requestJson(envelope_json);
-            defer self.allocator.free(response_envelope);
-            try self.frame_router.pushEnvelopeBytes(response_envelope);
-        } else {
-            return error.MissingConversationTransport;
-        }
+        try self.submitEnvelopeOwned(envelope_json);
 
-        return try self.frame_router.waitForPayloadForRequest(conversation_id, request_id);
+        var envelope = try self.frame_router.waitForEnvelope(conversation_id, request_id);
+        defer envelope.deinit(self.allocator);
+
+        if (envelope.conversation_error != null) return error.RequestFailed;
+        return try self.allocator.dupe(u8, envelope.payload_json);
     }
-};
 
-const ResolvedTtyTarget = struct {
-    document_path: []u8,
-    node_id: u64,
-    session_name: []u8,
-    pane_id: []u8,
+    fn completeFailedCompatibilityRequest(
+        self: *ConversationClientState,
+        request_envelope: []const u8,
+        err: anyerror,
+    ) void {
+        const parsed = protocol.parseConversationEnvelope(self.allocator, request_envelope) catch return;
+        defer parsed.deinit();
 
-    fn deinit(self: *ResolvedTtyTarget, allocator: std.mem.Allocator) void {
-        allocator.free(self.document_path);
-        allocator.free(self.session_name);
-        allocator.free(self.pane_id);
+        const message = std.fmt.allocPrint(self.allocator, "{s}", .{@errorName(err)}) catch return;
+        defer self.allocator.free(message);
+
+        const failure = protocol.allocConversationEnvelope(
+            self.allocator,
+            parsed.value.conversationId,
+            parsed.value.requestId,
+            parsed.value.target,
+            parsed.value.kind,
+            "null",
+            true,
+            .{
+                .code = -32603,
+                .message = message,
+            },
+        ) catch return;
+        defer self.allocator.free(failure);
+
+        self.frame_router.pushEnvelopeBytes(failure) catch |push_err| switch (push_err) {
+            error.UnknownConversation => {},
+            else => {},
+        };
+    }
+
+    fn pushEnvelopeBytes(self: *ConversationClientState, response_envelope: []const u8) !void {
+        try self.frame_router.pushEnvelopeBytes(response_envelope);
+    }
+
+    fn submitEnvelopeOwned(self: *ConversationClientState, envelope_json: []u8) !void {
+        if (self.native_h3wt_session) |session| {
+            defer self.allocator.free(envelope_json);
+            try session.sendEnvelope(envelope_json);
+            return;
+        }
+        if (self.compatibility_dispatcher) |dispatcher| {
+            errdefer self.allocator.free(envelope_json);
+            try dispatcher.submit(envelope_json);
+            return;
+        }
+        self.allocator.free(envelope_json);
+        return error.MissingConversationTransport;
+    }
+
+    fn openTty(
+        self: *ConversationClientState,
+        target: protocol.RequestTarget,
+        options: TtyOpenOptions,
+    ) !TtyConversation {
+        var resolved = try resolveTtyTarget(self, .{
+            .documentPath = target.documentPath orelse self.document_path,
+            .nodeId = target.nodeId,
+            .selector = target.selector,
+        });
+        errdefer resolved.deinit(self.allocator);
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
+
+        return .{
+            .state_owner = self,
+            .info = .{
+                .conversation_id = conversation_id,
+                .document_path = resolved.document_path,
+                .node_id = resolved.node_id,
+                .requested_rows = options.rows,
+                .requested_cols = options.cols,
+                .size = .{
+                    .rows = options.rows orelse default_tty_rows,
+                    .cols = options.cols orelse default_tty_cols,
+                },
+            },
+            .session_name = resolved.session_name,
+            .pane_id = resolved.pane_id,
+        };
     }
 };
 
 const NativeH3wtSession = struct {
-    allocator: std.mem.Allocator,
-    router: *conversation_router.ConversationRouter,
+    state_owner: *ConversationClientState,
     process: transport.ProcessSession,
     write_mutex: std.Thread.Mutex = .{},
     reader_thread: ?std.Thread = null,
 
     fn init(
-        allocator: std.mem.Allocator,
+        state_owner: *ConversationClientState,
         h3wt: transport.Address.H3wtAddress,
-        router: *conversation_router.ConversationRouter,
     ) !*NativeH3wtSession {
-        const session = try allocator.create(NativeH3wtSession);
-        errdefer allocator.destroy(session);
+        const session = try state_owner.allocator.create(NativeH3wtSession);
+        errdefer state_owner.allocator.destroy(session);
 
         session.* = .{
-            .allocator = allocator,
-            .router = router,
-            .process = try transport.ProcessSession.initH3wtConversation(allocator, h3wt),
+            .state_owner = state_owner,
+            .process = try transport.ProcessSession.initH3wtConversation(state_owner.allocator, h3wt),
         };
-        errdefer {
-            session.process.close();
-        }
+        errdefer session.process.close();
 
         session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
         return session;
     }
 
     fn deinit(self: *NativeH3wtSession) void {
-        self.router.close();
+        self.state_owner.frame_router.close();
         self.write_mutex.lock();
         self.process.stdin_file.close();
         self.write_mutex.unlock();
@@ -648,7 +979,7 @@ const NativeH3wtSession = struct {
         if (self.reader_thread) |thread| thread.join();
         self.process.stdout_file.close();
         _ = self.process.child.wait() catch {};
-        self.allocator.destroy(self);
+        self.state_owner.allocator.destroy(self);
     }
 
     fn sendEnvelope(self: *NativeH3wtSession, envelope_json: []const u8) !void {
@@ -660,18 +991,18 @@ const NativeH3wtSession = struct {
 
     fn readerMain(self: *NativeH3wtSession) void {
         self.readerLoop() catch {};
-        self.router.close();
+        self.state_owner.frame_router.close();
     }
 
     fn readerLoop(self: *NativeH3wtSession) !void {
-        var reader = transport.MessageReader.init(self.allocator);
+        var reader = transport.MessageReader.init(self.state_owner.allocator);
         defer reader.deinit();
 
         while (true) {
             const line = try reader.readMessageLine(&self.process, transport.max_message_bytes) orelse break;
-            defer self.allocator.free(line);
+            defer self.state_owner.allocator.free(line);
             if (line.len == 0) continue;
-            self.router.pushEnvelopeBytes(line) catch |err| switch (err) {
+            self.state_owner.frame_router.pushEnvelopeBytes(line) catch |err| switch (err) {
                 error.UnknownConversation => {},
                 else => return err,
             };
@@ -680,13 +1011,15 @@ const NativeH3wtSession = struct {
 };
 
 fn resolveTtyTarget(
-    client: *ConversationClient,
+    state_owner: *ConversationClientState,
     target: protocol.RequestTarget,
 ) !ResolvedTtyTarget {
-    const response = try client.requestTarget(target, "node.get", "{}");
-    defer client.allocator.free(response);
+    var pending = try state_owner.startRpcRequest(target, "node.get", "{}");
+    defer pending.deinit();
+    const response = try pending.wait();
+    defer state_owner.allocator.free(response);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, client.allocator, response, .{
+    const parsed = try std.json.parseFromSlice(std.json.Value, state_owner.allocator, response, .{
         .allocate = .alloc_always,
     });
     defer parsed.deinit();
@@ -711,15 +1044,15 @@ fn resolveTtyTarget(
     const pane_id_value = source_value.object.get("paneId");
 
     return .{
-        .document_path = try client.allocator.dupe(u8, target.documentPath orelse client.document_path),
+        .document_path = try state_owner.allocator.dupe(u8, target.documentPath orelse state_owner.document_path),
         .node_id = @intCast(node_id_value.integer),
-        .session_name = try client.allocator.dupe(u8, session_name_value.string),
+        .session_name = try state_owner.allocator.dupe(u8, session_name_value.string),
         .pane_id = if (pane_id_value) |value|
             if (value == .string)
-                try client.allocator.dupe(u8, value.string)
+                try state_owner.allocator.dupe(u8, value.string)
             else
                 return error.InvalidResponse
         else
-            try client.allocator.dupe(u8, ""),
+            try state_owner.allocator.dupe(u8, ""),
     };
 }
