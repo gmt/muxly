@@ -53,6 +53,16 @@ test "protocol document targets must be canonical absolute paths" {
     try std.testing.expect(muxly.protocol.isCanonicalDocumentPath("/docs/demo"));
     try std.testing.expect(!muxly.protocol.isCanonicalDocumentPath("/docs//demo"));
     try std.testing.expect(!muxly.protocol.isCanonicalDocumentPath("/docs/../demo"));
+
+    try muxly.protocol.validateRootDocumentOnlyTarget("/");
+    try std.testing.expectError(
+        error.RootDocumentOnlyTarget,
+        muxly.protocol.validateRootDocumentOnlyTarget("/docs/demo"),
+    );
+    try std.testing.expectError(
+        error.InvalidDocumentPath,
+        muxly.protocol.validateRootDocumentOnlyTarget("/docs/demo/"),
+    );
 }
 
 test "protocol client request writer emits document target" {

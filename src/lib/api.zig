@@ -618,6 +618,8 @@ pub fn sessionCreateAtInDocument(
     session_name: []const u8,
     command: ?[]const u8,
 ) ![]u8 {
+    try protocol.validateRootDocumentOnlyTarget(document_path);
+
     const session_name_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
     defer allocator.free(session_name_json);
 

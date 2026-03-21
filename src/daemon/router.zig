@@ -247,9 +247,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "session.create")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "session.create");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "session.create", document_path)) |response| return response;
         const parent_id: u64 = if (protocol.getInteger(parsed.value.params, "parentId")) |value| blk: {
             if (value < 0) {
                 return try buildError(allocator, parsed.value.id, .invalid_params, "parentId must be non-negative");
@@ -268,9 +266,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "window.create")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "window.create");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "window.create", document_path)) |response| return response;
         const target = protocol.getString(parsed.value.params, "target") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
         const window_name = protocol.getString(parsed.value.params, "windowName");
@@ -284,9 +280,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.split")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.split");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.split", document_path)) |response| return response;
         const target = protocol.getString(parsed.value.params, "target") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "target is required");
         const direction = protocol.getString(parsed.value.params, "direction") orelse "below";
@@ -300,9 +294,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.capture")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.capture");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.capture", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const capture = store.captureTmuxPane(pane_id) catch
@@ -319,9 +311,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.scroll")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.scroll");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.scroll", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const start_line = protocol.getInteger(parsed.value.params, "startLine") orelse
@@ -345,9 +335,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.resize")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.resize");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.resize", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const direction = protocol.getString(parsed.value.params, "direction") orelse
@@ -363,9 +351,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.focus")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.focus");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.focus", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         store.focusTmuxPane(pane_id) catch |err| {
@@ -377,9 +363,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.sendKeys")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.sendKeys");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.sendKeys", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const keys = protocol.getString(parsed.value.params, "keys") orelse
@@ -394,9 +378,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.close")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.close");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.close", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         store.closeTmuxPane(pane_id) catch |err| {
@@ -408,9 +390,7 @@ pub fn handleRequest(
     }
 
     if (std.mem.eql(u8, parsed.value.method, "pane.followTail")) {
-        if (!std.mem.eql(u8, document_path, protocol.default_document_path)) {
-            return try buildRootOnlyTargetError(allocator, parsed.value.id, "pane.followTail");
-        }
+        if (try rootOnlyTargetGuard(allocator, parsed.value.id, "pane.followTail", document_path)) |response| return response;
         const pane_id = protocol.getString(parsed.value.params, "paneId") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "paneId is required");
         const enabled = protocol.getBool(parsed.value.params, "enabled") orelse
@@ -610,6 +590,20 @@ fn buildRootOnlyTargetError(
     );
     defer allocator.free(message);
     return try buildError(allocator, id, .unsupported, message);
+}
+
+fn rootOnlyTargetGuard(
+    allocator: std.mem.Allocator,
+    id: ?std.json.Value,
+    method_name: []const u8,
+    document_path: []const u8,
+) !?[]u8 {
+    protocol.validateRootDocumentOnlyTarget(document_path) catch |err| switch (err) {
+        error.RootDocumentOnlyTarget => return try buildRootOnlyTargetError(allocator, id, method_name),
+        error.InvalidDocumentPath => return try buildError(allocator, id, .invalid_params, "target.documentPath must be a canonical absolute path"),
+        else => return err,
+    };
+    return null;
 }
 
 fn writeDocumentList(store: *store_mod.Store, writer: anytype) !void {

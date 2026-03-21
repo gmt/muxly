@@ -174,9 +174,15 @@ def main() -> None:
         assert capabilities["followTailSemantics"] == "stored-node-preference"
         assert capabilities["viewStateScope"] == "shared-document"
         assert capabilities["tmuxBackendMode"] == "hybrid-control-invalidation"
+        assert capabilities["tmuxTargetScope"] == "root-document-only"
         assert capabilities["supportsUnixSocket"] is True
         assert capabilities["supportsNamedPipes"] is False
-        assert capabilities["implementedTransports"] == ["unix-domain-socket"]
+        assert capabilities["implementedTransports"] == [
+            "unix-domain-socket",
+            "tcp",
+            "http",
+            "h3wt",
+        ]
 
         appended = run_cli(env, "node", "append", "1", "subdocument", "notes")
         assert appended["result"]["nodeId"] > 0

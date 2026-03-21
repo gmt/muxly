@@ -137,6 +137,13 @@ pub fn isCanonicalDocumentPath(document_path: []const u8) bool {
     return true;
 }
 
+pub fn validateRootDocumentOnlyTarget(document_path: []const u8) !void {
+    if (!isCanonicalDocumentPath(document_path)) return error.InvalidDocumentPath;
+    if (!std.mem.eql(u8, document_path, default_document_path)) {
+        return error.RootDocumentOnlyTarget;
+    }
+}
+
 /// Returns a string borrowed from `params` and therefore from the owning parsed
 /// JSON tree; callers must not keep it past that parsed value's lifetime.
 pub fn getString(params: ?std.json.Value, field_name: []const u8) ?[]const u8 {

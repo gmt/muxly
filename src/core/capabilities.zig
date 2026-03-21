@@ -13,6 +13,7 @@ pub const Capabilities = struct {
     follow_tail_semantics: []const u8 = "stored-node-preference",
     view_state_scope: []const u8 = "shared-document",
     tmux_backend_mode: []const u8 = "hybrid-control-invalidation",
+    tmux_target_scope: []const u8 = "root-document-only",
     supports_tty_sources: bool = true,
     supports_monitored_files: bool = true,
     supports_static_files: bool = true,
@@ -36,6 +37,7 @@ pub const Capabilities = struct {
         try writer.print("\"followTailSemantics\":\"{s}\",", .{self.follow_tail_semantics});
         try writer.print("\"viewStateScope\":\"{s}\",", .{self.view_state_scope});
         try writer.print("\"tmuxBackendMode\":\"{s}\",", .{self.tmux_backend_mode});
+        try writer.print("\"tmuxTargetScope\":\"{s}\",", .{self.tmux_target_scope});
         try writer.print("\"supportsTtySources\":{},", .{self.supports_tty_sources});
         try writer.print("\"supportsMonitoredFiles\":{},", .{self.supports_monitored_files});
         try writer.print("\"supportsStaticFiles\":{},", .{self.supports_static_files});

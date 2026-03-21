@@ -138,8 +138,13 @@ explicit, testable, and debuggable.
 - generic document/node/view/file methods now honor `target.documentPath`
 - tmux-backed methods remain rooted to `/` for now; targeting another document
   returns a structured unsupported error instead of mutating the root document
+- library/client surfaces that accept a document path for tmux-backed methods
+  should reject non-root targets early, but the server still performs the same
+  refusal when raw callers bypass that validation
 - `session.create` accepts an optional `parentId`; when omitted it attaches the
   new TTY leaf at the document root
+- tmux `sessionName`, `target`, and `paneId` fields are backend-scoped ids, not
+  TOM node targets and not TRDs
 - `pane.followTail` / `file.followTail` currently persist a node-level
   follow-tail preference only; they do **not** yet change capture-window or
   scrollback behavior on their own
@@ -147,6 +152,7 @@ explicit, testable, and debuggable.
   - `followTailSemantics: "stored-node-preference"`
   - `viewStateScope: "shared-document"`
   - `tmuxBackendMode: "hybrid-control-invalidation"`
+  - `tmuxTargetScope: "root-document-only"`
   - `supportsMouse: true`
 - the current `muxview` is an interactive viewer with keyboard-driven hierarchy
   traversal, region selection, drill-in/back-out navigation, elide/expand

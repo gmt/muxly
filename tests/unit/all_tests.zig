@@ -2,6 +2,7 @@ const std = @import("std");
 const muxly = @import("muxly");
 
 comptime {
+    _ = @import("api_tmux_target_test.zig");
     _ = @import("capabilities_test.zig");
     _ = @import("cli_args_test.zig");
     _ = @import("cli_target_arg_test.zig");

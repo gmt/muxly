@@ -99,6 +99,16 @@ Identity should also stay explicit:
 This keeps tmux useful as a source of truth without letting tmux's internal
 layout ontology become muxly's constitution by accident.
 
+The current target-scope contract is intentionally narrow:
+
+- tmux-backed methods remain rooted to the root document `/`
+- non-root document targets should be rejected by client/library validation when
+  a document path is present
+- the server still rejects the same calls for raw callers that bypass client
+  validation
+- tmux `sessionName`, `target`, and `paneId` values remain backend-scoped ids,
+  not TOM node targets and not TRDs
+
 ## Current verification path
 
 The current repo-local verification path for tmux-backed behavior is:
