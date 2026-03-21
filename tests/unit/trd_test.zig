@@ -15,6 +15,42 @@ test "trd parser keeps explicit server, document, and selector components" {
     try std.testing.expectEqualStrings("node/path/in/TOM", parsed.selector.?);
 }
 
+test "trd parsed properties expose the main semantic cuts without reparsing" {
+    var doc_only = try muxly.trd.parse(std.testing.allocator, "trd://welcome");
+    defer doc_only.deinit(std.testing.allocator);
+    const doc_only_props = doc_only.properties();
+    try std.testing.expect(doc_only_props.is_absolute);
+    try std.testing.expect(!doc_only_props.is_relative);
+    try std.testing.expect(!doc_only_props.has_explicit_server);
+    try std.testing.expect(doc_only_props.has_explicit_document);
+    try std.testing.expect(doc_only_props.is_document_only);
+    try std.testing.expect(!doc_only_props.is_node_targeted);
+    try std.testing.expect(!doc_only_props.inherits_transport);
+    try std.testing.expect(!doc_only_props.inherits_document);
+
+    var relative = try muxly.trd.parse(std.testing.allocator, "trd:#welcome/child");
+    defer relative.deinit(std.testing.allocator);
+    const relative_props = relative.properties();
+    try std.testing.expect(relative_props.is_relative);
+    try std.testing.expect(!relative_props.is_absolute);
+    try std.testing.expect(!relative_props.has_explicit_server);
+    try std.testing.expect(!relative_props.has_explicit_document);
+    try std.testing.expect(relative_props.has_selector);
+    try std.testing.expect(!relative_props.is_document_only);
+    try std.testing.expect(relative_props.is_node_targeted);
+    try std.testing.expect(relative_props.inherits_transport);
+    try std.testing.expect(relative_props.inherits_document);
+
+    var explicit_server = try muxly.trd.parse(std.testing.allocator, "trd://http|host.lan/rpc//docs/demo#left");
+    defer explicit_server.deinit(std.testing.allocator);
+    const explicit_server_props = explicit_server.properties();
+    try std.testing.expect(explicit_server_props.is_absolute);
+    try std.testing.expect(explicit_server_props.has_explicit_server);
+    try std.testing.expect(explicit_server_props.has_explicit_document);
+    try std.testing.expect(explicit_server_props.has_selector);
+    try std.testing.expect(explicit_server_props.is_node_targeted);
+}
+
 test "trd document shorthand resolves to the runtime default transport" {
     var parsed = try muxly.trd.parse(std.testing.allocator, "trd://welcome");
     defer parsed.deinit(std.testing.allocator);

@@ -18,6 +18,18 @@ pub const Parsed = struct {
     document_path: ?[]u8 = null,
     selector: ?[]u8 = null,
 
+    pub const Properties = struct {
+        is_relative: bool,
+        is_absolute: bool,
+        has_explicit_server: bool,
+        has_explicit_document: bool,
+        has_selector: bool,
+        is_document_only: bool,
+        is_node_targeted: bool,
+        inherits_transport: bool,
+        inherits_document: bool,
+    };
+
     pub const Kind = enum {
         absolute,
         relative,
@@ -30,15 +42,34 @@ pub const Parsed = struct {
         if (self.selector) |value| allocator.free(value);
     }
 
+    pub fn properties(self: Parsed) Properties {
+        const is_relative = self.kind == .relative;
+        const has_explicit_server = self.transport_code != null or self.endpoint != null;
+        const has_explicit_document = self.document_path != null;
+        const has_selector = self.selector != null;
+        return .{
+            .is_relative = is_relative,
+            .is_absolute = !is_relative,
+            .has_explicit_server = has_explicit_server,
+            .has_explicit_document = has_explicit_document,
+            .has_selector = has_selector,
+            .is_document_only = !has_selector,
+            .is_node_targeted = has_selector,
+            .inherits_transport = is_relative,
+            .inherits_document = is_relative,
+        };
+    }
+
     pub fn resolve(
         self: Parsed,
         allocator: std.mem.Allocator,
         current_transport_spec: []const u8,
         current_document_path: []const u8,
     ) !Resolved {
+        const props = self.properties();
         const transport_spec = switch (self.kind) {
             .relative => try allocator.dupe(u8, current_transport_spec),
-            .absolute => if (self.endpoint != null or self.transport_code != null)
+            .absolute => if (props.has_explicit_server)
                 try transportSpecFromReference(
                     allocator,
                     self.transport_code,
@@ -51,15 +82,21 @@ pub const Parsed = struct {
 
         const document_path = switch (self.kind) {
             .relative => try allocator.dupe(u8, current_document_path),
-            .absolute => if (self.document_path) |value|
-                try allocator.dupe(u8, value)
+            .absolute => if (props.has_explicit_document)
+                if (self.document_path) |value|
+                    try allocator.dupe(u8, value)
+                else
+                    unreachable
             else
                 try allocator.dupe(u8, protocol.default_document_path),
         };
         errdefer allocator.free(document_path);
 
-        const selector = if (self.selector) |value|
-            try allocator.dupe(u8, value)
+        const selector = if (props.has_selector)
+            if (self.selector) |value|
+                try allocator.dupe(u8, value)
+            else
+                unreachable
         else
             null;
         errdefer if (selector) |value| allocator.free(value);
