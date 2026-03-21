@@ -3,9 +3,10 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const build_options = @import("build_options");
+const limits = @import("../core/limits.zig");
 const unix_socket = @import("../platform/unix_socket.zig");
 
-pub const max_message_bytes: usize = 1 << 20;
+pub const max_message_bytes: usize = limits.default_max_message_bytes;
 pub const unsafe_tcp_prefix = "unsafe+";
 pub const unsafe_tcp_flag = "--i-know-this-is-unencrypted-and-unauthenticated";
 pub const http_default_path = "/rpc";

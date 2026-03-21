@@ -220,6 +220,9 @@ pub fn build(b: *std.Build) void {
         "test-transport",
         "Run HTTP and H3WT transport integration tests",
     );
+    const run_transport_bridge_unit_tests = b.addSystemCommand(&.{ "cargo", "test" });
+    run_transport_bridge_unit_tests.setCwd(b.path("tools/transport_bridge"));
+    test_transport_step.dependOn(&run_transport_bridge_unit_tests.step);
     test_transport_step.dependOn(&run_transport_tests.step);
 
     const test_ci_step = b.step(

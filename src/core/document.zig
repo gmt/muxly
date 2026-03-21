@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const ids = @import("ids.zig");
+const limits = @import("limits.zig");
 const muxml = @import("muxml.zig");
 const source_mod = @import("source.zig");
 const types = @import("types.zig");
@@ -20,6 +21,7 @@ pub const Document = struct {
     view_root_node_id: ?ids.NodeId = null,
     nodes: std.ArrayListUnmanaged(muxml.Node) = .{},
     elided_node_ids: std.ArrayListUnmanaged(ids.NodeId) = .{},
+    content_bytes: usize = 0,
     next_node_id: ids.NodeId,
 
     /// Initializes a new live document with a root `document` node.
@@ -73,14 +75,45 @@ pub const Document = struct {
 
     /// Appends text to an existing node content buffer.
     pub fn appendTextToNode(self: *Document, node_id: ids.NodeId, chunk: []const u8) !void {
+        return try self.appendTextToNodeWithLimit(
+            node_id,
+            chunk,
+            limits.default_max_document_content_bytes,
+        );
+    }
+
+    fn appendTextToNodeWithLimit(
+        self: *Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+        max_content_bytes: usize,
+    ) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        try self.reserveAdditionalContentBytes(chunk.len, max_content_bytes);
         try self.nodes.items[index].appendContent(self.allocator, chunk);
+        self.content_bytes += chunk.len;
     }
 
     /// Replaces a node's content.
     pub fn setNodeContent(self: *Document, node_id: ids.NodeId, content: []const u8) !void {
+        return try self.setNodeContentWithLimit(
+            node_id,
+            content,
+            limits.default_max_document_content_bytes,
+        );
+    }
+
+    fn setNodeContentWithLimit(
+        self: *Document,
+        node_id: ids.NodeId,
+        content: []const u8,
+        max_content_bytes: usize,
+    ) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        const existing_len = self.nodes.items[index].content.len;
+        try self.reserveReplacementContentBytes(existing_len, content.len, max_content_bytes);
         try self.nodes.items[index].setContent(self.allocator, content);
+        self.content_bytes = self.content_bytes - existing_len + content.len;
     }
 
     /// Replaces a node's title.
@@ -139,6 +172,7 @@ pub const Document = struct {
             }
         }
 
+        self.content_bytes -= self.nodes.items[index].content.len;
         self.nodes.items[index].deinit(self.allocator);
         _ = self.nodes.swapRemove(index);
 
@@ -360,6 +394,31 @@ pub const Document = struct {
         return null;
     }
 
+    fn reserveAdditionalContentBytes(
+        self: *const Document,
+        additional_bytes: usize,
+        max_content_bytes: usize,
+    ) !void {
+        if (self.content_bytes > max_content_bytes) return error.DocumentTooLarge;
+        if (additional_bytes > max_content_bytes - self.content_bytes) {
+            return error.DocumentTooLarge;
+        }
+    }
+
+    fn reserveReplacementContentBytes(
+        self: *const Document,
+        existing_bytes: usize,
+        replacement_bytes: usize,
+        max_content_bytes: usize,
+    ) !void {
+        if (existing_bytes > self.content_bytes) return error.DocumentTooLarge;
+        const retained_bytes = self.content_bytes - existing_bytes;
+        if (retained_bytes > max_content_bytes) return error.DocumentTooLarge;
+        if (replacement_bytes > max_content_bytes - retained_bytes) {
+            return error.DocumentTooLarge;
+        }
+    }
+
     fn nextNodeId(self: *Document) ids.NodeId {
         const id = self.next_node_id;
         self.next_node_id += 1;
@@ -455,4 +514,39 @@ fn writeEscapedXml(writer: anytype, value: []const u8) !void {
         '\'' => try writer.writeAll("&apos;"),
         else => try writer.writeByte(char),
     };
+}
+
+test "document content cap is enforced across node updates and appends" {
+    var document = try Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const first = try document.appendNode(
+        document.root_node_id,
+        .scroll_region,
+        "first",
+        .{ .none = {} },
+    );
+    const second = try document.appendNode(
+        document.root_node_id,
+        .scroll_region,
+        "second",
+        .{ .none = {} },
+    );
+
+    try document.setNodeContentWithLimit(first, "abcd", 6);
+    try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
+
+    try std.testing.expectError(
+        error.DocumentTooLarge,
+        document.setNodeContentWithLimit(second, "xyz", 6),
+    );
+    try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
+    try std.testing.expectEqualStrings("", document.findNode(second).?.content);
+
+    try std.testing.expectError(
+        error.DocumentTooLarge,
+        document.appendTextToNodeWithLimit(first, "123", 6),
+    );
+    try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
+    try std.testing.expectEqualStrings("abcd", document.findNode(first).?.content);
 }

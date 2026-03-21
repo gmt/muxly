@@ -13,6 +13,10 @@ use tokio::time::{timeout, Duration};
 use wtransport::tls::Sha256Digest;
 use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig, VarInt};
 
+// Stop-gap whole-message cap until the transport layer grows true async/lazy
+// payload streaming and runtime-configurable limits.
+const MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+
 #[derive(Debug)]
 enum Command {
     HttpClient(HttpClientArgs),
@@ -64,6 +68,7 @@ struct ReadyFile<'a> {
     sha256: Option<&'a str>,
 }
 
+#[derive(Debug)]
 struct HttpRequest {
     path: String,
     body: Vec<u8>,
@@ -549,7 +554,8 @@ where
     R: AsyncBufRead + Unpin,
 {
     let mut line = Vec::new();
-    let bytes_read = reader.read_until(b'\n', &mut line).await?;
+    let bytes_read =
+        read_line_message_with_cap(reader, &mut line, MAX_BUFFERED_MESSAGE_BYTES).await?;
     if bytes_read == 0 {
         return Ok(None);
     }
@@ -562,20 +568,35 @@ where
     Ok(Some(line))
 }
 
+async fn read_line_message_with_cap<R>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+    max_bytes: usize,
+) -> Result<usize>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut limited = reader.take((max_bytes + 1) as u64);
+    let bytes_read = limited.read_until(b'\n', buffer).await?;
+    if buffer.len() > max_bytes {
+        bail!("message exceeds buffered bridge cap of {max_bytes} bytes");
+    }
+    Ok(bytes_read)
+}
+
 async fn read_http_request<R>(reader: &mut R) -> Result<Option<HttpRequest>>
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut request_line = String::new();
+    let request_line;
     loop {
-        request_line.clear();
-        let bytes_read = reader.read_line(&mut request_line).await?;
-        if bytes_read == 0 {
+        let Some(line) = read_http_line(reader).await? else {
             return Ok(None);
-        }
-        if request_line == "\r\n" {
+        };
+        if line == "\r\n" {
             continue;
         }
+        request_line = line;
         break;
     }
 
@@ -591,18 +612,16 @@ where
 
     let mut content_length: Option<usize> = None;
     loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).await?;
-        if bytes_read == 0 {
+        let Some(line) = read_http_line(reader).await? else {
             bail!("unexpected EOF while reading HTTP headers");
-        }
+        };
         if line == "\r\n" {
             break;
         }
 
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(value.trim().parse().context("invalid Content-Length")?);
+                content_length = Some(parse_content_length(value.trim())?);
             }
         }
     }
@@ -620,28 +639,24 @@ async fn read_http_response<R>(reader: &mut R) -> Result<Vec<u8>>
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut status_line = String::new();
-    let bytes_read = reader.read_line(&mut status_line).await?;
-    if bytes_read == 0 {
+    let Some(status_line) = read_http_line(reader).await? else {
         bail!("unexpected EOF while reading HTTP response");
-    }
+    };
     if !status_line.starts_with("HTTP/1.1 200") {
         bail!("unexpected HTTP status line: {}", status_line.trim_end());
     }
 
     let mut content_length: Option<usize> = None;
     loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).await?;
-        if bytes_read == 0 {
+        let Some(line) = read_http_line(reader).await? else {
             bail!("unexpected EOF while reading HTTP response headers");
-        }
+        };
         if line == "\r\n" {
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(value.trim().parse().context("invalid Content-Length")?);
+                content_length = Some(parse_content_length(value.trim())?);
             }
         }
     }
@@ -650,6 +665,32 @@ where
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body).await?;
     Ok(body)
+}
+
+async fn read_http_line<R>(reader: &mut R) -> Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::new();
+    let bytes_read =
+        read_line_message_with_cap(reader, &mut line, MAX_BUFFERED_MESSAGE_BYTES).await?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8(line).context("HTTP line is not valid UTF-8")?,
+    ))
+}
+
+fn parse_content_length(value: &str) -> Result<usize> {
+    let content_length: usize = value.parse().context("invalid Content-Length")?;
+    if content_length > MAX_BUFFERED_MESSAGE_BYTES {
+        bail!(
+            "HTTP body exceeds buffered bridge cap of {} bytes",
+            MAX_BUFFERED_MESSAGE_BYTES
+        );
+    }
+    Ok(content_length)
 }
 
 async fn write_http_request<W>(writer: &mut W, path: &str, host: &str, body: &[u8]) -> Result<()>
@@ -704,5 +745,59 @@ where
 fn trace(message: &str) {
     if env::var_os("MUXLY_TRANSPORT_BRIDGE_TRACE").is_some() {
         eprintln!("[muxly-transport-bridge] {message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{duplex, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn read_http_request_rejects_content_length_over_bridge_cap() {
+        let oversized = MAX_BUFFERED_MESSAGE_BYTES + 1023;
+        let request =
+            format!("POST /rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {oversized}\r\n\r\n");
+        let (mut writer, reader) = duplex(1024);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(request.as_bytes()).await?;
+            writer.shutdown().await
+        });
+
+        let mut reader = BufReader::new(reader);
+        let err = read_http_request(&mut reader)
+            .await
+            .expect_err("oversized HTTP body should be rejected");
+        assert!(err
+            .to_string()
+            .contains("HTTP body exceeds buffered bridge cap"));
+
+        writer_task
+            .await
+            .expect("writer task should finish")
+            .expect("writer should succeed");
+    }
+
+    #[tokio::test]
+    async fn read_line_message_with_cap_rejects_oversized_messages() {
+        let (mut writer, reader) = duplex(64);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(b"abcdef").await?;
+            writer.shutdown().await
+        });
+
+        let mut reader = BufReader::new(reader);
+        let mut buffer = Vec::new();
+        let err = read_line_message_with_cap(&mut reader, &mut buffer, 5)
+            .await
+            .expect_err("oversized line should be rejected");
+        assert!(err
+            .to_string()
+            .contains("message exceeds buffered bridge cap"));
+
+        writer_task
+            .await
+            .expect("writer task should finish")
+            .expect("writer should succeed");
     }
 }
