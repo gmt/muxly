@@ -202,13 +202,15 @@ fn runLiveViewer(
         defer parsed_response.deinit();
 
         if (parsed_response.value != .object) continue;
-        const result = parsed_response.value.object.get("result") orelse continue;
+        const result = parsed_response.value.object.getPtr("result") orelse continue;
 
-        session.refreshRegions(result);
+        session.refreshRegions(result.*);
+        session.drainFocusedTtyOutput();
+        session.overlayFocusedTtyProjection(result);
 
         var rendered = std.array_list.Managed(u8).init(allocator);
         defer rendered.deinit();
-        muxly.viewer_render.renderProjectionValue(allocator, result, rendered.writer()) catch continue;
+        muxly.viewer_render.renderProjectionValue(allocator, result.*, rendered.writer()) catch continue;
 
         writeStatusBar(&rendered, &session, viewport.cols) catch {};
 

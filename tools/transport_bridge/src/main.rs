@@ -285,13 +285,12 @@ async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
         tokio::task::yield_now().await;
 
         let mut recv_reader = BufReader::new(recv_stream);
-        let response = read_line_message(&mut recv_reader)
-            .await?
-            .ok_or_else(|| anyhow!("missing WebTransport response body"))?;
-        trace(&format!("h3wt client response bytes={}", response.len()));
-        stdout.write_all(&response).await?;
-        stdout.write_all(b"\n").await?;
-        stdout.flush().await?;
+        while let Some(response) = read_line_message(&mut recv_reader).await? {
+            trace(&format!("h3wt client response bytes={}", response.len()));
+            stdout.write_all(&response).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
     }
 
     connection.close(VarInt::from_u32(0), b"muxly client done");
@@ -341,18 +340,17 @@ async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
             send_stream.finish().await?;
 
             let mut recv_reader = BufReader::new(recv_stream);
-            let response = read_line_message(&mut recv_reader)
-                .await?
-                .ok_or_else(|| anyhow!("missing WebTransport session response body"))?;
-            trace(&format!(
-                "h3wt session client response bytes={}",
-                response.len()
-            ));
+            while let Some(response) = read_line_message(&mut recv_reader).await? {
+                trace(&format!(
+                    "h3wt session client response bytes={}",
+                    response.len()
+                ));
 
-            let mut stdout = stdout.lock().await;
-            stdout.write_all(&response).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
+                let mut stdout = stdout.lock().await;
+                stdout.write_all(&response).await?;
+                stdout.write_all(b"\n").await?;
+                stdout.flush().await?;
+            }
             Result::<()>::Ok(())
         }));
     }
@@ -416,34 +414,48 @@ async fn handle_h3wt_session(
     let connection = session_request.accept().await?;
 
     loop {
-        let mut bi_stream = connection.accept_bi().await?;
-        let mut request_reader = BufReader::new(bi_stream.1);
-        let request = read_line_message(&mut request_reader)
-            .await?
-            .ok_or_else(|| anyhow!("missing WebTransport request body"))?;
-        trace(&format!("h3wt server request bytes={}", request.len()));
-        tokio::task::yield_now().await;
+        let bi_stream = connection.accept_bi().await?;
+        let upstream_unix = upstream_unix.clone();
+        tokio::spawn(async move {
+            let _ = handle_h3wt_bi_stream(bi_stream, upstream_unix).await;
+        });
+    }
+}
 
-        let upstream = UnixStream::connect(&upstream_unix).await.with_context(|| {
-            format!("unable to connect to upstream {}", upstream_unix.display())
-        })?;
-        let mut upstream = BufStream::new(upstream);
-        upstream.write_all(&request).await?;
-        upstream.write_all(b"\n").await?;
-        upstream.flush().await?;
+async fn handle_h3wt_bi_stream(
+    mut bi_stream: (wtransport::SendStream, wtransport::RecvStream),
+    upstream_unix: PathBuf,
+) -> Result<()> {
+    let mut request_reader = BufReader::new(bi_stream.1);
+    let request = read_line_message(&mut request_reader)
+        .await?
+        .ok_or_else(|| anyhow!("missing WebTransport request body"))?;
+    trace(&format!("h3wt server request bytes={}", request.len()));
+    tokio::task::yield_now().await;
 
-        let response = read_line_message(&mut upstream)
-            .await?
-            .ok_or_else(|| anyhow!("upstream closed before sending a response"))?;
+    let upstream = UnixStream::connect(&upstream_unix)
+        .await
+        .with_context(|| format!("unable to connect to upstream {}", upstream_unix.display()))?;
+    let mut upstream = BufStream::new(upstream);
+    upstream.write_all(&request).await?;
+    upstream.write_all(b"\n").await?;
+    upstream.flush().await?;
+
+    let mut wrote_response = false;
+    while let Some(response) = read_line_message(&mut upstream).await? {
         trace(&format!("h3wt server response bytes={}", response.len()));
-        drop(upstream);
+        wrote_response = true;
         tokio::task::yield_now().await;
         bi_stream.0.write_all(&response).await?;
         bi_stream.0.write_all(b"\n").await?;
         bi_stream.0.flush().await?;
-        bi_stream.0.finish().await?;
-        tokio::task::yield_now().await;
     }
+    if !wrote_response {
+        bail!("upstream closed before sending a response");
+    }
+    bi_stream.0.finish().await?;
+    tokio::task::yield_now().await;
+    Ok(())
 }
 
 async fn build_h3wt_client_config(_host: &str, sha256: Option<&str>) -> Result<ClientConfig> {

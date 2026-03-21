@@ -114,6 +114,19 @@ pub const TtySize = struct {
     cols: u16,
 };
 
+pub const TtyOutputChunk = union(enum) {
+    data: []u8,
+    overflow,
+    closed,
+};
+
+pub const TtyOutputPoll = union(enum) {
+    pending,
+    data: []u8,
+    overflow,
+    closed,
+};
+
 pub const CompatibilityTransportMode = enum {
     shared_connection,
     pooled_connections,
@@ -443,6 +456,134 @@ pub const TtySessionInfo = struct {
     }
 };
 
+const TtyOutputStreamStatus = enum {
+    active,
+    closed,
+    released,
+};
+
+pub const TtyOutputStream = struct {
+    state_owner: *ConversationClientState,
+    conversation_id: []u8,
+    document_path: []u8,
+    node_id: u64,
+    mutex: std.Thread.Mutex = .{},
+    status: TtyOutputStreamStatus = .active,
+    released: bool = false,
+
+    pub fn waitChunk(self: *TtyOutputStream) !TtyOutputChunk {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return .closed,
+            .released => return error.InvalidTtyOutputStream,
+        }
+
+        var envelope = self.state_owner.frame_router.waitForEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.UnknownConversation, error.EndOfStream => return .closed,
+            else => return err,
+        };
+        return try self.consumeEnvelope(&envelope);
+    }
+
+    pub fn pollChunk(self: *TtyOutputStream) !TtyOutputPoll {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return .closed,
+            .released => return error.InvalidTtyOutputStream,
+        }
+
+        var envelope = self.state_owner.frame_router.takeEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.ConversationResponseNotFound => return .pending,
+            error.UnknownConversation => return .closed,
+            else => return err,
+        };
+        return switch (try self.consumeEnvelope(&envelope)) {
+            .data => |bytes| .{ .data = bytes },
+            .overflow => .overflow,
+            .closed => .closed,
+        };
+    }
+
+    pub fn close(self: *TtyOutputStream) void {
+        if (!self.markClosed()) return;
+        self.state_owner.closeTtyOutputStream(
+            self.document_path,
+            self.node_id,
+            self.conversation_id,
+        ) catch {};
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+    }
+
+    pub fn deinit(self: *TtyOutputStream) void {
+        self.close();
+
+        self.mutex.lock();
+        if (self.released) {
+            self.mutex.unlock();
+            return;
+        }
+        self.released = true;
+        self.mutex.unlock();
+
+        self.state_owner.allocator.free(self.conversation_id);
+        self.state_owner.allocator.free(self.document_path);
+    }
+
+    fn consumeEnvelope(
+        self: *TtyOutputStream,
+        envelope: *conversation_router.OwnedEnvelope,
+    ) !TtyOutputChunk {
+        defer envelope.deinit(self.state_owner.allocator);
+
+        if (envelope.conversation_error != null) {
+            self.markClosed();
+            return .closed;
+        }
+        if (envelope.kind != .tty_data) return error.InvalidResponse;
+        if (envelope.fin and std.mem.eql(u8, envelope.payload_json, "null")) {
+            self.markClosed();
+            self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+            return .closed;
+        }
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.state_owner.allocator, envelope.payload_json, .{
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidResponse;
+
+        if (parsed.value.object.get("overflow")) |overflow_value| {
+            if (overflow_value == .bool and overflow_value.bool) return .overflow;
+        }
+
+        const chunk_value = parsed.value.object.get("chunk") orelse return error.InvalidResponse;
+        if (chunk_value != .string) return error.InvalidResponse;
+        return .{
+            .data = try self.state_owner.allocator.dupe(u8, chunk_value.string),
+        };
+    }
+
+    fn currentStatus(self: *TtyOutputStream) TtyOutputStreamStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return if (self.released) .released else self.status;
+    }
+
+    fn markClosed(self: *TtyOutputStream) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.released or self.status == .closed) return false;
+        self.status = .closed;
+        return true;
+    }
+};
+
 pub const TtyConversation = struct {
     state_owner: *ConversationClientState,
     info: TtySessionInfo,
@@ -518,6 +659,14 @@ pub const TtyConversation = struct {
             .cols = cols,
         };
         return self.info.size;
+    }
+
+    pub fn openOutputStream(self: *TtyConversation) !TtyOutputStream {
+        if (self.pane_id.len == 0) return error.UnsupportedTtyBackendHandle;
+        return try self.state_owner.openTtyOutputStream(
+            self.info.document_path,
+            self.info.node_id,
+        );
     }
 };
 
@@ -945,6 +1094,92 @@ const ConversationClientState = struct {
             .pane_id = resolved.pane_id,
         };
     }
+
+    fn openTtyOutputStream(
+        self: *ConversationClientState,
+        document_path: []const u8,
+        node_id: u64,
+    ) !TtyOutputStream {
+        if (self.native_h3wt_session == null) return error.UnsupportedTtyOutputStreamTransport;
+
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
+
+        const request_id = self.nextRpcRequestId();
+        var request_json = std.array_list.Managed(u8).init(self.allocator);
+        defer request_json.deinit();
+        try protocol.writeClientRequestTarget(
+            request_json.writer(),
+            request_id,
+            .{
+                .documentPath = document_path,
+                .nodeId = node_id,
+            },
+            "tty.stream.open",
+            "{}",
+        );
+
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.allocator,
+            conversation_id,
+            request_id,
+            .{
+                .documentPath = document_path,
+                .nodeId = node_id,
+            },
+            .rpc,
+            request_json.items,
+            false,
+            null,
+        );
+        errdefer self.allocator.free(envelope_json);
+        try self.submitEnvelopeOwned(envelope_json);
+
+        var ack = try self.frame_router.waitForEnvelope(conversation_id, request_id);
+        defer ack.deinit(self.allocator);
+        if (ack.conversation_error != null) {
+            self.frame_router.unregisterConversation(conversation_id);
+            return error.RequestFailed;
+        }
+
+        return .{
+            .state_owner = self,
+            .conversation_id = conversation_id,
+            .document_path = try self.allocator.dupe(u8, document_path),
+            .node_id = node_id,
+        };
+    }
+
+    fn closeTtyOutputStream(
+        self: *ConversationClientState,
+        document_path: []const u8,
+        node_id: u64,
+        stream_conversation_id: []const u8,
+    ) !void {
+        const stream_conversation_json = try std.json.Stringify.valueAlloc(self.allocator, stream_conversation_id, .{});
+        defer self.allocator.free(stream_conversation_json);
+        const params_json = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"streamConversationId\":{s}}}",
+            .{stream_conversation_json},
+        );
+        defer self.allocator.free(params_json);
+
+        var pending = try self.startRpcRequest(
+            .{
+                .documentPath = document_path,
+                .nodeId = node_id,
+            },
+            "tty.stream.close",
+            params_json,
+        );
+        defer pending.deinit();
+
+        const response = pending.wait() catch return;
+        defer self.allocator.free(response);
+    }
 };
 
 const NativeH3wtSession = struct {
@@ -1055,4 +1290,89 @@ fn resolveTtyTarget(
         else
             try state_owner.allocator.dupe(u8, ""),
     };
+}
+
+test "tty output stream consumes data overflow and close envelopes" {
+    var state = ConversationClientState{
+        .allocator = std.testing.allocator,
+        .document_path = try std.testing.allocator.dupe(u8, "/"),
+        .frame_router = conversation_router.ConversationRouter.init(std.testing.allocator),
+    };
+    defer {
+        state.frame_router.deinit();
+        std.testing.allocator.free(state.document_path);
+    }
+
+    const conversation_id = try std.testing.allocator.dupe(u8, "c-tty-stream");
+    try state.frame_router.registerConversation(conversation_id);
+
+    var stream = TtyOutputStream{
+        .state_owner = &state,
+        .conversation_id = conversation_id,
+        .document_path = try std.testing.allocator.dupe(u8, "/"),
+        .node_id = 7,
+    };
+    defer stream.deinit();
+
+    const data_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{
+            .documentPath = "/",
+            .nodeId = 7,
+        },
+        .tty_data,
+        "{\"chunk\":\"hello\"}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(data_frame);
+    try state.frame_router.pushEnvelopeBytes(data_frame);
+
+    const first = try stream.pollChunk();
+    switch (first) {
+        .data => |bytes| {
+            defer std.testing.allocator.free(bytes);
+            try std.testing.expectEqualStrings("hello", bytes);
+        },
+        else => return error.UnexpectedTestResult,
+    }
+
+    const overflow_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{
+            .documentPath = "/",
+            .nodeId = 7,
+        },
+        .tty_data,
+        "{\"overflow\":true}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(overflow_frame);
+    try state.frame_router.pushEnvelopeBytes(overflow_frame);
+
+    try std.testing.expect((try stream.pollChunk()) == .overflow);
+
+    const closed_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{
+            .documentPath = "/",
+            .nodeId = 7,
+        },
+        .tty_data,
+        "null",
+        true,
+        null,
+    );
+    defer std.testing.allocator.free(closed_frame);
+    try state.frame_router.pushEnvelopeBytes(closed_frame);
+
+    try std.testing.expect((try stream.waitChunk()) == .closed);
+    try std.testing.expect((try stream.pollChunk()) == .closed);
 }

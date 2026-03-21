@@ -3,8 +3,13 @@ const muxly = @import("muxly");
 const config_mod = @import("config.zig");
 const router = @import("router.zig");
 const store_mod = @import("state/store.zig");
+const protocol = muxly.protocol;
+const control_mode = muxly.daemon.tmux.control_mode;
+const tmux_events = muxly.daemon.tmux.events;
 
 const max_pending_requests_per_connection: usize = 32;
+const max_tty_output_chunk_bytes: usize = 16 * 1024;
+const max_tty_output_queue_bytes: usize = 4 * 1024 * 1024;
 
 pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     var thread_safe_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = allocator };
@@ -14,6 +19,8 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     defer store.deinit();
 
     const executor = try ServerExecutor.init(shared_allocator, &store);
+    const tty_stream_registry = try TtyStreamRegistry.init(shared_allocator);
+    defer tty_stream_registry.deinit();
 
     var listener = try muxly.transport.Listener.init(allocator, &config.transport);
     defer listener.deinit();
@@ -33,6 +40,7 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
             .allocator = shared_allocator,
             .store = &store,
             .executor = executor,
+            .tty_stream_registry = tty_stream_registry,
             .connection = connection,
             .single_request_per_connection = single_request_per_connection,
         }});
@@ -44,6 +52,7 @@ const ConnectionContext = struct {
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
     executor: *ServerExecutor,
+    tty_stream_registry: *TtyStreamRegistry,
     connection: std.net.Server.Connection,
     single_request_per_connection: bool,
 };
@@ -121,6 +130,224 @@ const ConnectionSession = struct {
 
         try self.stream.writeAll(bytes);
         try self.stream.writeAll("\n");
+    }
+};
+
+const TtyQueuedChunk = union(enum) {
+    data: []u8,
+    overflow: void,
+
+    fn deinit(self: *TtyQueuedChunk, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .data => |bytes| allocator.free(bytes),
+            .overflow => {},
+        }
+    }
+};
+
+const TtyStreamHandle = struct {
+    allocator: std.mem.Allocator,
+    conversation_id: []u8,
+    session_name: []u8,
+    pane_id: []u8,
+    queue: std.array_list.Managed(TtyQueuedChunk),
+    queued_bytes: usize = 0,
+    overflow_pending: bool = false,
+    closing: bool = false,
+    reader_done: bool = false,
+    mutex: std.Thread.Mutex = .{},
+    condition: std.Thread.Condition = .{},
+
+    const NextChunk = union(enum) {
+        data: []u8,
+        overflow,
+        closed,
+    };
+
+    fn init(
+        allocator: std.mem.Allocator,
+        conversation_id: []const u8,
+        session_name: []const u8,
+        pane_id: []const u8,
+    ) !*TtyStreamHandle {
+        const handle = try allocator.create(TtyStreamHandle);
+        errdefer allocator.destroy(handle);
+
+        handle.* = .{
+            .allocator = allocator,
+            .conversation_id = try allocator.dupe(u8, conversation_id),
+            .session_name = try allocator.dupe(u8, session_name),
+            .pane_id = try allocator.dupe(u8, pane_id),
+            .queue = std.array_list.Managed(TtyQueuedChunk).init(allocator),
+        };
+        return handle;
+    }
+
+    fn deinit(self: *TtyStreamHandle) void {
+        self.mutex.lock();
+        self.closing = true;
+        self.clearQueueLocked();
+        self.condition.broadcast();
+        self.mutex.unlock();
+
+        self.queue.deinit();
+        self.allocator.free(self.conversation_id);
+        self.allocator.free(self.session_name);
+        self.allocator.free(self.pane_id);
+        self.allocator.destroy(self);
+    }
+
+    fn requestClose(self: *TtyStreamHandle) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.closing = true;
+        self.clearQueueLocked();
+        self.condition.broadcast();
+    }
+
+    fn finishReader(self: *TtyStreamHandle) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.reader_done = true;
+        self.condition.broadcast();
+    }
+
+    fn enqueueNormalized(self: *TtyStreamHandle, chunk: []const u8) !void {
+        if (chunk.len == 0) return;
+        var start: usize = 0;
+        while (start < chunk.len) {
+            const end = @min(chunk.len, start + max_tty_output_chunk_bytes);
+            const part = try self.allocator.dupe(u8, chunk[start..end]);
+            errdefer self.allocator.free(part);
+            try self.enqueueOwnedChunk(.{ .data = part });
+            start = end;
+        }
+    }
+
+    fn enqueueOwnedChunk(self: *TtyStreamHandle, chunk: TtyQueuedChunk) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.closing) {
+            var owned = chunk;
+            owned.deinit(self.allocator);
+            return;
+        }
+
+        switch (chunk) {
+            .data => |bytes| {
+                while (self.queued_bytes + bytes.len > max_tty_output_queue_bytes) {
+                    if (self.dropOldestDataLocked()) {
+                        self.overflow_pending = true;
+                    } else break;
+                }
+                if (self.overflow_pending) {
+                    try self.queue.append(.{ .overflow = {} });
+                    self.overflow_pending = false;
+                }
+                try self.queue.append(.{ .data = bytes });
+                self.queued_bytes += bytes.len;
+            },
+            .overflow => {
+                try self.queue.append(.{ .overflow = {} });
+            },
+        }
+        self.condition.signal();
+    }
+
+    fn waitNextChunk(self: *TtyStreamHandle) !NextChunk {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        while (self.queue.items.len == 0 and !self.closing and !self.reader_done) {
+            self.condition.wait(&self.mutex);
+        }
+
+        if (self.queue.items.len == 0) return .closed;
+
+        const queued = self.queue.orderedRemove(0);
+        return switch (queued) {
+            .data => |bytes| blk: {
+                self.queued_bytes -= bytes.len;
+                break :blk .{ .data = bytes };
+            },
+            .overflow => .overflow,
+        };
+    }
+
+    fn dropOldestDataLocked(self: *TtyStreamHandle) bool {
+        for (self.queue.items, 0..) |queued, index| {
+            switch (queued) {
+                .data => |bytes| {
+                    self.queued_bytes -= bytes.len;
+                    self.allocator.free(bytes);
+                    _ = self.queue.orderedRemove(index);
+                    return true;
+                },
+                .overflow => {},
+            }
+        }
+        return false;
+    }
+
+    fn clearQueueLocked(self: *TtyStreamHandle) void {
+        for (self.queue.items) |*queued| queued.deinit(self.allocator);
+        self.queue.clearRetainingCapacity();
+        self.queued_bytes = 0;
+        self.overflow_pending = false;
+    }
+};
+
+const TtyStreamRegistry = struct {
+    allocator: std.mem.Allocator,
+    streams: std.array_list.Managed(*TtyStreamHandle),
+    mutex: std.Thread.Mutex = .{},
+
+    fn init(allocator: std.mem.Allocator) !*TtyStreamRegistry {
+        const registry = try allocator.create(TtyStreamRegistry);
+        errdefer allocator.destroy(registry);
+        registry.* = .{
+            .allocator = allocator,
+            .streams = std.array_list.Managed(*TtyStreamHandle).init(allocator),
+        };
+        return registry;
+    }
+
+    fn deinit(self: *TtyStreamRegistry) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.streams.items) |handle| handle.requestClose();
+        self.streams.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn register(self: *TtyStreamRegistry, handle: *TtyStreamHandle) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.streams.append(handle);
+    }
+
+    fn unregister(self: *TtyStreamRegistry, conversation_id: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.streams.items, 0..) |handle, index| {
+            if (std.mem.eql(u8, handle.conversation_id, conversation_id)) {
+                _ = self.streams.orderedRemove(index);
+                return;
+            }
+        }
+    }
+
+    fn requestClose(self: *TtyStreamRegistry, conversation_id: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.streams.items) |handle| {
+            if (std.mem.eql(u8, handle.conversation_id, conversation_id)) {
+                handle.requestClose();
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -304,6 +531,310 @@ const ServerExecutor = struct {
     }
 };
 
+const SpecialRequestKind = enum {
+    none,
+    tty_stream_open,
+    tty_stream_close,
+};
+
+const ResolvedTtyStreamTarget = struct {
+    conversation_id: []const u8,
+    request_id: ?u64,
+    target: ?protocol.RequestTarget,
+    document_path: []u8,
+    node_id: u64,
+    session_name: []u8,
+    pane_id: []u8,
+
+    fn deinit(self: *ResolvedTtyStreamTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.document_path);
+        allocator.free(self.session_name);
+        allocator.free(self.pane_id);
+    }
+};
+
+fn specialRequestKind(allocator: std.mem.Allocator, request_json: []const u8) !SpecialRequestKind {
+    const parsed = protocol.parseRequest(allocator, request_json) catch return .none;
+    defer parsed.deinit();
+
+    if (std.mem.eql(u8, parsed.value.method, "tty.stream.open")) return .tty_stream_open;
+    if (std.mem.eql(u8, parsed.value.method, "tty.stream.close")) return .tty_stream_close;
+    return .none;
+}
+
+fn handleTtyStreamOpen(
+    context: ConnectionContext,
+    session: *ConnectionSession,
+    request: *muxly.conversation_broker.DispatchRequest,
+) !void {
+    const response = switch (request.response_mode) {
+        .envelope => |value| value,
+        .json_rpc => {
+            const failure = try request.buildFailureFrame(
+                context.allocator,
+                "tty.stream.open requires a conversation transport",
+            );
+            defer context.allocator.free(failure.bytes);
+            try session.writeFrame(failure.bytes);
+            return;
+        },
+    };
+
+    if (!session.tryReservePendingSlot()) {
+        const failure = try request.buildFailureFrame(
+            context.allocator,
+            "connection has too many pending requests",
+        );
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    }
+    defer session.finishPendingRequest();
+
+    var resolved = resolveTtyStreamTarget(context.allocator, context.store, response, request.request_json) catch |err| {
+        const message = try std.fmt.allocPrint(
+            context.allocator,
+            "unable to open tty stream: {s}",
+            .{@errorName(err)},
+        );
+        defer context.allocator.free(message);
+
+        const failure = try request.buildFailureFrame(context.allocator, message);
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+    defer resolved.deinit(context.allocator);
+
+    const control = control_mode.ControlConnection.initAttach(
+        context.allocator,
+        resolved.session_name,
+    ) catch |err| {
+        const message = try std.fmt.allocPrint(
+            context.allocator,
+            "unable to attach tty stream backend: {s}",
+            .{@errorName(err)},
+        );
+        defer context.allocator.free(message);
+
+        const failure = try request.buildFailureFrame(context.allocator, message);
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+
+    const handle = try TtyStreamHandle.init(
+        context.allocator,
+        response.conversation_id,
+        resolved.session_name,
+        resolved.pane_id,
+    );
+    errdefer handle.deinit();
+    try context.tty_stream_registry.register(handle);
+    defer context.tty_stream_registry.unregister(handle.conversation_id);
+    defer handle.deinit();
+
+    var ack_json = std.array_list.Managed(u8).init(context.allocator);
+    defer ack_json.deinit();
+    try protocol.writeSuccess(
+        ack_json.writer(),
+        if (response.request_id) |value| .{ .integer = @intCast(value) } else null,
+        "{\"attached\":true,\"mode\":\"live-only\"}",
+    );
+    const ack = try protocol.allocConversationEnvelope(
+        context.allocator,
+        response.conversation_id,
+        response.request_id,
+        response.target,
+        .rpc,
+        ack_json.items,
+        false,
+        null,
+    );
+    defer context.allocator.free(ack);
+    try session.writeFrame(ack);
+
+    const reader_thread = try std.Thread.spawn(
+        .{},
+        ttyStreamReaderMain,
+        .{ handle, control },
+    );
+    defer reader_thread.join();
+
+    while (true) {
+        switch (try handle.waitNextChunk()) {
+            .closed => break,
+            .overflow => {
+                const frame = try protocol.allocConversationEnvelope(
+                    context.allocator,
+                    response.conversation_id,
+                    null,
+                    response.target,
+                    .tty_data,
+                    "{\"overflow\":true}",
+                    false,
+                    null,
+                );
+                defer context.allocator.free(frame);
+                session.writeFrame(frame) catch {
+                    handle.requestClose();
+                    break;
+                };
+            },
+            .data => |chunk| {
+                defer context.allocator.free(chunk);
+
+                const chunk_json = try std.json.Stringify.valueAlloc(context.allocator, chunk, .{});
+                defer context.allocator.free(chunk_json);
+                const payload_json = try std.fmt.allocPrint(
+                    context.allocator,
+                    "{{\"chunk\":{s}}}",
+                    .{chunk_json},
+                );
+                defer context.allocator.free(payload_json);
+
+                const frame = try protocol.allocConversationEnvelope(
+                    context.allocator,
+                    response.conversation_id,
+                    null,
+                    response.target,
+                    .tty_data,
+                    payload_json,
+                    false,
+                    null,
+                );
+                defer context.allocator.free(frame);
+                session.writeFrame(frame) catch {
+                    handle.requestClose();
+                    break;
+                };
+            },
+        }
+    }
+
+    const closed_frame = try protocol.allocConversationEnvelope(
+        context.allocator,
+        response.conversation_id,
+        null,
+        response.target,
+        .tty_data,
+        "null",
+        true,
+        null,
+    );
+    defer context.allocator.free(closed_frame);
+    session.writeFrame(closed_frame) catch {};
+}
+
+fn handleTtyStreamClose(
+    context: ConnectionContext,
+    session: *ConnectionSession,
+    request: *muxly.conversation_broker.DispatchRequest,
+) !void {
+    const parsed = try protocol.parseRequest(context.allocator, request.request_json);
+    defer parsed.deinit();
+
+    const stream_conversation_id = protocol.getString(parsed.value.params, "streamConversationId") orelse {
+        const failure = try request.buildFailureFrame(
+            context.allocator,
+            "streamConversationId is required",
+        );
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+
+    const closed = context.tty_stream_registry.requestClose(stream_conversation_id);
+    const result_json = try std.fmt.allocPrint(
+        context.allocator,
+        "{{\"ok\":true,\"closed\":{s}}}",
+        .{if (closed) "true" else "false"},
+    );
+    defer context.allocator.free(result_json);
+
+    const success = try request.buildSuccessFrameOwned(
+        context.allocator,
+        try context.allocator.dupe(u8, result_json),
+    );
+    defer context.allocator.free(success.bytes);
+    try session.writeFrame(success.bytes);
+}
+
+fn resolveTtyStreamTarget(
+    allocator: std.mem.Allocator,
+    store: *store_mod.Store,
+    response: muxly.conversation_broker.DispatchRequest.EnvelopeResponse,
+    request_json: []const u8,
+) !ResolvedTtyStreamTarget {
+    const parsed = try protocol.parseRequest(allocator, request_json);
+    defer parsed.deinit();
+
+    const document_path = try allocator.dupe(u8, try protocol.requestDocumentPath(parsed.value));
+    errdefer allocator.free(document_path);
+
+    const node_id_value = try protocol.requestTargetNodeId(parsed.value, "nodeId");
+    if (node_id_value < 0) return error.InvalidNodeTarget;
+    const node_id: u64 = @intCast(node_id_value);
+
+    const entry = try store.documentEntryForPath(document_path);
+    entry.mutex.lock();
+    defer entry.mutex.unlock();
+
+    const node = entry.document.findNode(node_id) orelse return error.UnknownNode;
+    const tty = switch (node.source) {
+        .tty => |value| value,
+        else => return error.InvalidSourceKind,
+    };
+    const pane_id = tty.pane_id orelse return error.MissingPaneId;
+
+    return .{
+        .conversation_id = response.conversation_id,
+        .request_id = response.request_id,
+        .target = response.target,
+        .document_path = document_path,
+        .node_id = node_id,
+        .session_name = try allocator.dupe(u8, tty.session_name),
+        .pane_id = try allocator.dupe(u8, pane_id),
+    };
+}
+
+fn ttyStreamReaderMain(handle: *TtyStreamHandle, initial_control: control_mode.ControlConnection) void {
+    var control = initial_control;
+    defer control.deinit();
+    defer handle.finishReader();
+
+    ttyStreamReaderLoop(handle, &control) catch {
+        handle.requestClose();
+    };
+}
+
+fn ttyStreamReaderLoop(handle: *TtyStreamHandle, control: *control_mode.ControlConnection) !void {
+    while (true) {
+        handle.mutex.lock();
+        const should_close = handle.closing;
+        handle.mutex.unlock();
+        if (should_close) return;
+
+        control.drainEvents(100, handle, ttyStreamHandleEvent) catch |err| switch (err) {
+            error.ControlModeExited => return,
+            else => return err,
+        };
+    }
+}
+
+fn ttyStreamHandleEvent(handle: *TtyStreamHandle, event: tmux_events.Event) !void {
+    switch (event) {
+        .pane_output => |pane_output| {
+            if (!std.mem.eql(u8, pane_output.pane_id, handle.pane_id)) return;
+            const normalized = try normalizeTmuxOutputChunk(handle.allocator, pane_output.payload);
+            defer handle.allocator.free(normalized);
+            try handle.enqueueNormalized(normalized);
+        },
+        .exit => return error.ControlModeExited,
+        else => {},
+    }
+}
+
 fn serveConnection(context: ConnectionContext) void {
     serveConnectionImpl(context) catch |err| {
         std.fs.File.stderr().deprecatedWriter().print("muxlyd connection error: {}\n", .{err}) catch {};
@@ -346,6 +877,23 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
                     var owned_dispatch = request_dispatch;
                     errdefer owned_dispatch.deinit();
 
+                    const special = try specialRequestKind(context.allocator, owned_dispatch.request_json);
+                    switch (special) {
+                        .tty_stream_open => {
+                            try handleTtyStreamOpen(context, session, &owned_dispatch);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .tty_stream_close => {
+                            try handleTtyStreamClose(context, session, &owned_dispatch);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .none => {},
+                    }
+
                     if (!session.tryReservePendingSlot()) {
                         const failure = try owned_dispatch.buildFailureFrame(
                             context.allocator,
@@ -377,4 +925,55 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
             }
         }
     }
+}
+
+fn normalizeTmuxOutputChunk(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    defer buffer.deinit();
+
+    var index: usize = 0;
+    while (index < payload.len) {
+        const char = payload[index];
+        if (char == '\\' and index + 1 < payload.len) {
+            const next = payload[index + 1];
+            if (next == 'n') {
+                try buffer.append('\n');
+                index += 2;
+                continue;
+            }
+            if (next == 'r') {
+                try buffer.append('\r');
+                index += 2;
+                continue;
+            }
+            if (next == 't') {
+                try buffer.append('\t');
+                index += 2;
+                continue;
+            }
+            if (next == '\\') {
+                try buffer.append('\\');
+                index += 2;
+                continue;
+            }
+            if (index + 3 < payload.len and
+                isOctalDigit(next) and
+                isOctalDigit(payload[index + 2]) and
+                isOctalDigit(payload[index + 3]))
+            {
+                const byte = try std.fmt.parseInt(u8, payload[index + 1 .. index + 4], 8);
+                try buffer.append(byte);
+                index += 4;
+                continue;
+            }
+        }
+        try buffer.append(char);
+        index += 1;
+    }
+
+    return try buffer.toOwnedSlice();
+}
+
+fn isOctalDigit(byte: u8) bool {
+    return byte >= '0' and byte <= '7';
 }

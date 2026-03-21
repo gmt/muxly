@@ -28,6 +28,8 @@ pub const ViewerSession = struct {
     allocator: std.mem.Allocator,
     client: muxly.client.ConversationClient,
     tty_session: ?muxly.client.TtyConversation = null,
+    tty_output_stream: ?muxly.client.TtyOutputStream = null,
+    tty_output_buffer: std.ArrayListUnmanaged(u8) = .{},
     mode: input_mod.InputMode = .navigate,
     selected_index: usize = 0,
     regions: std.ArrayListUnmanaged(RegionInfo) = .{},
@@ -45,6 +47,7 @@ pub const ViewerSession = struct {
     pub fn deinit(self: *ViewerSession) void {
         self.clearRegions();
         if (self.status_owned) |owned| self.allocator.free(owned);
+        self.clearTtyOutputState();
         if (self.tty_session) |*tty| tty.deinit();
         self.client.deinit();
     }
@@ -104,10 +107,11 @@ pub const ViewerSession = struct {
         if (!region.has_children and !region.is_tty) return;
 
         if (region.is_tty) {
-            _ = self.ensureTtySessionForNode(region.node_id) catch {
+            var tty = self.ensureTtySessionForNode(region.node_id) catch {
                 self.setStatus("tty focus unavailable");
                 return;
             };
+            self.ensureTtyOutputStreamForSession(tty) catch {};
             self.mode = .focused_pane;
             self.setStatus("focused pane mode -- press Escape to return");
             return;
@@ -121,6 +125,7 @@ pub const ViewerSession = struct {
 
     pub fn backOut(self: *ViewerSession) void {
         if (self.mode == .focused_pane) {
+            self.clearTtyOutputState();
             if (self.tty_session) |*tty| {
                 tty.deinit();
                 self.tty_session = null;
@@ -175,6 +180,7 @@ pub const ViewerSession = struct {
     fn ensureTtySessionForNode(self: *ViewerSession, node_id: u64) !*muxly.client.TtyConversation {
         if (self.tty_session) |*tty| {
             if (tty.info.node_id == node_id) return tty;
+            self.clearTtyOutputState();
             tty.deinit();
             self.tty_session = null;
         }
@@ -184,6 +190,117 @@ pub const ViewerSession = struct {
             .nodeId = node_id,
         }, .{});
         return &self.tty_session.?;
+    }
+
+    pub fn drainFocusedTtyOutput(self: *ViewerSession) void {
+        var stream = if (self.tty_output_stream) |*value| value else return;
+        while (true) {
+            const polled = stream.pollChunk() catch return;
+            switch (polled) {
+                .pending => return,
+                .closed => {
+                    self.clearTtyOutputState();
+                    self.setStatus("tty stream closed");
+                    return;
+                },
+                .overflow => self.setStatus("tty output overflowed; showing live tail"),
+                .data => |bytes| {
+                    defer self.allocator.free(bytes);
+                    self.appendFocusedTtyBytes(bytes) catch return;
+                },
+            }
+        }
+    }
+
+    pub fn overlayFocusedTtyProjection(self: *ViewerSession, projection_value: *std.json.Value) void {
+        if (self.mode != .focused_pane) return;
+        if (projection_value.* != .object) return;
+        const tty = if (self.tty_session) |value| value else return;
+        const regions_value = projection_value.object.getPtr("regions") orelse return;
+        if (regions_value.* != .array) return;
+
+        for (regions_value.array.items) |*region| {
+            if (region.* != .object) continue;
+            const node_id_value = region.object.get("nodeId") orelse continue;
+            if (node_id_value != .integer or node_id_value.integer < 0) continue;
+            if (@as(u64, @intCast(node_id_value.integer)) != tty.info.node_id) continue;
+            self.replaceRegionLines(region) catch {};
+            return;
+        }
+    }
+
+    fn ensureTtyOutputStreamForSession(self: *ViewerSession, tty: *muxly.client.TtyConversation) !void {
+        if (self.tty_output_stream) |*stream| {
+            if (stream.node_id == tty.info.node_id) return;
+            self.clearTtyOutputState();
+        }
+
+        self.tty_output_stream = tty.openOutputStream() catch return;
+    }
+
+    fn appendFocusedTtyBytes(self: *ViewerSession, bytes: []const u8) !void {
+        try self.tty_output_buffer.appendSlice(self.allocator, bytes);
+        const max_bytes: usize = 256 * 1024;
+        if (self.tty_output_buffer.items.len <= max_bytes) return;
+        const trim = self.tty_output_buffer.items.len - max_bytes;
+        std.mem.copyForwards(
+            u8,
+            self.tty_output_buffer.items[0 .. self.tty_output_buffer.items.len - trim],
+            self.tty_output_buffer.items[trim..],
+        );
+        self.tty_output_buffer.items.len -= trim;
+    }
+
+    fn replaceRegionLines(self: *ViewerSession, region: *std.json.Value) !void {
+        const height = getUsize(region.*, "height");
+        const inner_height = if (height > 2) height - 2 else 0;
+        const slices = try self.renderFocusedTtyLines(inner_height);
+        defer self.allocator.free(slices);
+
+        var values = try self.allocator.alloc(std.json.Value, slices.len);
+        for (slices, 0..) |line, index| {
+            values[index] = .{ .string = line };
+        }
+
+        try region.object.put("lines", .{ .array = .{
+            .items = values,
+            .capacity = values.len,
+        } });
+
+        const scroll_max = countRenderedScrollMax(self.tty_output_buffer.items, inner_height);
+        try region.object.put("scrollable", .{ .bool = scroll_max != 0 });
+        try region.object.put("scrollTop", .{ .integer = @intCast(scroll_max) });
+        try region.object.put("scrollMax", .{ .integer = @intCast(scroll_max) });
+    }
+
+    fn renderFocusedTtyLines(self: *ViewerSession, max_lines: usize) ![][]const u8 {
+        var all_lines = std.ArrayListUnmanaged([]const u8){};
+        defer all_lines.deinit(self.allocator);
+
+        var iter = std.mem.splitScalar(u8, self.tty_output_buffer.items, '\n');
+        while (iter.next()) |line| {
+            try all_lines.append(self.allocator, trimTrailingCarriageReturn(line));
+        }
+        while (all_lines.items.len != 0 and all_lines.items[all_lines.items.len - 1].len == 0) {
+            _ = all_lines.pop();
+        }
+
+        const start = if (all_lines.items.len > max_lines) all_lines.items.len - max_lines else 0;
+        const visible = all_lines.items[start..];
+        const owned = try self.allocator.alloc([]const u8, visible.len);
+        for (visible, 0..) |line, index| {
+            owned[index] = line;
+        }
+        return owned;
+    }
+
+    fn clearTtyOutputState(self: *ViewerSession) void {
+        if (self.tty_output_stream) |*stream| {
+            stream.deinit();
+            self.tty_output_stream = null;
+        }
+        self.tty_output_buffer.deinit(self.allocator);
+        self.tty_output_buffer = .{};
     }
 
     fn setStatus(self: *ViewerSession, message: []const u8) void {
@@ -253,3 +370,17 @@ pub const ViewerSession = struct {
         return f.bool;
     }
 };
+
+fn trimTrailingCarriageReturn(line: []const u8) []const u8 {
+    return if (line.len != 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+}
+
+fn countRenderedScrollMax(buffer: []const u8, inner_height: usize) usize {
+    if (inner_height == 0) return 0;
+    var count: usize = 0;
+    var iter = std.mem.splitScalar(u8, buffer, '\n');
+    while (iter.next()) |_| count += 1;
+    if (count == 0) return 0;
+    while (count != 0 and buffer.len != 0 and buffer[buffer.len - 1] == '\n') count -= 1;
+    return if (count > inner_height) count - inner_height else 0;
+}
