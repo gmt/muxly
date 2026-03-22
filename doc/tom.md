@@ -136,6 +136,10 @@ At the top level:
 - node identity and parent/child linkage are daemon-owned
 - shared document-scoped view state is daemon-owned in the current cutline
 
+[TODO] Move shared camera/root/elision state into an explicit viewer-session or
+shared-view layer once that contract exists. The current document-owned cutline
+is transitional.
+
 This makes the TOM closer to a miniature datastore or micro-daemon than to a
 plain serialized DTO blob.
 
@@ -195,7 +199,7 @@ Muxly should not pretend to serialize:
 
 - arbitrary shell/editor runtime state
 - every hidden tmux implementation detail
-- every viewer-local camera move or projection accident
+- every viewer-local camera move or imaging/composition accident
 
 ### Current procedure
 
@@ -214,7 +218,8 @@ The repo still wants a fuller written procedure for:
 - what counts as stable serialized schema versus implementation detail
 - which fields are mandatory versus optional across bindings
 - how rehydration should behave for detached or frozen nodes
-- which projection/view fields are document-owned versus viewer-local
+- which layout/projection fields are document-owned, viewer-session-owned, or
+  viewer-local imaging state
 
 That fuller policy can land later, but TOM and muxml should remain clearly
 distinguished in the meantime.
@@ -231,8 +236,8 @@ Consumers may see the TOM through several surfaces:
 - viewer
 - serialized muxml export
 
-Those surfaces are not the TOM itself. They are projections or operations over
-the TOM.
+Those surfaces are not the TOM itself. They are layout/projection surfaces,
+viewer-session surfaces, imaging surfaces, or operations over the TOM.
 
 ### Current wire shape
 

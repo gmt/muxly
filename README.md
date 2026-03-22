@@ -50,13 +50,17 @@ Everything in the TOM is a node; nodes are rectangles made of text and you can s
 
 - pseudo-ttys to which programs may be multiplexed via their stdin and stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be accessed in the viewer.
 
-  Because programs attached to terminals need to know the dimensions of the terminal, this means there are three kinds of terminal viewers:
+  Because programs attached to terminals need to know the dimensions of the terminal, the long-term model wants three kinds of terminal viewers:
 
    - detached ***virtual*** viewers simply hold the terminal at a given virtual size, while
 
    - ***primary*** viewers, whose physical terminal size is meant to optionally force virtual terminal resizing to change as the virtual size changes, and finally
 
    - ***secondary*** viewers, who may be thought of as spectators, have read-only connections and do not control virtual terminal size.
+
+  [TODO] This detached/primary/secondary role model is part of the intended
+  design, but it is not yet implemented end-to-end in the current reference
+  viewer/library cutline.
 
 The branch nodes all may contain each other and consist of:
 
@@ -189,11 +193,11 @@ id-only paths still require numeric node ids and say so in their command help.
 ### Viewer keys, exremely preliminary
 
 - `j`/`k` or up/down arrows: select region
-- `Enter` or right arrow: drill into selected region / enter focused pane mode
-- `Escape` or left arrow: back out / exit focused mode
+- `Enter` or right arrow: drill into selected region / enter tty interaction mode
+- `Escape` or left arrow: back out / exit tty interaction mode
 - `e`: elide selected region
 - `t`: toggle follow-tail on tty region
-- `r`: reset view (clear root and elision state); soon to be removed
+- `r`: reset view (clear root and elision state); [TODO] current transitional control, likely to change as viewer-session semantics firm up
 - `q`: quit
 - mouse click: select region by position
 

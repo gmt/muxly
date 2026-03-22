@@ -85,6 +85,9 @@ explicit, testable, and debuggable.
 - `document.get` / `view.get` currently expose **shared document-scoped** view
   state through `viewRootNodeId` and `elidedNodeIds`; these are not
   per-viewer local overrides in this phase
+- [TODO] that shared document-scoped view state is transitional; the intended
+  direction is an explicit viewer-session/shared-view layer rather than
+  storing one viewer's camera on the document itself
 - document `path` is the public document handle for now; internal numeric
   document ids remain introspection/status data, not caller-facing identity
 - the root document `/` is built in, selected by default, and not creatable via
@@ -119,13 +122,19 @@ explicit, testable, and debuggable.
   - `.` / `..` for relative traversal
   - `@42`, `42`, `node-42` for direct node references
   - otherwise sibling `name` matching beneath the current node
-- `projection.get` is the public boxed-view surface for one concrete viewport;
-  it combines:
+- `projection.get` is the current public boxed-view surface for one concrete
+  viewport; it combines:
   - shared document state from the daemon-owned TOM
   - viewer-local viewport size
   - optional viewer-local focus and scroll offsets
-- the current attached `muxview` loop polls `projection.get`; snapshot mode
-  uses that same surface for a one-shot rendered frame
+- `projection.get` should currently be read as a structural/layout-facing
+  surface rather than as the final definition of viewer-side imaging/composition
+- the current attached `muxview` loop polls `projection.get` for boxed layout
+  and shared view state; snapshot mode uses that same surface for a one-shot
+  rendered frame
+- on native H3/WT tty paths, the reference viewer may also consume a live tty
+  output stream for direct leaf output instead of relying on repeated projection
+  polling alone
 - `node.remove` currently succeeds only for childless nodes; callers should
   remove descendants first when editing synthetic muxml structure
 - `node.freeze` currently supports tty-backed nodes only and accepts an
@@ -156,8 +165,8 @@ explicit, testable, and debuggable.
   - `supportsMouse: true`
 - the current `muxview` is an interactive viewer with keyboard-driven hierarchy
   traversal, region selection, drill-in/back-out navigation, elide/expand
-  toggling, follow-tail toggling, mouse-driven region targeting, and a focused
-  tty interaction mode that forwards input to the selected pane
+  toggling, follow-tail toggling, mouse-driven region targeting, and a tty
+  interaction mode that forwards input to the selected tty leaf
 - nodes carry an optional `backendId` field for non-renderable projected
   identity; this replaces the old marker-content trick that leaked tmux
   session/window IDs into renderable `content`

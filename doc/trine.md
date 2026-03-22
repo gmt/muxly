@@ -118,17 +118,20 @@ but the docs should say so plainly instead of hand-waving it.
 ### Projection over mutation
 
 - the TOM is the persistent abstract structure, not a live framebuffer
-- a `muxview` should attach to one TOM node and maintain a layout projection
-  for a concrete `(rows, cols)` viewport
+- a `muxview` should attach to one TOM node and maintain a viewer session for a
+  concrete `(rows, cols)` viewport
 - attaching a view should not casually mutate the TOM just because one viewer
   happened to be larger or smaller than another
-- visible geometry belongs to the projection: after layout, each visible node
-  should have a deterministic absolute `(x, y, width, height)` quad inside that
-  view
-- paint should operate on a flattened list of visible regions rather than
-  walking hierarchy ad hoc during every draw
+- layout should establish child portals inside parent canvases
+- projection should describe how child-space is mapped into those portals
+- final imaging/composition is viewer-local work; absolute quads and flattened
+  paint lists may be useful derived artifacts, but they are not the canonical
+  meaning of projection itself
 - snapshot mode remains useful for scripts and debugging, but viewer attachment
   is the long-lived path that joins a live TOM session
+
+[TODO] Formalize resize-policy semantics for viewer box versus server-side tty
+surface, including explicit no-sync-resize cases and crop/scroll/pad behavior.
 
 ### Structure and source are different axes
 

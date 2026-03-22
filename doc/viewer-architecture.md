@@ -28,11 +28,13 @@ is already shipped or currently on the immediate roadmap.
 The architectural direction should stay clear and concrete:
 
 - a `muxview` attaches to one TOM node at a concrete `(rows, cols)` size
-- that attachment should maintain a layout projection over time rather than
-  mutating the persistent TOM for every viewer-local size change
-- the projection step assigns deterministic absolute quads to visible regions
-- rendering should flatten that projection into a paint list rather than depend
-  on recursive hierarchy walking at paint time
+- that attachment should maintain layout and projection state over time rather
+  than mutating the persistent TOM for every viewer-local size change
+- layout should establish child **portals** inside parent canvases
+- projection should describe how child-space is mapped into those portals
+- final imaging/composition for one terminal frame is viewer-side work; it may
+  derive absolute quads or paint lists when useful, but those are outputs of
+  composition rather than the meaning of projection itself
 
 In practice, attachment should feel like joining a live shared stage:
 
@@ -46,9 +48,10 @@ In practice, attachment should feel like joining a live shared stage:
 This keeps four concerns distinct:
 
 - TOM structure and policies
-- one concrete viewer-local layout projection
+- one concrete viewer session with local camera state
+- layout/projection portal mappings
 - the presentation substrate that repaints the attached session
-- the paint/composition pass for the current terminal frame
+- the imaging/composition pass for the current terminal frame
 
 Leaf content and viewport geometry also need to remain distinct. A live TTY,
 ANSI stream, or file-backed region may have content larger than its currently
@@ -56,31 +59,42 @@ visible quad. Follow-tail, clipping, scrollback, and resize behavior should be
 treated as per-class policy decisions, not as evidence that the TOM itself is a
 literal framebuffer.
 
+The size of a viewer box and the size of an underlying server-side tty surface
+also need to remain distinct. Sync-resize should be a policy decision, not a
+layout axiom.
+
+[TODO] Formalize per-node and per-viewer resize policy, including an explicit
+"do not sync-resize" posture and the rules for crop/scroll/pad behavior when a
+viewer box and tty surface differ.
+
 ## Attachment and presentation
 
 Viewer attachment, layout projection, presentation substrate, and snapshot mode
 should each keep a clear job:
 
-- **viewers** are clients. viewers ingest the library to talk to
-  a server over a transport. in particular viewers create:
-- a **viewport**, which defines the set of nodes in the TOM potentially 
-  visible to a user at a given moment; this should not be confused with a
-- **placement,** which specifies the x,y coordinates, width, and height
-  in a partent node dedicated to presenting information from a child node
-- **presentation** happens on a client; it recursively offsets projections
-  by "scrolls" (displacements relative to origin) to determine the mapping
-  of content from children into parents or occluded areas not visible.
+- **viewer session** is the long-lived client attachment to one document or
+  node, plus local interaction/camera state
+- **viewport** is that session's concrete `(rows, cols)` size
+- **portal** is a child rectangle allocated inside a parent canvas by layout
+- **projection** describes how child-space is mapped into that portal
+- **imaging/composition** is the viewer-side work of turning local state,
+  projections, crop/scroll/pad rules, and source surfaces into the current
+  frame
+- **presentation substrate** is the mechanism that keeps repainting that
+  session over time
+- **snapshot mode** is the explicit one-shot readout path for scripts,
+  deterministic checks, and debugging
 
 The current cutline already supports that model in a first-pass way:
 
 - `muxview` attaches live by default when stdout is a TTY
 - it enters the alternate screen, refreshes on a fixed cadence, and repaints
-  from the public `projection.get` surface
+  from public surfaces
 - `muxview --snapshot` keeps the one-shot textual readout available when a
   deterministic frame is the right tool
-- tmux is the current likely first presentation substrate because it already
-  buys much of the terminal/session machinery, while remaining replaceable if
-  it later constrains the desired muxly experience
+- the current reference viewer repaints directly into its own terminal; tmux
+  may still remain a helper or host for some flows, but it should not define
+  viewer semantics
 
 ## Current cutline
 
@@ -92,15 +106,19 @@ interactive terminal session with:
 - `view.setRoot`, `view.clearRoot`, `view.reset` through the public API
 - elide/expand toggling for per-region shared view state
 - follow-tail toggling for tty-backed regions
-- focused pane interaction mode that forwards input to the underlying tmux pane
+- tty interaction mode that forwards input to the selected tty leaf
 - mouse-driven region targeting via SGR mouse protocol
 - a viewer-owned status bar showing mode, selected region, and scope
 - the viewer still consumes only public surfaces: `projection.get` for boxed
-  rendering and `view.*`/`pane.*` for mutations
+  layout/shared view state, live tty output streams when the transport supports
+  them, and `view.*` plus tty/pane helper calls for mutations
 
 Root/elision state is currently **shared document state**, not viewer-local
 state. Mouse policy is **viewer-owned region targeting** with no pointer
 passthrough to nested panes in this slice.
+
+[TODO] Move shared root/elision state off `Document` and into an explicit
+viewer-session or shared-view layer once that contract is nailed down.
 
 ## Collaboration modes and viewer sessions
 
@@ -170,14 +188,15 @@ optional viewer-session layer or another explicit shared-view object.
 
 ## Presentation substrate direction
 
-The next viewer slice should evaluate how far tmux can carry the first
-presentation substrate without distorting muxly semantics:
+The viewer should keep its semantic model independent from whatever mechanism is
+used to keep repainting the terminal:
 
-- if tmux can host the attached viewer session cleanly, formalize it as the
-  first presentation substrate
-- if tmux starts imposing the wrong viewing semantics, keep the attachment and
-  projection model intact and move toward a vendored tmux path or a bespoke
-  ANSI-generation engine
+- the reference path already paints directly into the viewer's own terminal
+- tmux may still be useful as a helper, host, or backend-adjacent tool in some
+  flows
+- if any helper starts imposing the wrong semantics, keep the
+  session/layout/projection/imaging model intact and replace the helper rather
+  than distorting the model around it
 
 ## Depthwise traversal / drill-in
 
@@ -205,6 +224,9 @@ In the current implementation, the immediate precursor model is:
   `muxly view reset`)
 - visible elision markers when a node is hidden by shared view state
 
+[TODO] The daemon-owned `viewRootNodeId` cutline is useful for now, but it is
+transitional rather than the final home for independent per-viewer zoom state.
+
 That is intentionally simpler than a full interactive drill-in UI, but it keeps
 depthwise traversal state concrete, public, and testable.
 
@@ -216,7 +238,7 @@ fully interactive depthwise viewer UX is already a current execution phase.
 The current mouse policy is **viewer-owned region targeting**:
 
 - mouse clicks select the smallest enclosing region at the click position
-- selection drives the status bar, keyboard actions, and focused-pane entry
+- selection drives the status bar, keyboard actions, and tty-interaction entry
 - no pointer events are passed through to nested tmux panes in this slice
 - the policy is intentionally narrow; per-container pointer passthrough may
   come later when the contract is explicit enough to document and test

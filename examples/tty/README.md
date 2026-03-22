@@ -6,7 +6,7 @@ synthetic TOM mutation.
 They are meant to show that muxly can attach to real terminal activity and
 render it coherently inside the TOM through a live viewer session. `muxview`
 now stays attached by default on a terminal and repaints from the public
-`view.get` surface; `--snapshot` keeps the deterministic one-shot readout
+`projection.get` surface; `--snapshot` keeps the deterministic one-shot readout
 available when that is the better tool.
 
 ## Current families
