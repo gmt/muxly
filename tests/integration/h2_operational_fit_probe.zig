@@ -214,21 +214,25 @@ fn runMixedLoad(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const params_json = try paneCaptureParams(allocator, pane_id);
     defer allocator.free(params_json);
 
-    var active_capture: ?muxly.client.PendingRpcRequest = try startPaneCaptureRequest(&client, params_json);
-    defer if (active_capture) |*capture| capture.deinit();
+    var capture = try client.startRequest(.{ .documentPath = "/" }, "pane.capture", params_json);
+    defer capture.deinit();
 
     var capture_count: usize = 0;
     var capture_bytes: usize = 0;
 
     var i: usize = 0;
     while (i < rpc_count) : (i += 1) {
-        if (try pollActivePaneCapture(&active_capture)) |bytes| {
-            defer allocator.free(bytes);
-            capture_count += 1;
-            capture_bytes += bytes.len;
-            if (capture_count < 3) {
-                active_capture = try startPaneCaptureRequest(&client, params_json);
-            }
+        switch (try capture.poll()) {
+            .pending => {},
+            .canceled => return error.UnexpectedCanceledRequest,
+            .ready => |bytes| {
+                capture_count += 1;
+                capture_bytes += bytes.len;
+                allocator.free(bytes);
+                if (capture_count < 3) {
+                    capture = try client.startRequest(.{ .documentPath = "/" }, "pane.capture", params_json);
+                }
+            },
         }
 
         if ((i % 2) == 0) {
@@ -247,12 +251,12 @@ fn runMixedLoad(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     while (capture_count < 3) {
-        const capture_bytes_value = try waitForActivePaneCapture(&active_capture, 5_000);
-        defer allocator.free(capture_bytes_value);
+        const capture_bytes_value = try waitForReady(&capture, 5_000);
         capture_count += 1;
         capture_bytes += capture_bytes_value.len;
+        allocator.free(capture_bytes_value);
         if (capture_count < 3) {
-            active_capture = try startPaneCaptureRequest(&client, params_json);
+            capture = try client.startRequest(.{ .documentPath = "/" }, "pane.capture", params_json);
         }
     }
 
@@ -322,42 +326,6 @@ fn paneCaptureParams(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
         "{{\"paneId\":{f}}}",
         .{std.json.fmt(pane_id, .{})},
     );
-}
-
-fn startPaneCaptureRequest(
-    client: *muxly.client.ConversationClient,
-    params_json: []const u8,
-) !muxly.client.PendingRpcRequest {
-    return try client.startRequest(.{ .documentPath = "/" }, "pane.capture", params_json);
-}
-
-fn pollActivePaneCapture(
-    active_capture: *?muxly.client.PendingRpcRequest,
-) !?[]u8 {
-    if (active_capture.*) |*capture| {
-        switch (try capture.poll()) {
-            .pending => return null,
-            .canceled => return error.UnexpectedCanceledRequest,
-            .ready => |bytes| {
-                capture.deinit();
-                active_capture.* = null;
-                return bytes;
-            },
-        }
-    }
-    return null;
-}
-
-fn waitForActivePaneCapture(
-    active_capture: *?muxly.client.PendingRpcRequest,
-    timeout_ms: u64,
-) ![]u8 {
-    const started = try std.time.Instant.now();
-    while ((try elapsedMsSince(started)) < timeout_ms) {
-        if (try pollActivePaneCapture(active_capture)) |bytes| return bytes;
-        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
-    }
-    return error.TestTimeout;
 }
 
 fn drainCaptureStream(
