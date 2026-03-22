@@ -61,14 +61,15 @@ literal framebuffer.
 Viewer attachment, layout projection, presentation substrate, and snapshot mode
 should each keep a clear job:
 
-- **viewer attachment** is the long-lived session that joins one TOM node
-  through a concrete viewport and local interaction state
-- **layout projection** is the continuously maintained mapping from
-  `TOM + viewer state + viewport size` to visible regions
-- **presentation substrate** is the mechanism that repaints that attached
-  session over time
-- **snapshot mode** is the explicit one-shot readout path for scripts,
-  deterministic checks, and debugging
+- **viewers** are clients. viewers ingest the library to talk to
+  a server over a transport. in particular viewers create:
+- a **viewport**, which defines the set of nodes in the TOM potentially 
+  visible to a user at a given moment; this should not be confused with a
+- **placement,** which specifies the x,y coordinates, width, and height
+  in a partent node dedicated to presenting information from a child node
+- **presentation** happens on a client; it recursively offsets projections
+  by "scrolls" (displacements relative to origin) to determine the mapping
+  of content from children into parents or occluded areas not visible.
 
 The current cutline already supports that model in a first-pass way:
 
@@ -100,6 +101,72 @@ interactive terminal session with:
 Root/elision state is currently **shared document state**, not viewer-local
 state. Mouse policy is **viewer-owned region targeting** with no pointer
 passthrough to nested panes in this slice.
+
+## Collaboration modes and viewer sessions
+
+Muxly needs to distinguish "shared document" from "shared viewer." The useful
+cases are not all the same:
+
+- one person mirrors another person's overall viewer/terminal session for
+  teaching, supervision, or administration
+- two people attach to the same document and read/navigate it independently
+- two people attach to the same document and control different tty nodes
+  simultaneously
+- two people read/write the exact same tty node simultaneously
+
+These cases suggest different semantics:
+
+- shared document reading is core muxly magic and should be easy
+- whole-session mirroring is valuable, but not the main document-collaboration
+  case
+- independent control of different tty nodes inside one document should fit the
+  model cleanly
+- simultaneous writers on one tty are plausible later, but are not required for
+  the first useful collaboration cutline
+
+The architectural consequence is that muxly should eventually model three
+different things:
+
+- **document state**: the shared TOM, node content, source attachments, and
+  server-side tty endpoints
+- **viewer session state**: an optional shareable attachment/camera object over
+  one document or node
+- **tty attachment state**: who is reading or writing one tty node, and under
+  what role policy
+
+For shared or inspectable viewer sessions, the right topography is a **star**:
+
+- the daemon is the hub
+- clients publish typed viewer-session snapshots/deltas to the daemon
+- the daemon relays or exposes that state to other participants, observers, or
+  admin tooling
+- peer-to-peer viewer broadcast is not the primary muxly contract
+
+That model allows both push and pull:
+
+- a primary viewer can push changes as they happen
+- another participant can subscribe to live session deltas
+- an admin/observer can request the current session state without stealing
+  control
+
+The important discipline is that the daemon should not need opaque "broadcast
+everything about your UI" behavior. Shared viewer state should be explicit and
+typed, for example:
+
+- current document or base TRD
+- scoped root / zoomed node
+- selected node or later input-focus token, if that becomes shareable
+- viewport/camera origin and scroll state
+- tty attachments and role claims
+- viewer role metadata such as detached/primary/secondary, when terminal sizing
+  semantics are in play
+
+Under that model, the current `view.setRoot` / `view.clearRoot` behavior should
+be read as a precursor implementation rather than final semantics. Storing view
+root on the document is simple and testable, but it conflates document state
+with one viewer's camera. If independent readers remain a first-class goal,
+shared root/elision state should likely move out of `Document` and into an
+optional viewer-session layer or another explicit shared-view object.
 
 ## Presentation substrate direction
 

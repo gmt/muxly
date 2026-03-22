@@ -43,6 +43,37 @@ The viewer is responsible for local interaction and presentation:
 This split is guidance, not dogma: if a behavior needs to survive outside one
 viewer process or be shared across clients, it belongs in the daemon/core.
 
+## Document state versus viewer-session state
+
+Muxly should distinguish shared TOM state from optional shared viewer state.
+
+- the daemon owns documents, node identity, source attachments, and server-side
+  tty endpoints
+- viewers own local rendering, input handling, and any purely private camera
+  state
+- when muxly needs cross-client mirroring, supervision, or inspectable viewer
+  state, that state should live in an explicit daemon-mediated **viewer
+  session**, not be smuggled into the document itself
+
+That means two users can attach to the same document in different ways:
+
+- as independent viewers with separate viewer sessions over the same document
+- as participants in one intentionally shared viewer session
+- as controllers/readers of different tty nodes within the same document
+
+The daemon should act as the hub for shared viewer sessions:
+
+- clients publish typed session snapshots/deltas to the daemon
+- the daemon relays or exposes them to other participants
+- admin/observer tooling can inspect session state through the same hub
+
+This is different from giving arbitrary RPC conversations an ambient "current
+document" by default. Bare requests should remain explicit and resource-targeted
+unless a higher-level session/attachment contract says otherwise. In practice,
+the current document-scoped `viewRootNodeId` behavior is a useful transitional
+cutline, but it should not be mistaken for the final place where shared viewer
+state belongs.
+
 ## Protocol layering realism
 
 The terminal ecosystem is messy enough that muxly should not assume one perfect,
