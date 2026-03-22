@@ -218,12 +218,30 @@ pub fn build(b: *std.Build) void {
 
     const test_transport_step = b.step(
         "test-transport",
-        "Run HTTP and H3WT transport integration tests",
+        "Run transport integration tests",
     );
     const run_transport_bridge_unit_tests = b.addSystemCommand(&.{ "cargo", "test" });
     run_transport_bridge_unit_tests.setCwd(b.path("tools/transport_bridge"));
+    const async_transport_validation_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/async_transport_validation_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
+    });
+    const run_async_transport_validation_tests = b.addRunArtifact(async_transport_validation_tests);
+    run_async_transport_validation_tests.step.dependOn(&install_daemon.step);
+    run_async_transport_validation_tests.step.dependOn(&install_transport_bridge.step);
+    run_async_transport_validation_tests.setEnvironmentVariable(
+        "MUXLY_TEST_DAEMON_BINARY",
+        b.getInstallPath(.prefix, "bin/muxlyd"),
+    );
     test_transport_step.dependOn(&run_transport_bridge_unit_tests.step);
     test_transport_step.dependOn(&run_transport_tests.step);
+    test_transport_step.dependOn(&run_async_transport_validation_tests.step);
 
     const test_ci_step = b.step(
         "test-ci",

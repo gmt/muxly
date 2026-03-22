@@ -942,12 +942,14 @@ fn installedBridgeBackendPath(allocator: std.mem.Allocator) !?[]u8 {
         allocator,
         &.{ exe_dir, "..", "share", "muxly", "transport_bridge", "backend.py" },
     );
-    errdefer allocator.free(candidate);
+    var keep_candidate = false;
+    defer if (!keep_candidate) allocator.free(candidate);
 
     std.fs.accessAbsolute(candidate, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
+    keep_candidate = true;
     return candidate;
 }
 

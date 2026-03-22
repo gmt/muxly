@@ -19,6 +19,15 @@ test "execution lane classification keeps document-local requests on document la
         .document => |path| try std.testing.expectEqualStrings("/demo", path),
         .root => return error.ExpectedDocumentLane,
     }
+
+    var debug_sleep = try router.classifyExecutionLane(std.testing.allocator,
+        \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/demo"},"method":"debug.sleep","params":{"ms":50}}
+    );
+    defer debug_sleep.deinit(std.testing.allocator);
+    switch (debug_sleep) {
+        .document => |path| try std.testing.expectEqualStrings("/demo", path),
+        .root => return error.ExpectedDocumentLane,
+    }
 }
 
 test "execution lane classification keeps tmux and root-only work on the root lane" {

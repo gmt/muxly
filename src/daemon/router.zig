@@ -7,6 +7,7 @@ const store_mod = @import("state/store.zig");
 pub const Store = store_mod.Store;
 
 const document_retention_policy = "daemon-lifetime";
+const debug_rpc_env_name = "MUXLY_ENABLE_DEBUG_RPC";
 
 pub const ExecutionLane = union(enum) {
     root,
@@ -109,6 +110,23 @@ pub fn handleRequest(
         defer entry.mutex.unlock();
     }
     const document = if (document_entry) |entry| &entry.document else store.rootDocument();
+
+    if (std.mem.eql(u8, parsed.value.method, "debug.sleep") and debugRpcEnabled(allocator)) {
+        const ms = protocol.getInteger(parsed.value.params, "ms") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "ms is required");
+        if (ms < 0) {
+            return try buildError(allocator, parsed.value.id, .invalid_params, "ms must be non-negative");
+        }
+        std.Thread.sleep(@as(u64, @intCast(ms)) * std.time.ns_per_ms);
+
+        const result_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"sleptMs\":{d}}}",
+            .{ms},
+        );
+        defer allocator.free(result_json);
+        return try buildResult(allocator, parsed.value.id, result_json);
+    }
 
     if (std.mem.eql(u8, document_path, "/")) {
         store.pumpTmuxBackend() catch |err| switch (err) {
@@ -811,6 +829,7 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
         std.mem.eql(u8, method, "document.status") or
         std.mem.eql(u8, method, "document.serialize") or
         std.mem.eql(u8, method, "document.freeze") or
+        std.mem.eql(u8, method, "debug.sleep") or
         std.mem.eql(u8, method, "node.get") or
         std.mem.eql(u8, method, "node.append") or
         std.mem.eql(u8, method, "node.update") or
@@ -834,6 +853,19 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
     }
 
     return false;
+}
+
+fn debugRpcEnabled(allocator: std.mem.Allocator) bool {
+    const value = std.process.getEnvVarOwned(allocator, debug_rpc_env_name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return false,
+    };
+    defer allocator.free(value);
+
+    return std.ascii.eqlIgnoreCase(value, "1") or
+        std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "yes") or
+        std.ascii.eqlIgnoreCase(value, "on");
 }
 
 fn requestNodeIdOrError(document: *const muxly.document.Document, request: protocol.RequestEnvelope) !i64 {
