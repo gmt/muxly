@@ -143,11 +143,8 @@ fn runMixedLoad(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var client = try muxly.client.ConversationClient.init(allocator, transport_spec);
     defer client.deinit();
 
-    var tty = try client.openTty(.{
-        .documentPath = "/",
-        .nodeId = node_id,
-    }, .{});
-    defer tty.deinit();
+    const pane_id = try resolvePaneIdForNode(allocator, &client, node_id);
+    defer allocator.free(pane_id);
 
     var ping_latencies = std.array_list.Managed(u64).init(allocator);
     defer ping_latencies.deinit();
@@ -157,7 +154,7 @@ fn runMixedLoad(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const started = try std.time.Instant.now();
 
     if (std.mem.startsWith(u8, transport_spec, "h2://") or std.mem.startsWith(u8, transport_spec, "h3wt://")) {
-        var stream = try client.openPaneCaptureStream(tty.pane_id);
+        var stream = try client.openPaneCaptureStream(pane_id);
         defer stream.deinit();
 
         var chunk_count: usize = 0;
@@ -214,7 +211,7 @@ fn runMixedLoad(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     }
 
-    const params_json = try paneCaptureParams(allocator, tty.pane_id);
+    const params_json = try paneCaptureParams(allocator, pane_id);
     defer allocator.free(params_json);
 
     var capture = try client.startRequest(.{ .documentPath = "/" }, "pane.capture", params_json);
@@ -514,6 +511,47 @@ fn parseSuccessResponse(
     if (parsed.value.object.get("error")) |_| return error.RequestFailed;
     _ = parsed.value.object.get("result") orelse return error.InvalidResponse;
     return parsed;
+}
+
+fn parsePaneIdFromNodeGetResponse(
+    allocator: std.mem.Allocator,
+    response: []const u8,
+) ![]u8 {
+    const parsed = parseSuccessResponse(allocator, response) catch |err| switch (err) {
+        error.RequestFailed => {
+            try std.fs.File.stderr().deprecatedWriter().print("node.get failed: {s}\n", .{response});
+            return err;
+        },
+        else => return err,
+    };
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .object) return error.InvalidResponse;
+
+    const source_value = result.object.get("source") orelse return error.InvalidResponse;
+    if (source_value != .object) return error.InvalidResponse;
+
+    const kind_value = source_value.object.get("kind") orelse return error.InvalidResponse;
+    if (kind_value != .string) return error.InvalidResponse;
+    if (!std.mem.eql(u8, kind_value.string, "tty")) return error.InvalidTtyTarget;
+
+    const pane_id_value = source_value.object.get("paneId") orelse return error.InvalidTtyTarget;
+    if (pane_id_value != .string) return error.InvalidResponse;
+    return try allocator.dupe(u8, pane_id_value.string);
+}
+
+fn resolvePaneIdForNode(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    node_id: u64,
+) ![]u8 {
+    const response = try client.requestTarget(.{
+        .documentPath = "/",
+        .nodeId = node_id,
+    }, "node.get", "{}");
+    defer allocator.free(response);
+    return try parsePaneIdFromNodeGetResponse(allocator, response);
 }
 
 fn expectSleptMs(allocator: std.mem.Allocator, response: []const u8, expected_ms: u32) !void {

@@ -1570,6 +1570,7 @@ fn resolveTtyTarget(
     defer parsed.deinit();
 
     if (parsed.value != .object) return error.InvalidResponse;
+    if (parsed.value.object.get("error")) |_| return error.RequestFailed;
     const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
     if (result != .object) return error.InvalidResponse;
 
@@ -1747,4 +1748,84 @@ test "pane capture stream consumes chunk and close envelopes" {
 
     try std.testing.expect((try stream.waitChunk()) == .closed);
     try std.testing.expect((try stream.pollChunk()) == .closed);
+}
+
+test "openTty surfaces node.get rpc failure as RequestFailed" {
+    const MockServer = struct {
+        allocator: std.mem.Allocator,
+        listener: std.net.Server,
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            self.runInner() catch |err| {
+                self.failure = err;
+            };
+        }
+
+        fn runInner(self: *@This()) !void {
+            var connection = try self.listener.accept();
+            defer connection.stream.close();
+
+            var request_reader = transport.MessageReader.init(self.allocator);
+            defer request_reader.deinit();
+
+            const request = try request_reader.readMessageLine(
+                connection.stream,
+                transport.max_message_bytes,
+            ) orelse return error.UnexpectedTestResult;
+            defer self.allocator.free(request);
+
+            const envelope = try protocol.parseConversationEnvelope(self.allocator, request);
+            defer envelope.deinit();
+
+            try std.testing.expectEqual(protocol.ConversationKind.rpc, envelope.value.kind);
+            try std.testing.expect(std.mem.eql(
+                u8,
+                envelope.value.payload.object.get("method").?.string,
+                "node.get",
+            ));
+
+            const response = try protocol.allocConversationEnvelope(
+                self.allocator,
+                envelope.value.conversationId,
+                envelope.value.requestId,
+                envelope.value.target,
+                envelope.value.kind,
+                \\{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"node lookup failed"}}
+            ,
+                true,
+                null,
+            );
+            defer self.allocator.free(response);
+            try connection.stream.writeAll(response);
+            try connection.stream.writeAll("\n");
+        }
+    };
+
+    const localhost = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = MockServer{
+        .allocator = std.testing.allocator,
+        .listener = try localhost.listen(.{ .reuse_address = true }),
+    };
+    defer server.listener.deinit();
+
+    var thread = try std.Thread.spawn(.{}, MockServer.run, .{&server});
+    defer thread.join();
+
+    const port = server.listener.listen_address.getPort();
+    const spec = try std.fmt.allocPrint(std.testing.allocator, "tcp://127.0.0.1:{d}", .{port});
+    defer std.testing.allocator.free(spec);
+
+    var client = try ConversationClient.init(std.testing.allocator, spec);
+    defer client.deinit();
+
+    try std.testing.expectError(
+        error.RequestFailed,
+        client.openTty(.{
+            .documentPath = "/",
+            .nodeId = 7,
+        }, .{}),
+    );
+
+    if (server.failure) |err| return err;
 }

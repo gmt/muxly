@@ -183,6 +183,24 @@ test "async validation streams pane capture and scroll over h3wt" {
     try runPaneCaptureStreamValidation(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
 }
 
+test "async validation surfaces node.get rpc failure instead of InvalidResponse" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var daemon = try startDaemon(std.testing.allocator, "tcp://127.0.0.1:0");
+    defer daemon.deinit();
+
+    var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    defer client.deinit();
+
+    try std.testing.expectError(
+        error.RequestFailed,
+        client.openTty(.{
+            .documentPath = "/",
+            .nodeId = 999_999,
+        }, .{}),
+    );
+}
+
 fn runPaneCaptureStreamValidation(
     allocator: std.mem.Allocator,
     transport_spec: []const u8,
@@ -206,15 +224,16 @@ fn runPaneCaptureStreamValidation(
     var client = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
     defer client.deinit();
 
-    var tty = try client.openTty(.{
-        .documentPath = "/",
-        .nodeId = node_id,
-    }, .{});
-    defer tty.deinit();
+    const pane_id = try resolveTtyPaneId(
+        allocator,
+        &client,
+        node_id,
+    );
+    defer allocator.free(pane_id);
 
     std.Thread.sleep(800 * std.time.ns_per_ms);
 
-    var capture_stream = try client.openPaneCaptureStream(tty.pane_id);
+    var capture_stream = try client.openPaneCaptureStream(pane_id);
     defer capture_stream.deinit();
     const ping_response = try client.request("ping", "{}");
     defer allocator.free(ping_response);
@@ -227,7 +246,7 @@ fn runPaneCaptureStreamValidation(
     try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0000") != null);
     try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0100") != null);
 
-    var scroll_stream = try client.openPaneScrollStream(tty.pane_id, 0, 20);
+    var scroll_stream = try client.openPaneScrollStream(pane_id, 0, 20);
     defer scroll_stream.deinit();
     const scroll = try collectPaneCaptureStream(allocator, &scroll_stream, 10_000);
     defer allocator.free(scroll.bytes);
@@ -501,6 +520,35 @@ fn createTmuxSessionNode(
     const response = try client.request("session.create", params_json);
     defer allocator.free(response);
     return try extractNodeId(allocator, response);
+}
+
+fn resolveTtyPaneId(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    node_id: u64,
+) ![]u8 {
+    const response = try client.requestTarget(.{
+        .documentPath = "/",
+        .nodeId = node_id,
+    }, "node.get", "{}");
+    defer allocator.free(response);
+
+    const parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .object) return error.InvalidResponse;
+
+    const source_value = result.object.get("source") orelse return error.InvalidResponse;
+    if (source_value != .object) return error.InvalidResponse;
+
+    const kind_value = source_value.object.get("kind") orelse return error.InvalidResponse;
+    if (kind_value != .string) return error.InvalidResponse;
+    if (!std.mem.eql(u8, kind_value.string, "tty")) return error.InvalidTtyTarget;
+
+    const pane_id_value = source_value.object.get("paneId") orelse return error.InvalidTtyTarget;
+    if (pane_id_value != .string) return error.InvalidResponse;
+    return try allocator.dupe(u8, pane_id_value.string);
 }
 
 fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !DaemonInstance {
