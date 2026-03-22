@@ -1,0 +1,15 @@
+global
+  log stdout format raw local0
+
+defaults
+  mode tcp
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+
+frontend muxly_in
+  bind :8080
+  default_backend muxly_out
+
+backend muxly_out
+  server muxly __UPSTREAM_HOST__:__UPSTREAM_PORT__ check

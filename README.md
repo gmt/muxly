@@ -180,6 +180,16 @@ or the underlying script directly:
 python3 tests/integration/docker_transport_test.py
 ```
 
+To generate the HTTP/2 operational-fit decision report, including the proxy
+matrix and the H1-vs-H2 comparison data under impaired conditions, use:
+
+```sh
+zig build h2-operational-fit
+```
+
+The harness writes its report bundle under `/tmp/decision_support/` by
+default.
+
 ### TRD descriptors
 
 TOM Resource Descriptors combine a transport, a document path, and an optional

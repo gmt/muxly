@@ -87,6 +87,25 @@ pub fn build(b: *std.Build) void {
     const install_guided_tour = b.addInstallArtifact(guided_tour, .{});
     b.getInstallStep().dependOn(&install_guided_tour.step);
 
+    const operational_fit_probe = b.addExecutable(.{
+        .name = "muxly-fit-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/h2_operational_fit_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
+    });
+    const install_operational_fit_probe = b.addInstallArtifact(operational_fit_probe, .{});
+    b.getInstallStep().dependOn(&install_operational_fit_probe.step);
+    const operational_fit_probe_step = b.step(
+        "muxly-fit-probe",
+        "Build and install the HTTP/2 operational-fit probe",
+    );
+    operational_fit_probe_step.dependOn(&install_operational_fit_probe.step);
+
     const install_transport_bridge = b.addInstallDirectory(.{
         .source_dir = b.path("tools/transport_bridge"),
         .install_dir = .prefix,
@@ -242,6 +261,27 @@ pub fn build(b: *std.Build) void {
     test_transport_step.dependOn(&run_transport_bridge_unit_tests.step);
     test_transport_step.dependOn(&run_transport_tests.step);
     test_transport_step.dependOn(&run_async_transport_validation_tests.step);
+
+    const run_h2_operational_fit = b.addSystemCommand(&.{
+        "python3",
+        "tests/integration/h2_operational_fit.py",
+        "--skip-build",
+    });
+    run_h2_operational_fit.setCwd(b.path("."));
+    run_h2_operational_fit.step.dependOn(&install_cli.step);
+    run_h2_operational_fit.step.dependOn(&install_daemon.step);
+    run_h2_operational_fit.step.dependOn(&install_transport_bridge.step);
+    run_h2_operational_fit.step.dependOn(&install_operational_fit_probe.step);
+    run_h2_operational_fit.setEnvironmentVariable(
+        "MUXLY_FIT_PROBE",
+        b.getInstallPath(.prefix, "bin/muxly-fit-probe"),
+    );
+
+    const h2_operational_fit_step = b.step(
+        "h2-operational-fit",
+        "Run the HTTP/2 operational-fit decision harness",
+    );
+    h2_operational_fit_step.dependOn(&run_h2_operational_fit.step);
 
     const test_ci_step = b.step(
         "test-ci",
