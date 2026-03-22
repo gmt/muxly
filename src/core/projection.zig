@@ -1,9 +1,9 @@
-//! View-local boxed projection helpers over the daemon-owned TOM.
+//! Current boxed projection helpers over the daemon-owned TOM.
 //!
 //! The live document owns structure, source metadata, follow-tail defaults, and
 //! shared view state such as root and elision. This module turns that shared
-//! state plus viewer-local inputs like viewport size and scroll offsets into a
-//! flattened set of visible regions suitable for boxed rendering.
+//! state plus viewer-local inputs like viewport size and scroll offsets into the
+//! current boxed layout/projection cutline used by the reference viewer.
 
 const std = @import("std");
 const document_mod = @import("document.zig");

@@ -108,12 +108,12 @@ pub const ViewerSession = struct {
 
         if (region.is_tty) {
             var tty = self.ensureTtySessionForNode(region.node_id) catch {
-                self.setStatus("tty focus unavailable");
+                self.setStatus("tty interaction unavailable");
                 return;
             };
             self.ensureTtyOutputStreamForSession(tty) catch {};
-            self.mode = .focused_pane;
-            self.setStatus("focused pane mode -- press Escape to return");
+            self.mode = .tty_interact;
+            self.setStatus("tty interaction mode -- press Escape to return");
             return;
         }
 
@@ -124,7 +124,7 @@ pub const ViewerSession = struct {
     }
 
     pub fn backOut(self: *ViewerSession) void {
-        if (self.mode == .focused_pane) {
+        if (self.mode == .tty_interact) {
             self.clearTtyOutputState();
             if (self.tty_session) |*tty| {
                 tty.deinit();
@@ -164,7 +164,7 @@ pub const ViewerSession = struct {
         self.setStatus("view reset");
     }
 
-    pub fn sendFocusedTtyInput(self: *ViewerSession, input: []const u8) void {
+    pub fn sendTtyInput(self: *ViewerSession, input: []const u8) void {
         const region = self.selectedRegion() orelse return;
         if (!region.is_tty) return;
 
@@ -192,7 +192,7 @@ pub const ViewerSession = struct {
         return &self.tty_session.?;
     }
 
-    pub fn drainFocusedTtyOutput(self: *ViewerSession) void {
+    pub fn drainTtyOutput(self: *ViewerSession) void {
         var stream = if (self.tty_output_stream) |*value| value else return;
         while (true) {
             const polled = stream.pollChunk() catch return;
@@ -206,14 +206,14 @@ pub const ViewerSession = struct {
                 .overflow => self.setStatus("tty output overflowed; showing live tail"),
                 .data => |bytes| {
                     defer self.allocator.free(bytes);
-                    self.appendFocusedTtyBytes(bytes) catch return;
+                    self.appendTtyBytes(bytes) catch return;
                 },
             }
         }
     }
 
-    pub fn overlayFocusedTtyProjection(self: *ViewerSession, projection_value: *std.json.Value) void {
-        if (self.mode != .focused_pane) return;
+    pub fn overlayTtyProjection(self: *ViewerSession, projection_value: *std.json.Value) void {
+        if (self.mode != .tty_interact) return;
         if (projection_value.* != .object) return;
         const tty = if (self.tty_session) |value| value else return;
         const regions_value = projection_value.object.getPtr("regions") orelse return;
@@ -238,7 +238,7 @@ pub const ViewerSession = struct {
         self.tty_output_stream = tty.openOutputStream() catch return;
     }
 
-    fn appendFocusedTtyBytes(self: *ViewerSession, bytes: []const u8) !void {
+    fn appendTtyBytes(self: *ViewerSession, bytes: []const u8) !void {
         try self.tty_output_buffer.appendSlice(self.allocator, bytes);
         const max_bytes: usize = 256 * 1024;
         if (self.tty_output_buffer.items.len <= max_bytes) return;
@@ -254,7 +254,7 @@ pub const ViewerSession = struct {
     fn replaceRegionLines(self: *ViewerSession, region: *std.json.Value) !void {
         const height = getUsize(region.*, "height");
         const inner_height = if (height > 2) height - 2 else 0;
-        const slices = try self.renderFocusedTtyLines(inner_height);
+        const slices = try self.renderTtyLines(inner_height);
         defer self.allocator.free(slices);
 
         var values = try self.allocator.alloc(std.json.Value, slices.len);
@@ -273,7 +273,7 @@ pub const ViewerSession = struct {
         try region.object.put("scrollMax", .{ .integer = @intCast(scroll_max) });
     }
 
-    fn renderFocusedTtyLines(self: *ViewerSession, max_lines: usize) ![][]const u8 {
+    fn renderTtyLines(self: *ViewerSession, max_lines: usize) ![][]const u8 {
         var all_lines = std.ArrayListUnmanaged([]const u8){};
         defer all_lines.deinit(self.allocator);
 

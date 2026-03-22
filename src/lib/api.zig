@@ -317,7 +317,8 @@ pub fn viewGet(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "view.get", "{}");
 }
 
-/// Returns a boxed viewer projection for one viewport and optional local state.
+/// Returns the current boxed layout/projection surface for one viewport and
+/// optional local state.
 pub fn projectionGet(
     allocator: std.mem.Allocator,
     socket_path: []const u8,
@@ -343,12 +344,12 @@ pub fn projectionGetInDocument(
     return try requestInDocument(allocator, socket_path, document_path, "projection.get", params.items);
 }
 
-/// Clears the shared document-scoped view root.
+/// Clears the current shared document-scoped view root.
 pub fn viewClearRoot(allocator: std.mem.Allocator, socket_path: []const u8) ![]u8 {
     return try request(allocator, socket_path, "view.clearRoot", "{}");
 }
 
-/// Sets the shared document-scoped view root to `node_id`.
+/// Sets the current shared document-scoped view root to `node_id`.
 pub fn viewSetRoot(allocator: std.mem.Allocator, socket_path: []const u8, node_id: u64) ![]u8 {
     return try viewSetRootInDocument(allocator, socket_path, protocol.default_document_path, node_id);
 }

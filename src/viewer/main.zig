@@ -205,8 +205,8 @@ fn runLiveViewer(
         const result = parsed_response.value.object.getPtr("result") orelse continue;
 
         session.refreshRegions(result.*);
-        session.drainFocusedTtyOutput();
-        session.overlayFocusedTtyProjection(result);
+        session.drainTtyOutput();
+        session.overlayTtyProjection(result);
 
         var rendered = std.array_list.Managed(u8).init(allocator);
         defer rendered.deinit();
@@ -245,7 +245,7 @@ fn writeStatusBar(buffer: *std.array_list.Managed(u8), session: *const viewer_st
     const writer = buffer.writer();
     const mode_label: []const u8 = switch (session.mode) {
         .navigate => "NAV",
-        .focused_pane => "TTY",
+        .tty_interact => "TTY",
     };
 
     var sel_label_buf: [128]u8 = undefined;
@@ -341,12 +341,12 @@ fn pollInput(stdin_file: std.fs.File, session: *viewer_state.ViewerSession, time
 
     const input = input_buffer[0..bytes_read];
 
-    if (session.mode == .focused_pane) {
+    if (session.mode == .tty_interact) {
         if (bytes_read == 1 and input[0] == 0x1b) return .back_out;
         if (bytes_read >= 3 and input[0] == 0x1b and input[1] == '[') {
             if (bytes_read >= 4 and input[2] == '1' and input[3] == '~') return .back_out;
         }
-        session.sendFocusedTtyInput(input);
+        session.sendTtyInput(input);
         return .pane_input;
     }
 

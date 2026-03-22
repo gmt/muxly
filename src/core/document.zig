@@ -216,18 +216,18 @@ pub const Document = struct {
         self.lifecycle = .detached;
     }
 
-    /// Sets the shared document-scoped view root.
+    /// Sets the current shared document-scoped view root.
     pub fn setViewRoot(self: *Document, node_id: ids.NodeId) !void {
         _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         self.view_root_node_id = node_id;
     }
 
-    /// Clears the shared document-scoped view root.
+    /// Clears the current shared document-scoped view root.
     pub fn clearViewRoot(self: *Document) void {
         self.view_root_node_id = null;
     }
 
-    /// Clears the shared document-scoped root and elision state.
+    /// Clears the current shared document-scoped root and elision state.
     pub fn resetView(self: *Document) void {
         self.view_root_node_id = null;
         self.elided_node_ids.clearRetainingCapacity();
