@@ -10,7 +10,7 @@ pub const ParseError = error{
 pub const usage =
     \\usage: muxlyd [--transport SPEC] [--socket PATH] [--config PATH] [--max-message-bytes N] [--max-document-content-bytes N] [--i-know-this-is-unencrypted-and-unauthenticated]
     \\
-    \\  --transport   listen on unix, tcp, http, or h3wt transport specs
+    \\  --transport   listen on unix, tcp, http, h2, or h3wt transport specs
     \\  --socket      legacy alias for a unix-domain socket path; defaults to
     \\                ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
     \\  --config      load runtime policy from JSON config at PATH
@@ -19,7 +19,7 @@ pub const usage =
     \\  --max-document-content-bytes
     \\                override the aggregate document content cap
     \\  --i-know-this-is-unencrypted-and-unauthenticated
-    \\                allow tcp/http listeners outside loopback/link-local ranges
+    \\                allow tcp/http/h2 listeners outside loopback/link-local ranges
     \\  --help        show this help text
     \\
 ;

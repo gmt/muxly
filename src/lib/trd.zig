@@ -262,6 +262,9 @@ fn transportSpecFromReference(
     if (std.mem.eql(u8, code, "http")) {
         return try std.fmt.allocPrint(allocator, "http://{s}", .{if (endpoint.len == 0) default_host else endpoint});
     }
+    if (std.mem.eql(u8, code, "h2") or std.mem.eql(u8, code, "http2")) {
+        return try std.fmt.allocPrint(allocator, "h2://{s}", .{if (endpoint.len == 0) default_host else endpoint});
+    }
     if (std.mem.eql(u8, code, "webtransport") or std.mem.eql(u8, code, "wt") or std.mem.eql(u8, code, "h3wt")) {
         return try std.fmt.allocPrint(allocator, "h3wt://{s}", .{if (endpoint.len == 0) default_host else endpoint});
     }

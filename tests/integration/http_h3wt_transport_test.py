@@ -68,6 +68,9 @@ def transport_to_absolute_trd(transport_spec: str, selector: str) -> str:
     if transport_spec.startswith("http://"):
         endpoint = transport_spec[len("http://") :]
         return f"trd://http|{endpoint}//#{selector}"
+    if transport_spec.startswith("h2://"):
+        endpoint = transport_spec[len("h2://") :]
+        return f"trd://h2|{endpoint}//#{selector}"
     if transport_spec.startswith("h3wt://"):
         endpoint = transport_spec[len("h3wt://") :]
         return f"trd://wt|{endpoint}//#{selector}"
@@ -84,6 +87,9 @@ def transport_to_absolute_document_trd(transport_spec: str, document_path: str) 
     if transport_spec.startswith("http://"):
         endpoint = transport_spec[len("http://") :]
         return f"trd://http|{endpoint}//{doc_suffix}"
+    if transport_spec.startswith("h2://"):
+        endpoint = transport_spec[len("h2://") :]
+        return f"trd://h2|{endpoint}//{doc_suffix}"
     if transport_spec.startswith("h3wt://"):
         endpoint = transport_spec[len("h3wt://") :]
         return f"trd://wt|{endpoint}//{doc_suffix}"
@@ -447,6 +453,7 @@ def main() -> None:
         env["MUXLY_H3WT_IDENTITY_DIR"] = str(temp_dir / "identity")
 
         exercise_transport(temp_dir, env, "http://127.0.0.1:0/rpc")
+        exercise_transport(temp_dir, env, "h2://127.0.0.1:0/rpc")
         exercise_transport(temp_dir, env, "h3wt://127.0.0.1:0/mux")
 
 

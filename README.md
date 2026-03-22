@@ -114,6 +114,7 @@ legacy `--socket` flag. Supported specs are:
 - bare paths or `unix:///run/user/$UID/muxly.sock`
 - `tcp://169.254.10.20:4488`
 - `http://127.0.0.1:8080/rpc`
+- `h2://127.0.0.1:8080/rpc`
 - `h3wt://127.0.0.1:4433/mux?sha256=<cert-pin>`
 - `ssh://alice@example.com/tcp://169.254.10.20:4488`
 - `ssh://alice@example.com:2222/tcp://169.254.10.20:4488`
@@ -122,9 +123,12 @@ When no transport is specified, muxly prefers
 `${XDG_RUNTIME_DIR}/muxly.sock`, then `/run/user/$UID/muxly.sock`, and finally
 falls back to `/tmp/muxly.sock`.
 
-Plain `tcp://` and `http://` are intentionally restricted to loopback and
+Plain `tcp://`, `http://`, and `h2://` are intentionally restricted to loopback and
 link-local addresses unless you also pass
 `--i-know-this-is-unencrypted-and-unauthenticated`.
+
+`h2://` is explicit cleartext HTTP/2 (H2C). `http://` remains the HTTP/1.1
+transport spelling.
 
 `h3wt://` is a WebTransport-over-HTTP/3 transport. The daemon prints a
 ready-to-use `?sha256=...` certificate pin when it starts listening, and the

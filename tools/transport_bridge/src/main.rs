@@ -1,4 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
+use bytes::Bytes;
+use h2::client::SendRequest;
+use h2::{client, server, RecvStream};
+use http::Request;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -19,6 +23,9 @@ const DEFAULT_MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 enum Command {
     HttpClient(HttpClientArgs),
     HttpServer(HttpServerArgs),
+    H2Client(HttpClientArgs),
+    H2SessionClient(HttpClientArgs),
+    H2Server(HttpServerArgs),
     H3wtClient(H3wtClientArgs),
     H3wtSessionClient(H3wtClientArgs),
     H3wtServer(H3wtServerArgs),
@@ -88,6 +95,9 @@ async fn real_main() -> Result<()> {
     match parse_args()? {
         Command::HttpClient(args) => run_http_client(args).await,
         Command::HttpServer(args) => run_http_server(args).await,
+        Command::H2Client(args) => run_h2_client(args).await,
+        Command::H2SessionClient(args) => run_h2_session_client(args).await,
+        Command::H2Server(args) => run_h2_server(args).await,
         Command::H3wtClient(args) => run_h3wt_client(args).await,
         Command::H3wtSessionClient(args) => run_h3wt_session_client(args).await,
         Command::H3wtServer(args) => run_h3wt_server(args).await,
@@ -125,6 +135,35 @@ fn parse_args() -> Result<Command> {
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         "http-server" => Ok(Command::HttpServer(HttpServerArgs {
+            listen_host: required(&values, "listen-host")?,
+            listen_port: required(&values, "listen-port")?
+                .parse()
+                .context("invalid --listen-port")?,
+            path: required(&values, "path")?,
+            upstream_unix: PathBuf::from(required(&values, "upstream-unix")?),
+            ready_file: PathBuf::from(required(&values, "ready-file")?),
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+        })),
+        "h2-client" => Ok(Command::H2Client(HttpClientArgs {
+            host: required(&values, "host")?,
+            port: required(&values, "port")?
+                .parse()
+                .context("invalid --port")?,
+            path: required(&values, "path")?,
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+        })),
+        "h2-session-client" => Ok(Command::H2SessionClient(HttpClientArgs {
+            host: required(&values, "host")?,
+            port: required(&values, "port")?
+                .parse()
+                .context("invalid --port")?,
+            path: required(&values, "path")?,
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+        })),
+        "h2-server" => Ok(Command::H2Server(HttpServerArgs {
             listen_host: required(&values, "listen-host")?,
             listen_port: required(&values, "listen-port")?
                 .parse()
@@ -275,6 +314,240 @@ async fn handle_http_connection(
     }
 
     Ok(())
+}
+
+async fn run_h2_client(args: HttpClientArgs) -> Result<()> {
+    let stream = TcpStream::connect((args.host.as_str(), args.port))
+        .await
+        .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
+    let mut builder = client::Builder::new();
+    configure_h2_client_windows(&mut builder, args.max_message_bytes);
+    let (sender, connection) = builder
+        .handshake(stream)
+        .await
+        .context("unable to establish H2C client session")?;
+    let connection_task = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+
+    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
+        trace(&format!("h2 client request bytes={}", request.len()));
+        let mut response =
+            send_h2_request(&sender, &args.host, args.port, &args.path, request).await?;
+        copy_h2_body_to_stdout(&mut response, args.max_message_bytes, &mut stdout).await?;
+    }
+
+    connection_task.abort();
+    let _ = connection_task.await;
+    Ok(())
+}
+
+async fn run_h2_session_client(args: HttpClientArgs) -> Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let stream = TcpStream::connect((args.host.as_str(), args.port))
+        .await
+        .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
+    let mut builder = client::Builder::new();
+    configure_h2_client_windows(&mut builder, args.max_message_bytes);
+    let (sender, connection) = builder
+        .handshake(stream)
+        .await
+        .context("unable to establish H2C client session")?;
+    let connection_task = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let sender = Arc::new(Mutex::new(sender));
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
+    let mut tasks = Vec::new();
+
+    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
+        trace(&format!(
+            "h2 session client request bytes={}",
+            request.len()
+        ));
+        let sender = sender.clone();
+        let stdout = stdout.clone();
+        let host = args.host.clone();
+        let path = args.path.clone();
+        let port = args.port;
+        let max_message_bytes = args.max_message_bytes;
+        tasks.push(tokio::spawn(async move {
+            let response_future = {
+                let sender = sender.lock().await;
+                start_h2_request(&sender, &host, port, &path, request).await?
+            };
+            let mut response = finish_h2_request(response_future).await?;
+            copy_h2_body_to_shared_stdout(&mut response, max_message_bytes, stdout).await
+        }));
+    }
+
+    for task in tasks {
+        task.await??;
+    }
+
+    connection_task.abort();
+    let _ = connection_task.await;
+    Ok(())
+}
+
+async fn run_h2_server(args: HttpServerArgs) -> Result<()> {
+    let listener = TcpListener::bind((args.listen_host.as_str(), args.listen_port))
+        .await
+        .with_context(|| {
+            format!(
+                "unable to bind H2 listener on {}:{}",
+                args.listen_host, args.listen_port
+            )
+        })?;
+    let local_addr = listener.local_addr().context("missing local H2 address")?;
+
+    write_ready_file(
+        &args.ready_file,
+        ReadyFile {
+            host: &args.listen_host,
+            port: local_addr.port(),
+            path: &args.path,
+            sha256: None,
+        },
+    )
+    .await?;
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let path = args.path.clone();
+        let upstream_unix = args.upstream_unix.clone();
+        let max_message_bytes = args.max_message_bytes;
+        tokio::spawn(async move {
+            let _ = handle_h2_connection(socket, upstream_unix, path, max_message_bytes).await;
+        });
+    }
+}
+
+async fn handle_h2_connection(
+    socket: TcpStream,
+    upstream_unix: PathBuf,
+    path: String,
+    max_message_bytes: usize,
+) -> Result<()> {
+    let mut builder = server::Builder::new();
+    configure_h2_server_windows(&mut builder, max_message_bytes);
+    let mut connection = builder
+        .handshake(socket)
+        .await
+        .context("unable to establish H2C server session")?;
+
+    while let Some(result) = connection.accept().await {
+        let (request, respond) = result?;
+        let expected_path = path.clone();
+        let upstream_unix = upstream_unix.clone();
+        tokio::spawn(async move {
+            let _ = handle_h2_stream(
+                request,
+                respond,
+                upstream_unix,
+                expected_path,
+                max_message_bytes,
+            )
+            .await;
+        });
+    }
+
+    Ok(())
+}
+
+async fn handle_h2_stream(
+    request: Request<RecvStream>,
+    mut respond: server::SendResponse<Bytes>,
+    upstream_unix: PathBuf,
+    expected_path: String,
+    max_message_bytes: usize,
+) -> Result<()> {
+    if request.uri().path() != expected_path {
+        let response = http::Response::builder()
+            .status(404)
+            .body(())
+            .context("unable to build H2 404 response")?;
+        let mut send = respond.send_response(response, false)?;
+        send.send_data(Bytes::new(), true)?;
+        return Ok(());
+    }
+
+    let request = read_h2_request_body(request, max_message_bytes).await?;
+    trace(&format!("h2 server request bytes={}", request.len()));
+
+    let upstream = UnixStream::connect(&upstream_unix)
+        .await
+        .with_context(|| format!("unable to connect to upstream {}", upstream_unix.display()))?;
+    let mut upstream = BufStream::new(upstream);
+    upstream.write_all(&request).await?;
+    upstream.write_all(b"\n").await?;
+    upstream.flush().await?;
+
+    let response = http::Response::builder()
+        .status(200)
+        .body(())
+        .context("unable to build H2 response")?;
+    let mut send = respond.send_response(response, false)?;
+
+    let mut wrote_response = false;
+    while let Some(response) = read_line_message(&mut upstream, max_message_bytes).await? {
+        trace(&format!("h2 server response bytes={}", response.len()));
+        wrote_response = true;
+        send.send_data(Bytes::from(response), false)?;
+        send.send_data(Bytes::from_static(b"\n"), false)?;
+    }
+    if !wrote_response {
+        bail!("upstream closed before sending a response");
+    }
+
+    send.send_data(Bytes::new(), true)?;
+    Ok(())
+}
+
+async fn send_h2_request(
+    sender: &SendRequest<Bytes>,
+    host: &str,
+    port: u16,
+    path: &str,
+    request: Vec<u8>,
+) -> Result<RecvStream> {
+    let response = start_h2_request(sender, host, port, path, request).await?;
+    finish_h2_request(response).await
+}
+
+async fn start_h2_request(
+    sender: &SendRequest<Bytes>,
+    host: &str,
+    port: u16,
+    path: &str,
+    request: Vec<u8>,
+) -> Result<client::ResponseFuture> {
+    let mut sender = sender.clone().ready().await?;
+    let request_head = Request::builder()
+        .method("POST")
+        .uri(format!("http://{}{}", authority(host, port), path))
+        .body(())
+        .context("unable to build H2 request")?;
+    let (response, mut send_stream) = sender.send_request(request_head, false)?;
+    send_stream.send_data(Bytes::from(request), false)?;
+    send_stream.send_data(Bytes::from_static(b"\n"), true)?;
+
+    Ok(response)
+}
+
+async fn finish_h2_request(response: client::ResponseFuture) -> Result<RecvStream> {
+    let response = response.await?;
+    if response.status() != 200 {
+        bail!("unexpected H2 status {}", response.status());
+    }
+    Ok(response.into_body())
 }
 
 async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
@@ -593,6 +866,122 @@ fn host_header(host: &str, port: u16) -> String {
     authority(host, port)
 }
 
+struct H2LineDecoder {
+    buffer: Vec<u8>,
+    max_message_bytes: usize,
+}
+
+impl H2LineDecoder {
+    fn new(max_message_bytes: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            max_message_bytes,
+        }
+    }
+
+    fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.buffer.extend_from_slice(chunk);
+        if self.buffer.len() > self.max_message_bytes {
+            bail!(
+                "message exceeds buffered bridge cap of {} bytes",
+                self.max_message_bytes
+            );
+        }
+
+        let mut lines = Vec::new();
+        while let Some(index) = self.buffer.iter().position(|&byte| byte == b'\n') {
+            let mut line = self.buffer.drain(..=index).collect::<Vec<u8>>();
+            if line.last().copied() == Some(b'\n') {
+                line.pop();
+            }
+            if line.last().copied() == Some(b'\r') {
+                line.pop();
+            }
+            lines.push(line);
+        }
+        Ok(lines)
+    }
+
+    fn finish(&mut self) -> Vec<Vec<u8>> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        vec![std::mem::take(&mut self.buffer)]
+    }
+}
+
+async fn read_h2_request_body(
+    request: Request<RecvStream>,
+    max_message_bytes: usize,
+) -> Result<Vec<u8>> {
+    let mut body = request.into_body();
+    let mut decoder = H2LineDecoder::new(max_message_bytes);
+    let mut lines = Vec::new();
+
+    while let Some(chunk) = body.data().await {
+        lines.extend(decoder.push_chunk(&chunk?)?);
+    }
+    lines.extend(decoder.finish());
+
+    match lines.len() {
+        0 => bail!("missing H2 request body"),
+        1 => Ok(lines.pop().expect("single line should exist")),
+        _ => bail!("H2 request body contained multiple logical messages"),
+    }
+}
+
+async fn copy_h2_body_to_stdout(
+    body: &mut RecvStream,
+    max_message_bytes: usize,
+    stdout: &mut tokio::io::Stdout,
+) -> Result<()> {
+    let mut decoder = H2LineDecoder::new(max_message_bytes);
+    while let Some(chunk) = body.data().await {
+        for line in decoder.push_chunk(&chunk?)? {
+            trace(&format!("h2 client response bytes={}", line.len()));
+            stdout.write_all(&line).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
+    }
+
+    for line in decoder.finish() {
+        trace(&format!("h2 client response bytes={}", line.len()));
+        stdout.write_all(&line).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+    }
+
+    Ok(())
+}
+
+async fn copy_h2_body_to_shared_stdout(
+    body: &mut RecvStream,
+    max_message_bytes: usize,
+    stdout: std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+) -> Result<()> {
+    let mut decoder = H2LineDecoder::new(max_message_bytes);
+    while let Some(chunk) = body.data().await {
+        for line in decoder.push_chunk(&chunk?)? {
+            trace(&format!("h2 session client response bytes={}", line.len()));
+            let mut stdout = stdout.lock().await;
+            stdout.write_all(&line).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
+    }
+
+    for line in decoder.finish() {
+        trace(&format!("h2 session client response bytes={}", line.len()));
+        let mut stdout = stdout.lock().await;
+        stdout.write_all(&line).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+    }
+
+    Ok(())
+}
+
 async fn read_line_message<R>(reader: &mut R, max_message_bytes: usize) -> Result<Option<Vec<u8>>>
 where
     R: AsyncBufRead + Unpin,
@@ -791,6 +1180,22 @@ fn trace(message: &str) {
     if env::var_os("MUXLY_TRANSPORT_BRIDGE_TRACE").is_some() {
         eprintln!("[muxly-transport-bridge] {message}");
     }
+}
+
+fn h2_window_bytes(max_message_bytes: usize) -> u32 {
+    u32::try_from(max_message_bytes).unwrap_or(u32::MAX)
+}
+
+fn configure_h2_client_windows(builder: &mut client::Builder, max_message_bytes: usize) {
+    let window = h2_window_bytes(max_message_bytes);
+    builder.initial_window_size(window);
+    builder.initial_connection_window_size(window);
+}
+
+fn configure_h2_server_windows(builder: &mut server::Builder, max_message_bytes: usize) {
+    let window = h2_window_bytes(max_message_bytes);
+    builder.initial_window_size(window);
+    builder.initial_connection_window_size(window);
 }
 
 #[cfg(test)]

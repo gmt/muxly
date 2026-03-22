@@ -324,7 +324,7 @@ pub const CompatibilityClientPool = struct {
 fn transportModeForAddress(address: transport.Address) CompatibilityTransportMode {
     return switch (address.target) {
         .http, .ssh => .pooled_connections,
-        .unix, .tcp, .h3wt => .shared_connection,
+        .unix, .tcp, .h2, .h3wt => .shared_connection,
     };
 }
 
@@ -1067,7 +1067,7 @@ const ConversationClientState = struct {
     document_path: []u8,
     runtime_limits: runtime_config.RuntimeLimits,
     compatibility_dispatcher: ?*CompatibilityAsyncDispatcher = null,
-    native_h3wt_session: ?*NativeH3wtSession = null,
+    native_session: ?*NativeSession = null,
     frame_router: conversation_router.ConversationRouter,
     next_conversation_id: u64 = 1,
     next_request_id: u64 = 1,
@@ -1096,8 +1096,11 @@ const ConversationClientState = struct {
         defer address.deinit(allocator);
 
         switch (address.target) {
+            .h2 => |h2| {
+                state.native_session = try NativeSession.initH2(state, h2);
+            },
             .h3wt => |h3wt| {
-                state.native_h3wt_session = try NativeH3wtSession.init(state, h3wt);
+                state.native_session = try NativeSession.initH3wt(state, h3wt);
             },
             else => {
                 state.compatibility_dispatcher = try CompatibilityAsyncDispatcher.init(
@@ -1114,7 +1117,7 @@ const ConversationClientState = struct {
     }
 
     fn deinit(self: *ConversationClientState) void {
-        if (self.native_h3wt_session) |session| session.deinit();
+        if (self.native_session) |session| session.deinit();
         if (self.compatibility_dispatcher) |dispatcher| dispatcher.deinit();
         self.frame_router.deinit();
         self.allocator.free(self.document_path);
@@ -1240,7 +1243,7 @@ const ConversationClientState = struct {
     }
 
     fn submitEnvelopeOwned(self: *ConversationClientState, envelope_json: []u8) !void {
-        if (self.native_h3wt_session) |session| {
+        if (self.native_session) |session| {
             defer self.allocator.free(envelope_json);
             try session.sendEnvelope(envelope_json);
             return;
@@ -1293,7 +1296,7 @@ const ConversationClientState = struct {
         document_path: []const u8,
         node_id: u64,
     ) !TtyOutputStream {
-        if (self.native_h3wt_session == null) return error.UnsupportedTtyOutputStreamTransport;
+        if (self.native_session == null) return error.UnsupportedTtyOutputStreamTransport;
 
         const conversation_id = try self.nextConversationId();
         errdefer self.allocator.free(conversation_id);
@@ -1419,7 +1422,7 @@ const ConversationClientState = struct {
         params_json: []const u8,
         pane_id: []const u8,
     ) !PaneCaptureStream {
-        if (self.native_h3wt_session == null) return error.UnsupportedPaneCaptureStreamTransport;
+        if (self.native_session == null) return error.UnsupportedPaneCaptureStreamTransport;
 
         const conversation_id = try self.nextConversationId();
         errdefer self.allocator.free(conversation_id);
@@ -1464,17 +1467,17 @@ const ConversationClientState = struct {
     }
 };
 
-const NativeH3wtSession = struct {
+const NativeSession = struct {
     state_owner: *ConversationClientState,
     process: transport.ProcessSession,
     write_mutex: std.Thread.Mutex = .{},
     reader_thread: ?std.Thread = null,
 
-    fn init(
+    fn initH3wt(
         state_owner: *ConversationClientState,
         h3wt: transport.Address.H3wtAddress,
-    ) !*NativeH3wtSession {
-        const session = try state_owner.allocator.create(NativeH3wtSession);
+    ) !*NativeSession {
+        const session = try state_owner.allocator.create(NativeSession);
         errdefer state_owner.allocator.destroy(session);
 
         session.* = .{
@@ -1491,7 +1494,28 @@ const NativeH3wtSession = struct {
         return session;
     }
 
-    fn deinit(self: *NativeH3wtSession) void {
+    fn initH2(
+        state_owner: *ConversationClientState,
+        h2: transport.Address.H2Address,
+    ) !*NativeSession {
+        const session = try state_owner.allocator.create(NativeSession);
+        errdefer state_owner.allocator.destroy(session);
+
+        session.* = .{
+            .state_owner = state_owner,
+            .process = try transport.ProcessSession.initH2ConversationWithMaxMessageBytes(
+                state_owner.allocator,
+                h2,
+                state_owner.runtime_limits.max_message_bytes,
+            ),
+        };
+        errdefer session.process.close();
+
+        session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
+        return session;
+    }
+
+    fn deinit(self: *NativeSession) void {
         self.state_owner.frame_router.close();
         self.write_mutex.lock();
         self.process.stdin_file.close();
@@ -1503,19 +1527,19 @@ const NativeH3wtSession = struct {
         self.state_owner.allocator.destroy(self);
     }
 
-    fn sendEnvelope(self: *NativeH3wtSession, envelope_json: []const u8) !void {
+    fn sendEnvelope(self: *NativeSession, envelope_json: []const u8) !void {
         self.write_mutex.lock();
         defer self.write_mutex.unlock();
         try self.process.writeAll(envelope_json);
         try self.process.writeAll("\n");
     }
 
-    fn readerMain(self: *NativeH3wtSession) void {
+    fn readerMain(self: *NativeSession) void {
         self.readerLoop() catch {};
         self.state_owner.frame_router.close();
     }
 
-    fn readerLoop(self: *NativeH3wtSession) !void {
+    fn readerLoop(self: *NativeSession) !void {
         var reader = transport.MessageReader.init(self.state_owner.allocator);
         defer reader.deinit();
 

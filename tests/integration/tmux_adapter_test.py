@@ -182,6 +182,7 @@ def main() -> None:
             "unix-domain-socket",
             "tcp",
             "http",
+            "h2",
             "h3wt",
         ]
 

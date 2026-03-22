@@ -24,11 +24,11 @@ pub const usage =
     \\usage: muxview [--transport SPEC] [--socket PATH] [--snapshot] [--i-know-this-is-unencrypted-and-unauthenticated]
     \\
     \\  --snapshot    render one snapshot and exit
-    \\  --transport   connect using a unix, tcp, ssh, http, or h3wt transport spec
+    \\  --transport   connect using a unix, tcp, ssh, http, h2, or h3wt transport spec
     \\  --socket      legacy alias for a unix-domain socket path; defaults to
     \\                ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
     \\  --i-know-this-is-unencrypted-and-unauthenticated
-    \\                allow tcp/http transports outside loopback/link-local ranges
+    \\                allow tcp/http/h2 transports outside loopback/link-local ranges
     \\  --help        show this help text
     \\
     \\interactive keys (live mode):

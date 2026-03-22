@@ -34,6 +34,17 @@ test "compatibility client pool selects pooled mode for http and ssh" {
         muxly.client.CompatibilityTransportMode.shared_connection,
         tcp_pool.mode,
     );
+
+    var h2_pool = try muxly.client.CompatibilityClientPool.init(
+        std.testing.allocator,
+        "h2://127.0.0.1:8080/rpc",
+        "/",
+    );
+    defer h2_pool.deinit();
+    try std.testing.expectEqual(
+        muxly.client.CompatibilityTransportMode.shared_connection,
+        h2_pool.mode,
+    );
 }
 
 test "pooled compatibility client pool hands out distinct clients" {

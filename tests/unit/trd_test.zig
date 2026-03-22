@@ -122,6 +122,22 @@ test "relative trd selectors can stay lazy through request targets" {
     try std.testing.expectEqualStrings("welcome/child", target.selector.?);
 }
 
+test "h2 trd transport references resolve to h2 transport specs" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://h2|127.0.0.1:8080/rpc//docs/demo#left");
+    defer parsed.deinit(std.testing.allocator);
+
+    var resolved = try parsed.resolve(
+        std.testing.allocator,
+        "tcp://127.0.0.1:4488",
+        "/current/doc",
+    );
+    defer resolved.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("h2://127.0.0.1:8080/rpc", resolved.transport_spec);
+    try std.testing.expectEqualStrings("/docs/demo", resolved.document_path);
+    try std.testing.expectEqualStrings("left", resolved.selector.?);
+}
+
 test "trd explicit unix server defaults endpoint when omitted" {
     var parsed = try muxly.trd.parse(std.testing.allocator, "trd://unix|//x/y");
     defer parsed.deinit(std.testing.allocator);

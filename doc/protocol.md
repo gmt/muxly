@@ -9,6 +9,10 @@ explicit, testable, and debuggable.
 ## Currently implemented transport
 
 - Unix domain sockets on Linux/macOS
+- raw TCP on Linux/macOS
+- HTTP/1.1 via explicit `http://` bridge transport
+- HTTP/2 (H2C) via explicit `h2://` bridge transport
+- WebTransport-over-HTTP/3 via explicit `h3wt://` bridge transport
 
 ## Transport roadmap notes
 
@@ -137,11 +141,12 @@ explicit, testable, and debuggable.
 - on native H3/WT tty paths, the reference viewer may also consume a live tty
   output stream for direct leaf output instead of relying on repeated projection
   polling alone
-- additive pane-capture streaming currently exists as a conversation/H3WT-first
+- additive pane-capture streaming currently exists as a conversation/native-stream
   path:
   - `pane.capture.stream.open`
   - `pane.scroll.stream.open`
   - these return finite chunk streams rather than one eager whole-message blob
+  - native `h2://` and `h3wt://` clients can consume those streams directly
   - buffered compatibility transports still use eager `pane.capture` /
     `pane.scroll` in this slice
 - `node.remove` currently succeeds only for childless nodes; callers should
@@ -170,7 +175,7 @@ explicit, testable, and debuggable.
   - `followTailSemantics: "stored-node-preference"`
   - `viewStateScope: "shared-document-transitional"`
   - `bufferPolicy: "runtime-configurable"`
-  - `paneCaptureStreaming: "h3wt-only"`
+  - `paneCaptureStreaming: "h2-and-h3wt"`
   - `maxMessageBytes: <effective runtime cap>`
   - `maxDocumentContentBytes: <effective runtime cap>`
   - `tmuxBackendMode: "hybrid-control-invalidation"`

@@ -15,7 +15,7 @@ test "capabilities describe current phase-2 semantics truthfully" {
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewStateScope\":\"shared-document-transitional\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewerCompositionLocation\":\"client\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"bufferPolicy\":\"runtime-configurable\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"paneCaptureStreaming\":\"h3wt-only\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"paneCaptureStreaming\":\"h2-and-h3wt\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"maxMessageBytes\":134217728") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"maxDocumentContentBytes\":1073741824") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"tmuxBackendMode\":\"hybrid-control-invalidation\"") != null);
@@ -28,7 +28,7 @@ test "capabilities describe current phase-2 semantics truthfully" {
     } else {
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsUnixSocket\":true") != null);
         try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsTcpSocket\":true") != null);
-        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"implementedTransports\":[\"unix-domain-socket\",\"tcp\",\"http\",\"h3wt\"]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"implementedTransports\":[\"unix-domain-socket\",\"tcp\",\"http\",\"h2\",\"h3wt\"]") != null);
     }
 
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"supportsNamedPipes\":false") != null);

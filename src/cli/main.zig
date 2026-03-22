@@ -278,7 +278,7 @@ fn printUsage() !void {
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view expand <node-id>
         \\
         \\transport notes:
-        \\  SPEC may be unix paths, tcp://, ssh://, http://, or h3wt://
+        \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, or h3wt://
         \\  bare/default sockets use ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
         \\  document-or-node targets (trd://doc, trd://doc#node, trd:#node) are accepted by:
         \\    node get, node append, session create-under, projection get [focused target], view set-root

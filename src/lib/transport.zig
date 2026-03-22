@@ -11,6 +11,7 @@ pub const max_message_bytes: usize = limits.default_max_message_bytes;
 pub const unsafe_tcp_prefix = "unsafe+";
 pub const unsafe_tcp_flag = "--i-know-this-is-unencrypted-and-unauthenticated";
 pub const http_default_path = "/rpc";
+pub const h2_default_path = "/rpc";
 pub const h3wt_default_path = "/mux";
 
 pub const MessageReader = struct {
@@ -67,6 +68,7 @@ pub const Address = struct {
         tcp: TcpAddress,
         ssh: SshAddress,
         http: HttpAddress,
+        h2: H2Address,
         h3wt: H3wtAddress,
     };
 
@@ -91,6 +93,16 @@ pub const Address = struct {
         path: []u8,
 
         pub fn resolve(self: HttpAddress) !std.net.Address {
+            return try std.net.Address.resolveIp(self.host, self.port);
+        }
+    };
+
+    pub const H2Address = struct {
+        host: []u8,
+        port: u16,
+        path: []u8,
+
+        pub fn resolve(self: H2Address) !std.net.Address {
             return try std.net.Address.resolveIp(self.host, self.port);
         }
     };
@@ -135,6 +147,14 @@ pub const Address = struct {
             return .{
                 .allow_insecure_tcp = allow_insecure_tcp,
                 .target = .{ .http = http },
+            };
+        }
+
+        if (std.mem.startsWith(u8, trimmed, "h2://")) {
+            const h2 = try parseH2(allocator, trimmed["h2://".len..]);
+            return .{
+                .allow_insecure_tcp = allow_insecure_tcp,
+                .target = .{ .h2 = h2 },
             };
         }
 
@@ -186,6 +206,10 @@ pub const Address = struct {
                 allocator.free(http.host);
                 allocator.free(http.path);
             },
+            .h2 => |h2| {
+                allocator.free(h2.host);
+                allocator.free(h2.path);
+            },
             .h3wt => |h3wt| {
                 allocator.free(h3wt.host);
                 allocator.free(h3wt.path);
@@ -213,6 +237,7 @@ pub const Address = struct {
                 }
             },
             .http => |http| try writeHttpLikeSpec(writer, "http", http.host, http.port, http.path, null),
+            .h2 => |h2| try writeHttpLikeSpec(writer, "h2", h2.host, h2.port, h2.path, null),
             .h3wt => |h3wt| try writeHttpLikeSpec(writer, "h3wt", h3wt.host, h3wt.port, h3wt.path, h3wt.certificate_hash),
         }
     }
@@ -221,13 +246,14 @@ pub const Address = struct {
         return switch (self.target) {
             .tcp => |tcp| isLocalOnlyTcpAddress(try tcp.resolve()),
             .http => |http| isLocalOnlyTcpAddress(try http.resolve()),
+            .h2 => |h2| isLocalOnlyTcpAddress(try h2.resolve()),
             else => true,
         };
     }
 
     pub fn validateForClient(self: Address) !void {
         switch (self.target) {
-            .tcp, .http => {
+            .tcp, .http, .h2 => {
                 if (!self.allow_insecure_tcp and !(try self.isTcpLocalOnly())) {
                     return error.InsecureTcpAddressRequiresExplicitOverride;
                 }
@@ -238,7 +264,7 @@ pub const Address = struct {
 
     pub fn validateForServer(self: Address) !void {
         switch (self.target) {
-            .tcp, .http => {
+            .tcp, .http, .h2 => {
                 if (!self.allow_insecure_tcp and !(try self.isTcpLocalOnly())) {
                     return error.InsecureTcpAddressRequiresExplicitOverride;
                 }
@@ -339,6 +365,66 @@ pub const ProcessSession = struct {
         try argv.append(port_text);
         try argv.append("--path");
         try argv.append(http.path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        return try spawn(allocator, argv.items);
+    }
+
+    pub fn initH2(allocator: std.mem.Allocator, h2: Address.H2Address) !ProcessSession {
+        return try initH2WithMaxMessageBytes(allocator, h2, max_message_bytes);
+    }
+
+    pub fn initH2WithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        h2: Address.H2Address,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h2.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h2-client");
+        try argv.append("--host");
+        try argv.append(h2.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(h2.path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        return try spawn(allocator, argv.items);
+    }
+
+    pub fn initH2Conversation(allocator: std.mem.Allocator, h2: Address.H2Address) !ProcessSession {
+        return try initH2ConversationWithMaxMessageBytes(allocator, h2, max_message_bytes);
+    }
+
+    pub fn initH2ConversationWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        h2: Address.H2Address,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h2.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h2-session-client");
+        try argv.append("--host");
+        try argv.append(h2.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(h2.path);
         const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
         defer allocator.free(max_message_bytes_text);
         try argv.append("--max-message-bytes");
@@ -483,6 +569,10 @@ pub const Listener = struct {
                 .allow_insecure_tcp = address.allow_insecure_tcp,
                 .target = .{ .proxy = try ProxyListener.initHttp(allocator, address.allow_insecure_tcp, http, max_message_bytes_value) },
             },
+            .h2 => |h2| .{
+                .allow_insecure_tcp = address.allow_insecure_tcp,
+                .target = .{ .proxy = try ProxyListener.initH2(allocator, address.allow_insecure_tcp, h2, max_message_bytes_value) },
+            },
             .h3wt => |h3wt| .{
                 .allow_insecure_tcp = address.allow_insecure_tcp,
                 .target = .{ .proxy = try ProxyListener.initH3wt(allocator, h3wt, max_message_bytes_value) },
@@ -536,6 +626,7 @@ pub fn connectWithMaxMessageBytes(
         .tcp => |tcp| .{ .socket = try std.net.tcpConnectToAddress(try tcp.resolve()) },
         .ssh => |ssh| .{ .process = try ProcessSession.initSsh(allocator, ssh, address.allow_insecure_tcp) },
         .http => |http| .{ .process = try ProcessSession.initHttpWithMaxMessageBytes(allocator, http, max_message_bytes_value) },
+        .h2 => |h2| .{ .process = try ProcessSession.initH2WithMaxMessageBytes(allocator, h2, max_message_bytes_value) },
         .h3wt => |h3wt| .{ .process = try ProcessSession.initH3wtWithMaxMessageBytes(allocator, h3wt, max_message_bytes_value) },
     };
 }
@@ -574,6 +665,17 @@ fn parseSsh(allocator: std.mem.Allocator, spec: []const u8) !Address.SshAddress 
 
 fn parseHttp(allocator: std.mem.Allocator, spec: []const u8) !Address.HttpAddress {
     const parsed = try parseHttpLike(allocator, spec, 80, http_default_path, false);
+    errdefer allocator.free(parsed.host);
+    errdefer allocator.free(parsed.path);
+    return .{
+        .host = parsed.host,
+        .port = parsed.port,
+        .path = parsed.path,
+    };
+}
+
+fn parseH2(allocator: std.mem.Allocator, spec: []const u8) !Address.H2Address {
+    const parsed = try parseHttpLike(allocator, spec, 80, h2_default_path, false);
     errdefer allocator.free(parsed.host);
     errdefer allocator.free(parsed.path);
     return .{
@@ -827,6 +929,78 @@ pub const ProxyListener = struct {
         const ready = try waitForProxyReady(allocator, temp_paths.ready_path);
         defer ready.deinit(allocator);
         const description = try buildHttpDescription(
+            allocator,
+            allow_insecure_tcp,
+            ready.host,
+            ready.port,
+            ready.path,
+        );
+        errdefer allocator.free(description);
+
+        return .{
+            .allocator = allocator,
+            .description = description,
+            .socket_path = temp_paths.socket_path,
+            .ready_file_path = temp_paths.ready_path,
+            .internal_listener = internal_listener,
+            .child = child,
+        };
+    }
+
+    pub fn initH2(
+        allocator: std.mem.Allocator,
+        allow_insecure_tcp: bool,
+        h2: Address.H2Address,
+        max_message_bytes_value: usize,
+    ) !ProxyListener {
+        const temp_paths = try makeProxyTempPaths(allocator, "h2");
+        errdefer allocator.free(temp_paths.socket_path);
+        errdefer allocator.free(temp_paths.ready_path);
+
+        const internal_listener = try unix_socket.Listener.init(temp_paths.socket_path);
+        errdefer {
+            var listener = internal_listener;
+            listener.deinit();
+        }
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h2-server");
+        try argv.append("--listen-host");
+        try argv.append(h2.host);
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h2.port});
+        try argv.append("--listen-port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(h2.path);
+        try argv.append("--upstream-unix");
+        try argv.append(temp_paths.socket_path);
+        try argv.append("--ready-file");
+        try argv.append(temp_paths.ready_path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        if (allow_insecure_tcp) {
+            try argv.append("--allow-insecure");
+        }
+
+        var child = std.process.Child.init(argv.items, allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        try child.spawn();
+        errdefer {
+            _ = child.kill() catch {};
+            _ = child.wait() catch {};
+        }
+
+        const ready = try waitForProxyReady(allocator, temp_paths.ready_path);
+        defer ready.deinit(allocator);
+        const description = try buildH2Description(
             allocator,
             allow_insecure_tcp,
             ready.host,
@@ -1115,6 +1289,19 @@ fn buildHttpDescription(
     var buffer = std.array_list.Managed(u8).init(allocator);
     errdefer buffer.deinit();
     try writeHttpLikeSpec(buffer.writer(), "http", host, port, path, null);
+    return try buffer.toOwnedSlice();
+}
+
+fn buildH2Description(
+    allocator: std.mem.Allocator,
+    _: bool,
+    host: []const u8,
+    port: u16,
+    path: []const u8,
+) ![]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    errdefer buffer.deinit();
+    try writeHttpLikeSpec(buffer.writer(), "h2", host, port, path, null);
     return try buffer.toOwnedSlice();
 }
 

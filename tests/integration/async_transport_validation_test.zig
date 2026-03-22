@@ -15,6 +15,7 @@ const poll_interval_ms: u64 = 10;
 const TransportKind = enum {
     tcp,
     http,
+    h2,
     h3wt,
 };
 
@@ -52,6 +53,11 @@ test "async validation matrix over tcp transport" {
 test "async validation matrix over http transport" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     try runRpcValidationMatrix(std.testing.allocator, .http, "http://127.0.0.1:0/rpc");
+}
+
+test "async validation matrix over h2 transport" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try runRpcValidationMatrix(std.testing.allocator, .h2, "h2://127.0.0.1:0/rpc");
 }
 
 test "async validation matrix over h3wt transport" {
@@ -165,27 +171,39 @@ test "async validation keeps h3wt tty streams isolated and reattachable" {
     }
 }
 
+test "async validation streams pane capture and scroll over h2" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try ensureTmuxAvailable(std.testing.allocator);
+    try runPaneCaptureStreamValidation(std.testing.allocator, "h2://127.0.0.1:0/rpc");
+}
+
 test "async validation streams pane capture and scroll over h3wt" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     try ensureTmuxAvailable(std.testing.allocator);
+    try runPaneCaptureStreamValidation(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
+}
 
-    var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
+fn runPaneCaptureStreamValidation(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+) !void {
+    var daemon = try startDaemon(allocator, transport_spec);
     defer daemon.deinit();
 
-    const session_name = try uniqueSessionName(std.testing.allocator, "muxly-capture");
-    defer std.testing.allocator.free(session_name);
-    defer cleanupTmuxSession(std.testing.allocator, session_name);
+    const session_name = try uniqueSessionName(allocator, "muxly-capture");
+    defer allocator.free(session_name);
+    defer cleanupTmuxSession(allocator, session_name);
 
     const command =
         "sh -lc 'i=0; while [ \"$i\" -lt 1400 ]; do printf \"cap-%04d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n\" \"$i\"; i=$((i+1)); if [ $((i % 25)) -eq 0 ]; then sleep 0.01; fi; done; sleep 10'";
     const node_id = try createTmuxSessionNode(
-        std.testing.allocator,
+        allocator,
         daemon.actual_spec,
         session_name,
         command,
     );
 
-    var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    var client = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
     defer client.deinit();
 
     var tty = try client.openTty(.{
@@ -198,8 +216,12 @@ test "async validation streams pane capture and scroll over h3wt" {
 
     var capture_stream = try client.openPaneCaptureStream(tty.pane_id);
     defer capture_stream.deinit();
-    const capture = try collectPaneCaptureStream(std.testing.allocator, &capture_stream, 10_000);
-    defer std.testing.allocator.free(capture.bytes);
+    const ping_response = try client.request("ping", "{}");
+    defer allocator.free(ping_response);
+    try expectPong(allocator, ping_response);
+
+    const capture = try collectPaneCaptureStream(allocator, &capture_stream, 10_000);
+    defer allocator.free(capture.bytes);
 
     try std.testing.expect(capture.chunk_count > 1);
     try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0000") != null);
@@ -207,8 +229,8 @@ test "async validation streams pane capture and scroll over h3wt" {
 
     var scroll_stream = try client.openPaneScrollStream(tty.pane_id, 0, 20);
     defer scroll_stream.deinit();
-    const scroll = try collectPaneCaptureStream(std.testing.allocator, &scroll_stream, 10_000);
-    defer std.testing.allocator.free(scroll.bytes);
+    const scroll = try collectPaneCaptureStream(allocator, &scroll_stream, 10_000);
+    defer allocator.free(scroll.bytes);
 
     try std.testing.expect(scroll.chunk_count >= 1);
     try std.testing.expect(std.mem.indexOf(u8, scroll.bytes, "cap-") != null);

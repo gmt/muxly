@@ -72,6 +72,37 @@ test "http transport parses, validates local-only defaults, and round-trips" {
     try std.testing.expectEqualStrings("unsafe+http://10.0.0.5:9000/api", serialized.items);
 }
 
+test "h2 transport parses, validates local-only defaults, and round-trips" {
+    var safe_address = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "h2://127.0.0.1:8080/rpc",
+    );
+    defer safe_address.deinit(std.testing.allocator);
+
+    try safe_address.validateForClient();
+
+    switch (safe_address.target) {
+        .h2 => |h2| {
+            try std.testing.expectEqualStrings("127.0.0.1", h2.host);
+            try std.testing.expectEqual(@as(u16, 8080), h2.port);
+            try std.testing.expectEqualStrings("/rpc", h2.path);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    var unsafe_h2 = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "unsafe+h2://10.0.0.5:9000/api",
+    );
+    defer unsafe_h2.deinit(std.testing.allocator);
+    try unsafe_h2.validateForClient();
+
+    var serialized = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer serialized.deinit();
+    try unsafe_h2.write(serialized.writer());
+    try std.testing.expectEqualStrings("unsafe+h2://10.0.0.5:9000/api", serialized.items);
+}
+
 test "h3wt transport parses sha256 pins and round-trips" {
     var address = try muxly.transport.Address.parse(
         std.testing.allocator,
