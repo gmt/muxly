@@ -6,6 +6,7 @@ const build_options = @import("build_options");
 const limits = @import("../core/limits.zig");
 const unix_socket = @import("../platform/unix_socket.zig");
 
+/// Default whole-message cap used when a caller does not load runtime policy.
 pub const max_message_bytes: usize = limits.default_max_message_bytes;
 pub const unsafe_tcp_prefix = "unsafe+";
 pub const unsafe_tcp_flag = "--i-know-this-is-unencrypted-and-unauthenticated";
@@ -316,6 +317,14 @@ pub const ProcessSession = struct {
     }
 
     pub fn initHttp(allocator: std.mem.Allocator, http: Address.HttpAddress) !ProcessSession {
+        return try initHttpWithMaxMessageBytes(allocator, http, max_message_bytes);
+    }
+
+    pub fn initHttpWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        http: Address.HttpAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
         var port_buffer: [16]u8 = undefined;
         const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{http.port});
 
@@ -330,10 +339,22 @@ pub const ProcessSession = struct {
         try argv.append(port_text);
         try argv.append("--path");
         try argv.append(http.path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
         return try spawn(allocator, argv.items);
     }
 
     pub fn initH3wt(allocator: std.mem.Allocator, h3wt: Address.H3wtAddress) !ProcessSession {
+        return try initH3wtWithMaxMessageBytes(allocator, h3wt, max_message_bytes);
+    }
+
+    pub fn initH3wtWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        h3wt: Address.H3wtAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
         var port_buffer: [16]u8 = undefined;
         const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h3wt.port});
 
@@ -348,6 +369,10 @@ pub const ProcessSession = struct {
         try argv.append(port_text);
         try argv.append("--path");
         try argv.append(h3wt.path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
         if (h3wt.certificate_hash) |hash| {
             try argv.append("--sha256");
             try argv.append(hash);
@@ -356,6 +381,14 @@ pub const ProcessSession = struct {
     }
 
     pub fn initH3wtConversation(allocator: std.mem.Allocator, h3wt: Address.H3wtAddress) !ProcessSession {
+        return try initH3wtConversationWithMaxMessageBytes(allocator, h3wt, max_message_bytes);
+    }
+
+    pub fn initH3wtConversationWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        h3wt: Address.H3wtAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
         var port_buffer: [16]u8 = undefined;
         const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{h3wt.port});
 
@@ -370,6 +403,10 @@ pub const ProcessSession = struct {
         try argv.append(port_text);
         try argv.append("--path");
         try argv.append(h3wt.path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
         if (h3wt.certificate_hash) |hash| {
             try argv.append("--sha256");
             try argv.append(hash);
@@ -423,6 +460,14 @@ pub const Listener = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, address: *const Address) !Listener {
+        return try initWithMaxMessageBytes(allocator, address, max_message_bytes);
+    }
+
+    pub fn initWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        address: *const Address,
+        max_message_bytes_value: usize,
+    ) !Listener {
         try address.validateForServer();
 
         return switch (address.target) {
@@ -436,11 +481,11 @@ pub const Listener = struct {
             },
             .http => |http| .{
                 .allow_insecure_tcp = address.allow_insecure_tcp,
-                .target = .{ .proxy = try ProxyListener.initHttp(allocator, address.allow_insecure_tcp, http) },
+                .target = .{ .proxy = try ProxyListener.initHttp(allocator, address.allow_insecure_tcp, http, max_message_bytes_value) },
             },
             .h3wt => |h3wt| .{
                 .allow_insecure_tcp = address.allow_insecure_tcp,
-                .target = .{ .proxy = try ProxyListener.initH3wt(allocator, h3wt) },
+                .target = .{ .proxy = try ProxyListener.initH3wt(allocator, h3wt, max_message_bytes_value) },
             },
             .ssh => error.UnsupportedTransportForDaemon,
         };
@@ -476,14 +521,22 @@ pub const Listener = struct {
 };
 
 pub fn connect(allocator: std.mem.Allocator, address: *const Address) !Connection {
+    return try connectWithMaxMessageBytes(allocator, address, max_message_bytes);
+}
+
+pub fn connectWithMaxMessageBytes(
+    allocator: std.mem.Allocator,
+    address: *const Address,
+    max_message_bytes_value: usize,
+) !Connection {
     try address.validateForClient();
 
     return switch (address.target) {
         .unix => |path| .{ .socket = try unix_socket.connect(path) },
         .tcp => |tcp| .{ .socket = try std.net.tcpConnectToAddress(try tcp.resolve()) },
         .ssh => |ssh| .{ .process = try ProcessSession.initSsh(allocator, ssh, address.allow_insecure_tcp) },
-        .http => |http| .{ .process = try ProcessSession.initHttp(allocator, http) },
-        .h3wt => |h3wt| .{ .process = try ProcessSession.initH3wt(allocator, h3wt) },
+        .http => |http| .{ .process = try ProcessSession.initHttpWithMaxMessageBytes(allocator, http, max_message_bytes_value) },
+        .h3wt => |h3wt| .{ .process = try ProcessSession.initH3wtWithMaxMessageBytes(allocator, h3wt, max_message_bytes_value) },
     };
 }
 
@@ -724,6 +777,7 @@ pub const ProxyListener = struct {
         allocator: std.mem.Allocator,
         allow_insecure_tcp: bool,
         http: Address.HttpAddress,
+        max_message_bytes_value: usize,
     ) !ProxyListener {
         const temp_paths = try makeProxyTempPaths(allocator, "http");
         errdefer allocator.free(temp_paths.socket_path);
@@ -752,6 +806,10 @@ pub const ProxyListener = struct {
         try argv.append(temp_paths.socket_path);
         try argv.append("--ready-file");
         try argv.append(temp_paths.ready_path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
         if (allow_insecure_tcp) {
             try argv.append("--allow-insecure");
         }
@@ -787,7 +845,11 @@ pub const ProxyListener = struct {
         };
     }
 
-    pub fn initH3wt(allocator: std.mem.Allocator, h3wt: Address.H3wtAddress) !ProxyListener {
+    pub fn initH3wt(
+        allocator: std.mem.Allocator,
+        h3wt: Address.H3wtAddress,
+        max_message_bytes_value: usize,
+    ) !ProxyListener {
         const temp_paths = try makeProxyTempPaths(allocator, "h3wt");
         errdefer allocator.free(temp_paths.socket_path);
         errdefer allocator.free(temp_paths.ready_path);
@@ -815,6 +877,10 @@ pub const ProxyListener = struct {
         try argv.append(temp_paths.socket_path);
         try argv.append("--ready-file");
         try argv.append(temp_paths.ready_path);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
 
         var child = std.process.Child.init(argv.items, allocator);
         child.stdin_behavior = .Ignore;

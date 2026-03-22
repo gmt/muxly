@@ -1,4 +1,5 @@
 const std = @import("std");
+const limits = @import("../../core/limits.zig");
 const tmux_commands = @import("commands.zig");
 const tmux_events = @import("events.zig");
 const tmux_parser = @import("parser.zig");
@@ -70,7 +71,19 @@ pub fn splitPane(
 }
 
 pub fn capturePane(allocator: std.mem.Allocator, pane_id: []const u8) ![]u8 {
-    const result = try run(allocator, &.{ "tmux", "capture-pane", "-p", "-S", "-", "-t", pane_id });
+    return try capturePaneWithLimit(allocator, pane_id, limits.default_max_message_bytes);
+}
+
+pub fn capturePaneWithLimit(
+    allocator: std.mem.Allocator,
+    pane_id: []const u8,
+    max_output_bytes: usize,
+) ![]u8 {
+    const result = try runWithLimit(
+        allocator,
+        &.{ "tmux", "capture-pane", "-p", "-S", "-", "-t", pane_id },
+        max_output_bytes,
+    );
     if (!success(result.term)) {
         defer freeRunResult(allocator, result);
         return error.TmuxCommandFailed;
@@ -108,12 +121,32 @@ pub fn capturePaneRange(
     start_line: i64,
     end_line: i64,
 ) ![]u8 {
+    return try capturePaneRangeWithLimit(
+        allocator,
+        pane_id,
+        start_line,
+        end_line,
+        limits.default_max_message_bytes,
+    );
+}
+
+pub fn capturePaneRangeWithLimit(
+    allocator: std.mem.Allocator,
+    pane_id: []const u8,
+    start_line: i64,
+    end_line: i64,
+    max_output_bytes: usize,
+) ![]u8 {
     const start_text = try std.fmt.allocPrint(allocator, "{d}", .{start_line});
     defer allocator.free(start_text);
     const end_text = try std.fmt.allocPrint(allocator, "{d}", .{end_line});
     defer allocator.free(end_text);
 
-    const result = try run(allocator, &.{ "tmux", "capture-pane", "-p", "-S", start_text, "-E", end_text, "-t", pane_id });
+    const result = try runWithLimit(
+        allocator,
+        &.{ "tmux", "capture-pane", "-p", "-S", start_text, "-E", end_text, "-t", pane_id },
+        max_output_bytes,
+    );
     if (!success(result.term)) {
         defer freeRunResult(allocator, result);
         return error.TmuxCommandFailed;
@@ -189,9 +222,18 @@ pub fn listPaneSnapshots(allocator: std.mem.Allocator) ![]tmux_events.PaneSnapsh
 }
 
 fn run(allocator: std.mem.Allocator, argv: []const []const u8) !std.process.Child.RunResult {
+    return try runWithLimit(allocator, argv, 50 * 1024);
+}
+
+fn runWithLimit(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    max_output_bytes: usize,
+) !std.process.Child.RunResult {
     const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = argv,
+        .max_output_bytes = max_output_bytes,
     });
     if (!success(result.term)) {
         defer freeRunResult(allocator, result);

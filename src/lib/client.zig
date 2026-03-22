@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const protocol = @import("../core/protocol.zig");
+const runtime_config = @import("../core/runtime_config.zig");
 const conversation_router = @import("conversation_router.zig");
 const transport = @import("transport.zig");
 
@@ -18,6 +19,7 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     address: transport.Address,
     document_path: []u8,
+    runtime_limits: runtime_config.RuntimeLimits,
     connection: ?transport.Connection = null,
     response_reader: transport.MessageReader,
     next_request_id: u64 = 1,
@@ -33,10 +35,25 @@ pub const Client = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !Client {
+        return try initForDocumentWithRuntimeLimits(
+            allocator,
+            transport_spec,
+            document_path,
+            try runtime_config.loadClientLimits(allocator),
+        );
+    }
+
+    pub fn initForDocumentWithRuntimeLimits(
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        document_path: []const u8,
+        resolved_runtime_limits: runtime_config.RuntimeLimits,
+    ) !Client {
         return .{
             .allocator = allocator,
             .address = try transport.Address.parse(allocator, transport_spec),
             .document_path = try allocator.dupe(u8, document_path),
+            .runtime_limits = resolved_runtime_limits,
             .response_reader = transport.MessageReader.init(allocator),
         };
     }
@@ -92,13 +109,17 @@ pub const Client = struct {
 
         return (try self.response_reader.readMessageLine(
             connection,
-            transport.max_message_bytes,
+            self.runtime_limits.max_message_bytes,
         )) orelse error.EndOfStream;
     }
 
     fn ensureConnected(self: *Client) !*transport.Connection {
         if (self.connection == null) {
-            self.connection = try transport.connect(self.allocator, &self.address);
+            self.connection = try transport.connectWithMaxMessageBytes(
+                self.allocator,
+                &self.address,
+                self.runtime_limits.max_message_bytes,
+            );
         }
         return &self.connection.?;
     }
@@ -127,6 +148,17 @@ pub const TtyOutputPoll = union(enum) {
     closed,
 };
 
+pub const PaneCaptureChunk = union(enum) {
+    data: []u8,
+    closed,
+};
+
+pub const PaneCapturePoll = union(enum) {
+    pending,
+    data: []u8,
+    closed,
+};
+
 pub const CompatibilityTransportMode = enum {
     shared_connection,
     pooled_connections,
@@ -149,6 +181,7 @@ pub const CompatibilityClientPool = struct {
     allocator: std.mem.Allocator,
     transport_spec: []u8,
     document_path: []u8,
+    runtime_limits: runtime_config.RuntimeLimits,
     mode: CompatibilityTransportMode,
     max_connections: usize,
     shared_client: ?Client = null,
@@ -163,6 +196,20 @@ pub const CompatibilityClientPool = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !CompatibilityClientPool {
+        return try initWithRuntimeLimits(
+            allocator,
+            transport_spec,
+            document_path,
+            try runtime_config.loadClientLimits(allocator),
+        );
+    }
+
+    pub fn initWithRuntimeLimits(
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        document_path: []const u8,
+        resolved_runtime_limits: runtime_config.RuntimeLimits,
+    ) !CompatibilityClientPool {
         var address = try transport.Address.parse(allocator, transport_spec);
         defer address.deinit(allocator);
 
@@ -171,6 +218,7 @@ pub const CompatibilityClientPool = struct {
             .allocator = allocator,
             .transport_spec = try allocator.dupe(u8, transport_spec),
             .document_path = try allocator.dupe(u8, document_path),
+            .runtime_limits = resolved_runtime_limits,
             .mode = mode,
             .max_connections = switch (mode) {
                 .shared_connection => 1,
@@ -188,10 +236,11 @@ pub const CompatibilityClientPool = struct {
         try pool.pooled_all.ensureTotalCapacity(pool.max_connections);
 
         if (mode == .shared_connection) {
-            pool.shared_client = try Client.initForDocument(
+            pool.shared_client = try Client.initForDocumentWithRuntimeLimits(
                 allocator,
                 transport_spec,
                 document_path,
+                resolved_runtime_limits,
             );
         }
 
@@ -241,10 +290,11 @@ pub const CompatibilityClientPool = struct {
                     if (self.pooled_all.items.len < self.max_connections) {
                         const client = try self.allocator.create(Client);
                         errdefer self.allocator.destroy(client);
-                        client.* = try Client.initForDocument(
+                        client.* = try Client.initForDocumentWithRuntimeLimits(
                             self.allocator,
                             self.transport_spec,
                             self.document_path,
+                            self.runtime_limits,
                         );
                         self.pooled_all.appendAssumeCapacity(client);
                         return .{
@@ -462,6 +512,12 @@ const TtyOutputStreamStatus = enum {
     released,
 };
 
+const PaneCaptureStreamStatus = enum {
+    active,
+    closed,
+    released,
+};
+
 pub const TtyOutputStream = struct {
     state_owner: *ConversationClientState,
     conversation_id: []u8,
@@ -576,6 +632,119 @@ pub const TtyOutputStream = struct {
     }
 
     fn markClosed(self: *TtyOutputStream) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.released or self.status == .closed) return false;
+        self.status = .closed;
+        return true;
+    }
+};
+
+pub const PaneCaptureStream = struct {
+    state_owner: *ConversationClientState,
+    conversation_id: []u8,
+    pane_id: []u8,
+    mutex: std.Thread.Mutex = .{},
+    status: PaneCaptureStreamStatus = .active,
+    released: bool = false,
+
+    pub fn waitChunk(self: *PaneCaptureStream) !PaneCaptureChunk {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return .closed,
+            .released => return error.InvalidPaneCaptureStream,
+        }
+
+        var envelope = self.state_owner.frame_router.waitForEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.UnknownConversation, error.EndOfStream => return .closed,
+            else => return err,
+        };
+        return try self.consumeEnvelope(&envelope);
+    }
+
+    pub fn pollChunk(self: *PaneCaptureStream) !PaneCapturePoll {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return .closed,
+            .released => return error.InvalidPaneCaptureStream,
+        }
+
+        var envelope = self.state_owner.frame_router.takeEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.ConversationResponseNotFound => return .pending,
+            error.UnknownConversation => return .closed,
+            else => return err,
+        };
+
+        return switch (try self.consumeEnvelope(&envelope)) {
+            .data => |bytes| .{ .data = bytes },
+            .closed => .closed,
+        };
+    }
+
+    pub fn close(self: *PaneCaptureStream) void {
+        if (!self.markClosed()) return;
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+    }
+
+    pub fn deinit(self: *PaneCaptureStream) void {
+        self.close();
+
+        self.mutex.lock();
+        if (self.released) {
+            self.mutex.unlock();
+            return;
+        }
+        self.released = true;
+        self.mutex.unlock();
+
+        self.state_owner.allocator.free(self.conversation_id);
+        self.state_owner.allocator.free(self.pane_id);
+    }
+
+    fn consumeEnvelope(
+        self: *PaneCaptureStream,
+        envelope: *conversation_router.OwnedEnvelope,
+    ) !PaneCaptureChunk {
+        defer envelope.deinit(self.state_owner.allocator);
+
+        if (envelope.conversation_error != null) {
+            _ = self.markClosed();
+            self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+            return .closed;
+        }
+        if (envelope.kind != .capture_data) return error.InvalidResponse;
+        if (envelope.fin and std.mem.eql(u8, envelope.payload_json, "null")) {
+            _ = self.markClosed();
+            self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+            return .closed;
+        }
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.state_owner.allocator, envelope.payload_json, .{
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidResponse;
+
+        const chunk_value = parsed.value.object.get("chunk") orelse return error.InvalidResponse;
+        if (chunk_value != .string) return error.InvalidResponse;
+        return .{
+            .data = try self.state_owner.allocator.dupe(u8, chunk_value.string),
+        };
+    }
+
+    fn currentStatus(self: *PaneCaptureStream) PaneCaptureStreamStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return if (self.released) .released else self.status;
+    }
+
+    fn markClosed(self: *PaneCaptureStream) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.released or self.status == .closed) return false;
@@ -742,6 +911,22 @@ pub const ConversationClient = struct {
     ) !TtyConversation {
         return try self.state.openTty(target, options);
     }
+
+    pub fn openPaneCaptureStream(
+        self: *ConversationClient,
+        pane_id: []const u8,
+    ) !PaneCaptureStream {
+        return try self.state.openPaneCaptureStream(pane_id);
+    }
+
+    pub fn openPaneScrollStream(
+        self: *ConversationClient,
+        pane_id: []const u8,
+        start_line: i64,
+        end_line: i64,
+    ) !PaneCaptureStream {
+        return try self.state.openPaneScrollStream(pane_id, start_line, end_line);
+    }
 };
 
 const ResolvedTtyTarget = struct {
@@ -776,6 +961,7 @@ const CompatibilityAsyncDispatcher = struct {
         allocator: std.mem.Allocator,
         transport_spec: []const u8,
         document_path: []const u8,
+        runtime_limits: runtime_config.RuntimeLimits,
     ) !*CompatibilityAsyncDispatcher {
         const dispatcher = try allocator.create(CompatibilityAsyncDispatcher);
         errdefer allocator.destroy(dispatcher);
@@ -783,7 +969,7 @@ const CompatibilityAsyncDispatcher = struct {
         dispatcher.* = .{
             .state_owner = state_owner,
             .allocator = allocator,
-            .pool = try CompatibilityClientPool.init(allocator, transport_spec, document_path),
+            .pool = try CompatibilityClientPool.initWithRuntimeLimits(allocator, transport_spec, document_path, runtime_limits),
             .jobs = std.array_list.Managed(CompatibilityWorkerJob).init(allocator),
             .worker_threads = std.array_list.Managed(std.Thread).init(allocator),
         };
@@ -879,6 +1065,7 @@ const CompatibilityAsyncDispatcher = struct {
 const ConversationClientState = struct {
     allocator: std.mem.Allocator,
     document_path: []u8,
+    runtime_limits: runtime_config.RuntimeLimits,
     compatibility_dispatcher: ?*CompatibilityAsyncDispatcher = null,
     native_h3wt_session: ?*NativeH3wtSession = null,
     frame_router: conversation_router.ConversationRouter,
@@ -892,12 +1079,14 @@ const ConversationClientState = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !*ConversationClientState {
+        const resolved_runtime_limits = try runtime_config.loadClientLimits(allocator);
         const state = try allocator.create(ConversationClientState);
         errdefer allocator.destroy(state);
 
         state.* = .{
             .allocator = allocator,
             .document_path = try allocator.dupe(u8, document_path),
+            .runtime_limits = resolved_runtime_limits,
             .frame_router = conversation_router.ConversationRouter.init(allocator),
         };
         errdefer allocator.free(state.document_path);
@@ -916,6 +1105,7 @@ const ConversationClientState = struct {
                     allocator,
                     transport_spec,
                     document_path,
+                    resolved_runtime_limits,
                 );
             },
         }
@@ -1137,7 +1327,6 @@ const ConversationClientState = struct {
             false,
             null,
         );
-        errdefer self.allocator.free(envelope_json);
         try self.submitEnvelopeOwned(envelope_json);
 
         var ack = try self.frame_router.waitForEnvelope(conversation_id, request_id);
@@ -1183,6 +1372,96 @@ const ConversationClientState = struct {
         const response = pending.wait() catch return;
         defer self.allocator.free(response);
     }
+
+    fn openPaneCaptureStream(
+        self: *ConversationClientState,
+        pane_id: []const u8,
+    ) !PaneCaptureStream {
+        const pane_id_json = try std.json.Stringify.valueAlloc(self.allocator, pane_id, .{});
+        defer self.allocator.free(pane_id_json);
+        const params_json = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"paneId\":{s}}}",
+            .{pane_id_json},
+        );
+        defer self.allocator.free(params_json);
+        return try self.openPaneCaptureStreamInternal(
+            "pane.capture.stream.open",
+            params_json,
+            pane_id,
+        );
+    }
+
+    fn openPaneScrollStream(
+        self: *ConversationClientState,
+        pane_id: []const u8,
+        start_line: i64,
+        end_line: i64,
+    ) !PaneCaptureStream {
+        const pane_id_json = try std.json.Stringify.valueAlloc(self.allocator, pane_id, .{});
+        defer self.allocator.free(pane_id_json);
+        const params_json = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"paneId\":{s},\"startLine\":{d},\"endLine\":{d}}}",
+            .{ pane_id_json, start_line, end_line },
+        );
+        defer self.allocator.free(params_json);
+        return try self.openPaneCaptureStreamInternal(
+            "pane.scroll.stream.open",
+            params_json,
+            pane_id,
+        );
+    }
+
+    fn openPaneCaptureStreamInternal(
+        self: *ConversationClientState,
+        method: []const u8,
+        params_json: []const u8,
+        pane_id: []const u8,
+    ) !PaneCaptureStream {
+        if (self.native_h3wt_session == null) return error.UnsupportedPaneCaptureStreamTransport;
+
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
+
+        const request_id = self.nextRpcRequestId();
+        var request_json = std.array_list.Managed(u8).init(self.allocator);
+        defer request_json.deinit();
+        try protocol.writeClientRequestTarget(
+            request_json.writer(),
+            request_id,
+            .{ .documentPath = protocol.default_document_path },
+            method,
+            params_json,
+        );
+
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.allocator,
+            conversation_id,
+            request_id,
+            .{ .documentPath = protocol.default_document_path },
+            .rpc,
+            request_json.items,
+            false,
+            null,
+        );
+        try self.submitEnvelopeOwned(envelope_json);
+
+        var ack = try self.frame_router.waitForEnvelope(conversation_id, request_id);
+        defer ack.deinit(self.allocator);
+        if (ack.conversation_error != null) {
+            self.frame_router.unregisterConversation(conversation_id);
+            return error.RequestFailed;
+        }
+
+        return .{
+            .state_owner = self,
+            .conversation_id = conversation_id,
+            .pane_id = try self.allocator.dupe(u8, pane_id),
+        };
+    }
 };
 
 const NativeH3wtSession = struct {
@@ -1200,7 +1479,11 @@ const NativeH3wtSession = struct {
 
         session.* = .{
             .state_owner = state_owner,
-            .process = try transport.ProcessSession.initH3wtConversation(state_owner.allocator, h3wt),
+            .process = try transport.ProcessSession.initH3wtConversationWithMaxMessageBytes(
+                state_owner.allocator,
+                h3wt,
+                state_owner.runtime_limits.max_message_bytes,
+            ),
         };
         errdefer session.process.close();
 
@@ -1237,7 +1520,7 @@ const NativeH3wtSession = struct {
         defer reader.deinit();
 
         while (true) {
-            const line = try reader.readMessageLine(&self.process, transport.max_message_bytes) orelse break;
+            const line = try reader.readMessageLine(&self.process, self.state_owner.runtime_limits.max_message_bytes) orelse break;
             defer self.state_owner.allocator.free(line);
             if (line.len == 0) continue;
             self.state_owner.frame_router.pushEnvelopeBytes(line) catch |err| switch (err) {
@@ -1299,6 +1582,7 @@ test "tty output stream consumes data overflow and close envelopes" {
     var state = ConversationClientState{
         .allocator = std.testing.allocator,
         .document_path = try std.testing.allocator.dupe(u8, "/"),
+        .runtime_limits = .{},
         .frame_router = conversation_router.ConversationRouter.init(std.testing.allocator),
     };
     defer {
@@ -1369,6 +1653,67 @@ test "tty output stream consumes data overflow and close envelopes" {
             .nodeId = 7,
         },
         .tty_data,
+        "null",
+        true,
+        null,
+    );
+    defer std.testing.allocator.free(closed_frame);
+    try state.frame_router.pushEnvelopeBytes(closed_frame);
+
+    try std.testing.expect((try stream.waitChunk()) == .closed);
+    try std.testing.expect((try stream.pollChunk()) == .closed);
+}
+
+test "pane capture stream consumes chunk and close envelopes" {
+    var state = ConversationClientState{
+        .allocator = std.testing.allocator,
+        .document_path = try std.testing.allocator.dupe(u8, "/"),
+        .runtime_limits = .{},
+        .frame_router = conversation_router.ConversationRouter.init(std.testing.allocator),
+    };
+    defer {
+        state.frame_router.deinit();
+        std.testing.allocator.free(state.document_path);
+    }
+
+    const conversation_id = try std.testing.allocator.dupe(u8, "c-pane-stream");
+    try state.frame_router.registerConversation(conversation_id);
+
+    var stream = PaneCaptureStream{
+        .state_owner = &state,
+        .conversation_id = conversation_id,
+        .pane_id = try std.testing.allocator.dupe(u8, "%1"),
+    };
+    defer stream.deinit();
+
+    const data_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .capture_data,
+        "{\"paneId\":\"%1\",\"chunk\":\"hello\"}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(data_frame);
+    try state.frame_router.pushEnvelopeBytes(data_frame);
+
+    const first = try stream.pollChunk();
+    switch (first) {
+        .data => |bytes| {
+            defer std.testing.allocator.free(bytes);
+            try std.testing.expectEqualStrings("hello", bytes);
+        },
+        else => return error.UnexpectedTestResult,
+    }
+
+    const closed_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .capture_data,
         "null",
         true,
         null,

@@ -3,6 +3,7 @@ const muxly = @import("muxly");
 const capabilities_mod = muxly.capabilities;
 const document_mod = muxly.document;
 const ids = muxly.ids;
+const runtime_config = muxly.runtime_config;
 const source_mod = muxly.source;
 const types = muxly.types;
 const tmux = muxly.daemon.tmux.client;
@@ -37,6 +38,7 @@ pub const DocumentEntry = struct {
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
+    runtime_limits: runtime_config.RuntimeLimits,
     capabilities: capabilities_mod.Capabilities = .{},
     documents: std.ArrayListUnmanaged(*DocumentEntry) = .{},
     documents_mutex: std.Thread.Mutex = .{},
@@ -46,7 +48,15 @@ pub const Store = struct {
     tmux_projection_state: TmuxProjectionState = .clean,
 
     pub fn init(allocator: std.mem.Allocator) !Store {
+        return try initWithRuntimeLimits(allocator, .{});
+    }
+
+    pub fn initWithRuntimeLimits(
+        allocator: std.mem.Allocator,
+        limits: runtime_config.RuntimeLimits,
+    ) !Store {
         var document = try document_mod.Document.init(allocator, 1, "muxly");
+        document.setMaxContentBytes(limits.max_document_content_bytes);
         const intro_id = try document.appendNode(document.root_node_id, .scroll_region, "welcome", .{ .none = {} });
         try document.setNodeContent(
             intro_id,
@@ -55,6 +65,11 @@ pub const Store = struct {
 
         var store = Store{
             .allocator = allocator,
+            .runtime_limits = limits,
+            .capabilities = .{
+                .max_message_bytes = limits.max_message_bytes,
+                .max_document_content_bytes = limits.max_document_content_bytes,
+            },
         };
         errdefer store.deinit();
 
@@ -112,6 +127,7 @@ pub const Store = struct {
 
         var document = try document_mod.Document.init(self.allocator, document_id, resolved_title);
         errdefer document.deinit();
+        document.setMaxContentBytes(self.runtime_limits.max_document_content_bytes);
 
         const entry = try self.allocator.create(DocumentEntry);
         errdefer self.allocator.destroy(entry);
@@ -339,11 +355,21 @@ pub const Store = struct {
     }
 
     pub fn captureTmuxPane(self: *Store, pane_id: []const u8) ![]u8 {
-        return try tmux.capturePane(self.allocator, pane_id);
+        return try tmux.capturePaneWithLimit(
+            self.allocator,
+            pane_id,
+            self.runtime_limits.max_document_content_bytes,
+        );
     }
 
     pub fn scrollTmuxPane(self: *Store, pane_id: []const u8, start_line: i64, end_line: i64) ![]u8 {
-        return try tmux.capturePaneRange(self.allocator, pane_id, start_line, end_line);
+        return try tmux.capturePaneRangeWithLimit(
+            self.allocator,
+            pane_id,
+            start_line,
+            end_line,
+            self.runtime_limits.max_document_content_bytes,
+        );
     }
 
     pub fn resizeTmuxPane(self: *Store, pane_id: []const u8, direction: []const u8, amount: i64) !void {

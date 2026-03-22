@@ -165,6 +165,55 @@ test "async validation keeps h3wt tty streams isolated and reattachable" {
     }
 }
 
+test "async validation streams pane capture and scroll over h3wt" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try ensureTmuxAvailable(std.testing.allocator);
+
+    var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
+    defer daemon.deinit();
+
+    const session_name = try uniqueSessionName(std.testing.allocator, "muxly-capture");
+    defer std.testing.allocator.free(session_name);
+    defer cleanupTmuxSession(std.testing.allocator, session_name);
+
+    const command =
+        "sh -lc 'i=0; while [ \"$i\" -lt 1400 ]; do printf \"cap-%04d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n\" \"$i\"; i=$((i+1)); if [ $((i % 25)) -eq 0 ]; then sleep 0.01; fi; done; sleep 10'";
+    const node_id = try createTmuxSessionNode(
+        std.testing.allocator,
+        daemon.actual_spec,
+        session_name,
+        command,
+    );
+
+    var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    defer client.deinit();
+
+    var tty = try client.openTty(.{
+        .documentPath = "/",
+        .nodeId = node_id,
+    }, .{});
+    defer tty.deinit();
+
+    std.Thread.sleep(800 * std.time.ns_per_ms);
+
+    var capture_stream = try client.openPaneCaptureStream(tty.pane_id);
+    defer capture_stream.deinit();
+    const capture = try collectPaneCaptureStream(std.testing.allocator, &capture_stream, 10_000);
+    defer std.testing.allocator.free(capture.bytes);
+
+    try std.testing.expect(capture.chunk_count > 1);
+    try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0100") != null);
+
+    var scroll_stream = try client.openPaneScrollStream(tty.pane_id, 0, 20);
+    defer scroll_stream.deinit();
+    const scroll = try collectPaneCaptureStream(std.testing.allocator, &scroll_stream, 10_000);
+    defer std.testing.allocator.free(scroll.bytes);
+
+    try std.testing.expect(scroll.chunk_count >= 1);
+    try std.testing.expect(std.mem.indexOf(u8, scroll.bytes, "cap-") != null);
+}
+
 fn runRpcValidationMatrix(
     allocator: std.mem.Allocator,
     kind: TransportKind,
@@ -594,6 +643,36 @@ fn waitForAnyStreamData(
             .overflow => {},
             .closed => return error.EndOfStream,
             .data => |bytes| return bytes,
+        }
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn collectPaneCaptureStream(
+    allocator: std.mem.Allocator,
+    stream: *muxly.client.PaneCaptureStream,
+    timeout_ms: u64,
+) !struct { bytes: []u8, chunk_count: usize } {
+    var collected = std.array_list.Managed(u8).init(allocator);
+    errdefer collected.deinit();
+
+    const started = try std.time.Instant.now();
+    var chunk_count: usize = 0;
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        switch (try stream.pollChunk()) {
+            .pending => {},
+            .data => |bytes| {
+                defer allocator.free(bytes);
+                try collected.appendSlice(bytes);
+                chunk_count += 1;
+            },
+            .closed => {
+                return .{
+                    .bytes = try collected.toOwnedSlice(),
+                    .chunk_count = chunk_count,
+                };
+            },
         }
         std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
     }

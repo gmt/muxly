@@ -324,6 +324,7 @@ fn requestJsonForEnvelope(
             allocator,
             envelope,
         ),
+        .capture_data => error.UnsupportedConversationKind,
     };
 }
 

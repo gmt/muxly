@@ -13,9 +13,7 @@ use tokio::time::{timeout, Duration};
 use wtransport::tls::Sha256Digest;
 use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig, VarInt};
 
-// Stop-gap whole-message cap until the transport layer grows true async/lazy
-// payload streaming and runtime-configurable limits.
-const MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+const DEFAULT_MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Debug)]
 enum Command {
@@ -31,6 +29,7 @@ struct HttpClientArgs {
     host: String,
     port: u16,
     path: String,
+    max_message_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -40,6 +39,7 @@ struct HttpServerArgs {
     path: String,
     upstream_unix: PathBuf,
     ready_file: PathBuf,
+    max_message_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -48,6 +48,7 @@ struct H3wtClientArgs {
     port: u16,
     path: String,
     sha256: Option<String>,
+    max_message_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -57,6 +58,7 @@ struct H3wtServerArgs {
     path: String,
     upstream_unix: PathBuf,
     ready_file: PathBuf,
+    max_message_bytes: usize,
 }
 
 #[derive(Serialize)]
@@ -119,6 +121,8 @@ fn parse_args() -> Result<Command> {
                 .parse()
                 .context("invalid --port")?,
             path: required(&values, "path")?,
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         "http-server" => Ok(Command::HttpServer(HttpServerArgs {
             listen_host: required(&values, "listen-host")?,
@@ -128,6 +132,8 @@ fn parse_args() -> Result<Command> {
             path: required(&values, "path")?,
             upstream_unix: PathBuf::from(required(&values, "upstream-unix")?),
             ready_file: PathBuf::from(required(&values, "ready-file")?),
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         "h3wt-client" => Ok(Command::H3wtClient(H3wtClientArgs {
             host: required(&values, "host")?,
@@ -136,6 +142,8 @@ fn parse_args() -> Result<Command> {
                 .context("invalid --port")?,
             path: required(&values, "path")?,
             sha256: values.get("sha256").cloned(),
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         "h3wt-session-client" => Ok(Command::H3wtSessionClient(H3wtClientArgs {
             host: required(&values, "host")?,
@@ -144,6 +152,8 @@ fn parse_args() -> Result<Command> {
                 .context("invalid --port")?,
             path: required(&values, "path")?,
             sha256: values.get("sha256").cloned(),
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         "h3wt-server" => Ok(Command::H3wtServer(H3wtServerArgs {
             listen_host: required(&values, "listen-host")?,
@@ -153,6 +163,8 @@ fn parse_args() -> Result<Command> {
             path: required(&values, "path")?,
             upstream_unix: PathBuf::from(required(&values, "upstream-unix")?),
             ready_file: PathBuf::from(required(&values, "ready-file")?),
+            max_message_bytes: optional_usize(&values, "max-message-bytes")?
+                .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
         other => bail!("unknown subcommand: {other}"),
     }
@@ -165,6 +177,15 @@ fn required(values: &HashMap<String, String>, key: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("missing --{key}"))
 }
 
+fn optional_usize(values: &HashMap<String, String>, key: &str) -> Result<Option<usize>> {
+    match values.get(key) {
+        Some(value) => Ok(Some(
+            value.parse().with_context(|| format!("invalid --{key}"))?,
+        )),
+        None => Ok(None),
+    }
+}
+
 async fn run_http_client(args: HttpClientArgs) -> Result<()> {
     let host_header = host_header(&args.host, args.port);
     let stream = TcpStream::connect((args.host.as_str(), args.port))
@@ -174,11 +195,11 @@ async fn run_http_client(args: HttpClientArgs) -> Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
 
-    while let Some(request_body) = read_line_message(&mut stdin).await? {
+    while let Some(request_body) = read_line_message(&mut stdin, args.max_message_bytes).await? {
         write_http_request(&mut network, &args.path, &host_header, &request_body).await?;
         network.flush().await?;
 
-        let response_body = read_http_response(&mut network).await?;
+        let response_body = read_http_response(&mut network, args.max_message_bytes).await?;
         stdout.write_all(&response_body).await?;
         stdout.write_all(b"\n").await?;
         stdout.flush().await?;
@@ -215,8 +236,9 @@ async fn run_http_server(args: HttpServerArgs) -> Result<()> {
         let (socket, _) = listener.accept().await?;
         let path = args.path.clone();
         let upstream_unix = args.upstream_unix.clone();
+        let max_message_bytes = args.max_message_bytes;
         tokio::spawn(async move {
-            let _ = handle_http_connection(socket, upstream_unix, path).await;
+            let _ = handle_http_connection(socket, upstream_unix, path, max_message_bytes).await;
         });
     }
 }
@@ -225,10 +247,11 @@ async fn handle_http_connection(
     socket: TcpStream,
     upstream_unix: PathBuf,
     path: String,
+    max_message_bytes: usize,
 ) -> Result<()> {
     let mut client = BufStream::new(socket);
 
-    while let Some(request) = read_http_request(&mut client).await? {
+    while let Some(request) = read_http_request(&mut client, max_message_bytes).await? {
         if request.path != path {
             write_http_error(&mut client, 404, "Not Found").await?;
             client.flush().await?;
@@ -243,7 +266,7 @@ async fn handle_http_connection(
         upstream.write_all(b"\n").await?;
         upstream.flush().await?;
 
-        let response = read_line_message(&mut upstream)
+        let response = read_line_message(&mut upstream, max_message_bytes)
             .await?
             .ok_or_else(|| anyhow!("upstream closed before sending a response"))?;
         drop(upstream);
@@ -269,7 +292,7 @@ async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
 
-    while let Some(request) = read_line_message(&mut stdin).await? {
+    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
         trace(&format!("h3wt client request bytes={}", request.len()));
         let stream = timeout(Duration::from_secs(5), connection.open_bi())
             .await
@@ -285,7 +308,9 @@ async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
         tokio::task::yield_now().await;
 
         let mut recv_reader = BufReader::new(recv_stream);
-        while let Some(response) = read_line_message(&mut recv_reader).await? {
+        while let Some(response) =
+            read_line_message(&mut recv_reader, args.max_message_bytes).await?
+        {
             trace(&format!("h3wt client response bytes={}", response.len()));
             stdout.write_all(&response).await?;
             stdout.write_all(b"\n").await?;
@@ -318,7 +343,7 @@ async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let mut tasks = Vec::new();
 
-    while let Some(request) = read_line_message(&mut stdin).await? {
+    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
         trace(&format!(
             "h3wt session client request bytes={}",
             request.len()
@@ -340,7 +365,9 @@ async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
             send_stream.finish().await?;
 
             let mut recv_reader = BufReader::new(recv_stream);
-            while let Some(response) = read_line_message(&mut recv_reader).await? {
+            while let Some(response) =
+                read_line_message(&mut recv_reader, args.max_message_bytes).await?
+            {
                 trace(&format!(
                     "h3wt session client response bytes={}",
                     response.len()
@@ -395,8 +422,10 @@ async fn run_h3wt_server(args: H3wtServerArgs) -> Result<()> {
         let incoming = endpoint.accept().await;
         let expected_path = args.path.clone();
         let upstream_unix = args.upstream_unix.clone();
+        let max_message_bytes = args.max_message_bytes;
         tokio::spawn(async move {
-            let _ = handle_h3wt_session(incoming, expected_path, upstream_unix).await;
+            let _ = handle_h3wt_session(incoming, expected_path, upstream_unix, max_message_bytes)
+                .await;
         });
     }
 }
@@ -405,6 +434,7 @@ async fn handle_h3wt_session(
     incoming: wtransport::endpoint::IncomingSession,
     expected_path: String,
     upstream_unix: PathBuf,
+    max_message_bytes: usize,
 ) -> Result<()> {
     let session_request = incoming.await?;
     if session_request.path() != expected_path {
@@ -416,8 +446,9 @@ async fn handle_h3wt_session(
     loop {
         let bi_stream = connection.accept_bi().await?;
         let upstream_unix = upstream_unix.clone();
+        let max_message_bytes = max_message_bytes;
         tokio::spawn(async move {
-            let _ = handle_h3wt_bi_stream(bi_stream, upstream_unix).await;
+            let _ = handle_h3wt_bi_stream(bi_stream, upstream_unix, max_message_bytes).await;
         });
     }
 }
@@ -425,9 +456,10 @@ async fn handle_h3wt_session(
 async fn handle_h3wt_bi_stream(
     mut bi_stream: (wtransport::SendStream, wtransport::RecvStream),
     upstream_unix: PathBuf,
+    max_message_bytes: usize,
 ) -> Result<()> {
     let mut request_reader = BufReader::new(bi_stream.1);
-    let request = read_line_message(&mut request_reader)
+    let request = read_line_message(&mut request_reader, max_message_bytes)
         .await?
         .ok_or_else(|| anyhow!("missing WebTransport request body"))?;
     trace(&format!("h3wt server request bytes={}", request.len()));
@@ -442,7 +474,7 @@ async fn handle_h3wt_bi_stream(
     upstream.flush().await?;
 
     let mut wrote_response = false;
-    while let Some(response) = read_line_message(&mut upstream).await? {
+    while let Some(response) = read_line_message(&mut upstream, max_message_bytes).await? {
         trace(&format!("h3wt server response bytes={}", response.len()));
         wrote_response = true;
         tokio::task::yield_now().await;
@@ -561,13 +593,12 @@ fn host_header(host: &str, port: u16) -> String {
     authority(host, port)
 }
 
-async fn read_line_message<R>(reader: &mut R) -> Result<Option<Vec<u8>>>
+async fn read_line_message<R>(reader: &mut R, max_message_bytes: usize) -> Result<Option<Vec<u8>>>
 where
     R: AsyncBufRead + Unpin,
 {
     let mut line = Vec::new();
-    let bytes_read =
-        read_line_message_with_cap(reader, &mut line, MAX_BUFFERED_MESSAGE_BYTES).await?;
+    let bytes_read = read_line_message_with_cap(reader, &mut line, max_message_bytes).await?;
     if bytes_read == 0 {
         return Ok(None);
     }
@@ -596,13 +627,16 @@ where
     Ok(bytes_read)
 }
 
-async fn read_http_request<R>(reader: &mut R) -> Result<Option<HttpRequest>>
+async fn read_http_request<R>(
+    reader: &mut R,
+    max_message_bytes: usize,
+) -> Result<Option<HttpRequest>>
 where
     R: AsyncBufRead + Unpin,
 {
     let request_line;
     loop {
-        let Some(line) = read_http_line(reader).await? else {
+        let Some(line) = read_http_line(reader, max_message_bytes).await? else {
             return Ok(None);
         };
         if line == "\r\n" {
@@ -624,7 +658,7 @@ where
 
     let mut content_length: Option<usize> = None;
     loop {
-        let Some(line) = read_http_line(reader).await? else {
+        let Some(line) = read_http_line(reader, max_message_bytes).await? else {
             bail!("unexpected EOF while reading HTTP headers");
         };
         if line == "\r\n" {
@@ -633,7 +667,7 @@ where
 
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(parse_content_length(value.trim())?);
+                content_length = Some(parse_content_length(value.trim(), max_message_bytes)?);
             }
         }
     }
@@ -647,11 +681,11 @@ where
     }))
 }
 
-async fn read_http_response<R>(reader: &mut R) -> Result<Vec<u8>>
+async fn read_http_response<R>(reader: &mut R, max_message_bytes: usize) -> Result<Vec<u8>>
 where
     R: AsyncBufRead + Unpin,
 {
-    let Some(status_line) = read_http_line(reader).await? else {
+    let Some(status_line) = read_http_line(reader, max_message_bytes).await? else {
         bail!("unexpected EOF while reading HTTP response");
     };
     if !status_line.starts_with("HTTP/1.1 200") {
@@ -660,7 +694,7 @@ where
 
     let mut content_length: Option<usize> = None;
     loop {
-        let Some(line) = read_http_line(reader).await? else {
+        let Some(line) = read_http_line(reader, max_message_bytes).await? else {
             bail!("unexpected EOF while reading HTTP response headers");
         };
         if line == "\r\n" {
@@ -668,7 +702,7 @@ where
         }
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(parse_content_length(value.trim())?);
+                content_length = Some(parse_content_length(value.trim(), max_message_bytes)?);
             }
         }
     }
@@ -679,13 +713,12 @@ where
     Ok(body)
 }
 
-async fn read_http_line<R>(reader: &mut R) -> Result<Option<String>>
+async fn read_http_line<R>(reader: &mut R, max_message_bytes: usize) -> Result<Option<String>>
 where
     R: AsyncBufRead + Unpin,
 {
     let mut line = Vec::new();
-    let bytes_read =
-        read_line_message_with_cap(reader, &mut line, MAX_BUFFERED_MESSAGE_BYTES).await?;
+    let bytes_read = read_line_message_with_cap(reader, &mut line, max_message_bytes).await?;
     if bytes_read == 0 {
         return Ok(None);
     }
@@ -694,12 +727,12 @@ where
     ))
 }
 
-fn parse_content_length(value: &str) -> Result<usize> {
+fn parse_content_length(value: &str, max_message_bytes: usize) -> Result<usize> {
     let content_length: usize = value.parse().context("invalid Content-Length")?;
-    if content_length > MAX_BUFFERED_MESSAGE_BYTES {
+    if content_length > max_message_bytes {
         bail!(
             "HTTP body exceeds buffered bridge cap of {} bytes",
-            MAX_BUFFERED_MESSAGE_BYTES
+            max_message_bytes
         );
     }
     Ok(content_length)
@@ -767,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_http_request_rejects_content_length_over_bridge_cap() {
-        let oversized = MAX_BUFFERED_MESSAGE_BYTES + 1023;
+        let oversized = DEFAULT_MAX_BUFFERED_MESSAGE_BYTES + 1023;
         let request =
             format!("POST /rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {oversized}\r\n\r\n");
         let (mut writer, reader) = duplex(1024);
@@ -777,7 +810,7 @@ mod tests {
         });
 
         let mut reader = BufReader::new(reader);
-        let err = read_http_request(&mut reader)
+        let err = read_http_request(&mut reader, DEFAULT_MAX_BUFFERED_MESSAGE_BYTES)
             .await
             .expect_err("oversized HTTP body should be rejected");
         assert!(err
@@ -806,6 +839,33 @@ mod tests {
         assert!(err
             .to_string()
             .contains("message exceeds buffered bridge cap"));
+
+        writer_task
+            .await
+            .expect("writer task should finish")
+            .expect("writer should succeed");
+    }
+
+    #[tokio::test]
+    async fn read_http_request_respects_custom_bridge_cap() {
+        let body = "0123456789012345678901234567890123456789";
+        let request = format!(
+            "POST /rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (mut writer, reader) = duplex(128);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(request.as_bytes()).await?;
+            writer.shutdown().await
+        });
+
+        let mut reader = BufReader::new(reader);
+        let err = read_http_request(&mut reader, 32)
+            .await
+            .expect_err("custom cap should reject oversized HTTP body");
+        assert!(err
+            .to_string()
+            .contains("HTTP body exceeds buffered bridge cap of 32 bytes"));
 
         writer_task
             .await

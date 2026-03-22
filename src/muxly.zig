@@ -18,6 +18,8 @@ pub const document = @import("core/document.zig");
 pub const json = @import("core/json.zig");
 /// Stop-gap buffering limits shared by current transport and document paths.
 pub const limits = @import("core/limits.zig");
+/// Runtime discovery and loading for shared muxly policy knobs.
+pub const runtime_config = @import("core/runtime_config.zig");
 /// JSON-RPC protocol helpers shared by daemon-side request handling.
 pub const protocol = @import("core/protocol.zig");
 /// Logical conversation broker helpers that sit between transport framing and request execution.

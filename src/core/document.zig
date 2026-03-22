@@ -22,6 +22,7 @@ pub const Document = struct {
     nodes: std.ArrayListUnmanaged(muxml.Node) = .{},
     elided_node_ids: std.ArrayListUnmanaged(ids.NodeId) = .{},
     content_bytes: usize = 0,
+    max_content_bytes: usize = limits.default_max_document_content_bytes,
     next_node_id: ids.NodeId,
 
     /// Initializes a new live document with a root `document` node.
@@ -75,45 +76,24 @@ pub const Document = struct {
 
     /// Appends text to an existing node content buffer.
     pub fn appendTextToNode(self: *Document, node_id: ids.NodeId, chunk: []const u8) !void {
-        return try self.appendTextToNodeWithLimit(
-            node_id,
-            chunk,
-            limits.default_max_document_content_bytes,
-        );
-    }
-
-    fn appendTextToNodeWithLimit(
-        self: *Document,
-        node_id: ids.NodeId,
-        chunk: []const u8,
-        max_content_bytes: usize,
-    ) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
-        try self.reserveAdditionalContentBytes(chunk.len, max_content_bytes);
+        try self.reserveAdditionalContentBytes(chunk.len, self.max_content_bytes);
         try self.nodes.items[index].appendContent(self.allocator, chunk);
         self.content_bytes += chunk.len;
     }
 
     /// Replaces a node's content.
     pub fn setNodeContent(self: *Document, node_id: ids.NodeId, content: []const u8) !void {
-        return try self.setNodeContentWithLimit(
-            node_id,
-            content,
-            limits.default_max_document_content_bytes,
-        );
-    }
-
-    fn setNodeContentWithLimit(
-        self: *Document,
-        node_id: ids.NodeId,
-        content: []const u8,
-        max_content_bytes: usize,
-    ) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         const existing_len = self.nodes.items[index].content.len;
-        try self.reserveReplacementContentBytes(existing_len, content.len, max_content_bytes);
+        try self.reserveReplacementContentBytes(existing_len, content.len, self.max_content_bytes);
         try self.nodes.items[index].setContent(self.allocator, content);
         self.content_bytes = self.content_bytes - existing_len + content.len;
+    }
+
+    /// Updates the document-wide aggregate content cap used for node content mutations.
+    pub fn setMaxContentBytes(self: *Document, max_content_bytes: usize) void {
+        self.max_content_bytes = max_content_bytes;
     }
 
     /// Replaces a node's title.
@@ -519,6 +499,7 @@ fn writeEscapedXml(writer: anytype, value: []const u8) !void {
 test "document content cap is enforced across node updates and appends" {
     var document = try Document.init(std.testing.allocator, 1, "demo");
     defer document.deinit();
+    document.setMaxContentBytes(6);
 
     const first = try document.appendNode(
         document.root_node_id,
@@ -533,19 +514,19 @@ test "document content cap is enforced across node updates and appends" {
         .{ .none = {} },
     );
 
-    try document.setNodeContentWithLimit(first, "abcd", 6);
+    try document.setNodeContent(first, "abcd");
     try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
 
     try std.testing.expectError(
         error.DocumentTooLarge,
-        document.setNodeContentWithLimit(second, "xyz", 6),
+        document.setNodeContent(second, "xyz"),
     );
     try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
     try std.testing.expectEqualStrings("", document.findNode(second).?.content);
 
     try std.testing.expectError(
         error.DocumentTooLarge,
-        document.appendTextToNodeWithLimit(first, "123", 6),
+        document.appendTextToNode(first, "123"),
     );
     try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
     try std.testing.expectEqualStrings("abcd", document.findNode(first).?.content);

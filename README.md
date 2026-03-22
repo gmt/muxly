@@ -133,6 +133,25 @@ client accepts `wt://` as a shorthand alias for the same transport.
 If you need a custom SSH client config for transport testing or host-specific
 identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
 
+Runtime buffer policy is now configurable via JSON:
+
+- client/user tools read `${XDG_CONFIG_HOME:-$HOME/.config}/muxly/config.json`
+- the daemon checks user XDG config first, then `/etc/muxly/config.json`
+- `MUXLY_CONFIG=/path/to/config.json` overrides implicit discovery
+- `muxlyd` also accepts `--config`, `--max-message-bytes`, and
+  `--max-document-content-bytes`
+
+The current config schema is intentionally small:
+
+```json
+{
+  "limits": {
+    "maxMessageBytes": 134217728,
+    "maxDocumentContentBytes": 1073741824
+  }
+}
+```
+
 `zig build test` stays Docker-free and permission-free. For CI, use
 `zig build test-ci`; it runs the unit suite by default and only adds the Docker
 transport integration coverage when `MUXLY_ENABLE_DOCKER_TESTS=1` is present.

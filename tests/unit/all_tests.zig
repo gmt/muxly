@@ -10,6 +10,7 @@ comptime {
     _ = @import("cli_target_arg_test.zig");
     _ = @import("conversation_broker_test.zig");
     _ = @import("protocol_test.zig");
+    _ = @import("runtime_config_test.zig");
     _ = @import("router_lane_test.zig");
     _ = @import("router_document_test.zig");
     _ = @import("transport_test.zig");

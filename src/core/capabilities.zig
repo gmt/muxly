@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const limits = @import("limits.zig");
 
 /// Public capability snapshot returned by `capabilities.get`.
 pub const Capabilities = struct {
@@ -16,6 +17,10 @@ pub const Capabilities = struct {
     follow_tail_semantics: []const u8 = "stored-node-preference",
     view_state_scope: []const u8 = "shared-document-transitional",
     viewer_composition_location: []const u8 = "client",
+    buffer_policy: []const u8 = "runtime-configurable",
+    pane_capture_streaming: []const u8 = "h3wt-only",
+    max_message_bytes: usize = limits.default_max_message_bytes,
+    max_document_content_bytes: usize = limits.default_max_document_content_bytes,
     tmux_backend_mode: []const u8 = "hybrid-control-invalidation",
     tmux_target_scope: []const u8 = "root-document-only",
     supports_tty_sources: bool = true,
@@ -44,6 +49,10 @@ pub const Capabilities = struct {
         try writer.print("\"followTailSemantics\":\"{s}\",", .{self.follow_tail_semantics});
         try writer.print("\"viewStateScope\":\"{s}\",", .{self.view_state_scope});
         try writer.print("\"viewerCompositionLocation\":\"{s}\",", .{self.viewer_composition_location});
+        try writer.print("\"bufferPolicy\":\"{s}\",", .{self.buffer_policy});
+        try writer.print("\"paneCaptureStreaming\":\"{s}\",", .{self.pane_capture_streaming});
+        try writer.print("\"maxMessageBytes\":{d},", .{self.max_message_bytes});
+        try writer.print("\"maxDocumentContentBytes\":{d},", .{self.max_document_content_bytes});
         try writer.print("\"tmuxBackendMode\":\"{s}\",", .{self.tmux_backend_mode});
         try writer.print("\"tmuxTargetScope\":\"{s}\",", .{self.tmux_target_scope});
         try writer.print("\"supportsTtySources\":{},", .{self.supports_tty_sources});

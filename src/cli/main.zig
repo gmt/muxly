@@ -291,6 +291,7 @@ fn printUsage() !void {
 fn runTransportRelay(allocator: std.mem.Allocator, transport_spec: []const u8) !void {
     var client = try muxly.client.Client.init(allocator, transport_spec);
     defer client.deinit();
+    const runtime_limits = try muxly.runtime_config.loadClientLimits(allocator);
     var stdin_reader = muxly.transport.MessageReader.init(allocator);
     defer stdin_reader.deinit();
 
@@ -300,7 +301,7 @@ fn runTransportRelay(allocator: std.mem.Allocator, transport_spec: []const u8) !
     while (true) {
         const request = try stdin_reader.readMessageLine(
             stdin_file,
-            muxly.transport.max_message_bytes,
+            runtime_limits.max_message_bytes,
         ) orelse break;
         defer allocator.free(request);
         if (request.len == 0) continue;

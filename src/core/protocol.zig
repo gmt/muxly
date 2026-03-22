@@ -16,6 +16,7 @@ pub const ConversationKind = enum {
     rpc,
     tty_control,
     tty_data,
+    capture_data,
 };
 
 pub const ConversationError = struct {

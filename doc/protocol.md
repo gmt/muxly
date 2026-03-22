@@ -64,6 +64,8 @@ explicit, testable, and debuggable.
 - `pane.split`
 - `pane.capture`
 - `pane.scroll`
+- `pane.capture.stream.open`
+- `pane.scroll.stream.open`
 - `pane.resize`
 - `pane.focus`
 - `pane.sendKeys`
@@ -135,6 +137,13 @@ explicit, testable, and debuggable.
 - on native H3/WT tty paths, the reference viewer may also consume a live tty
   output stream for direct leaf output instead of relying on repeated projection
   polling alone
+- additive pane-capture streaming currently exists as a conversation/H3WT-first
+  path:
+  - `pane.capture.stream.open`
+  - `pane.scroll.stream.open`
+  - these return finite chunk streams rather than one eager whole-message blob
+  - buffered compatibility transports still use eager `pane.capture` /
+    `pane.scroll` in this slice
 - `node.remove` currently succeeds only for childless nodes; callers should
   remove descendants first when editing synthetic muxml structure
 - `node.freeze` currently supports tty-backed nodes only and accepts an
@@ -159,10 +168,20 @@ explicit, testable, and debuggable.
   scrollback behavior on their own
 - `capabilities.get` explicitly reports:
   - `followTailSemantics: "stored-node-preference"`
-  - `viewStateScope: "shared-document"`
+  - `viewStateScope: "shared-document-transitional"`
+  - `bufferPolicy: "runtime-configurable"`
+  - `paneCaptureStreaming: "h3wt-only"`
+  - `maxMessageBytes: <effective runtime cap>`
+  - `maxDocumentContentBytes: <effective runtime cap>`
   - `tmuxBackendMode: "hybrid-control-invalidation"`
   - `tmuxTargetScope: "root-document-only"`
   - `supportsMouse: true`
+- whole-message and aggregate document-content limits are now runtime policy
+  rather than compile-time constants
+- config discovery currently uses:
+  - user-side XDG config at `${XDG_CONFIG_HOME:-$HOME/.config}/muxly/config.json`
+  - daemon-side user XDG first, then `/etc/muxly/config.json`
+  - explicit override via `MUXLY_CONFIG` or `muxlyd --config`
 - the current `muxview` is an interactive viewer with keyboard-driven hierarchy
   traversal, region selection, drill-in/back-out navigation, elide/expand
   toggling, follow-tail toggling, mouse-driven region targeting, and a tty

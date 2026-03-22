@@ -10,19 +10,24 @@ const tmux_events = muxly.daemon.tmux.events;
 const max_pending_requests_per_connection: usize = 32;
 const max_tty_output_chunk_bytes: usize = 16 * 1024;
 const max_tty_output_queue_bytes: usize = 4 * 1024 * 1024;
+const max_capture_stream_chunk_bytes: usize = 32 * 1024;
 
 pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     var thread_safe_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = allocator };
     const shared_allocator = thread_safe_allocator.allocator();
 
-    var store = try store_mod.Store.init(shared_allocator);
+    var store = try store_mod.Store.initWithRuntimeLimits(shared_allocator, config.runtime_limits);
     defer store.deinit();
 
     const executor = try ServerExecutor.init(shared_allocator, &store);
     const tty_stream_registry = try TtyStreamRegistry.init(shared_allocator);
     defer tty_stream_registry.deinit();
 
-    var listener = try muxly.transport.Listener.init(allocator, &config.transport);
+    var listener = try muxly.transport.Listener.initWithMaxMessageBytes(
+        allocator,
+        &config.transport,
+        config.runtime_limits.max_message_bytes,
+    );
     defer listener.deinit();
     const single_request_per_connection = switch (listener.target) {
         .proxy => true,
@@ -43,6 +48,7 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
             .tty_stream_registry = tty_stream_registry,
             .connection = connection,
             .single_request_per_connection = single_request_per_connection,
+            .max_message_bytes = config.runtime_limits.max_message_bytes,
         }});
         thread.detach();
     }
@@ -55,6 +61,7 @@ const ConnectionContext = struct {
     tty_stream_registry: *TtyStreamRegistry,
     connection: std.net.Server.Connection,
     single_request_per_connection: bool,
+    max_message_bytes: usize,
 };
 
 const ConnectionSession = struct {
@@ -535,6 +542,8 @@ const SpecialRequestKind = enum {
     none,
     tty_stream_open,
     tty_stream_close,
+    pane_capture_stream_open,
+    pane_scroll_stream_open,
 };
 
 const ResolvedTtyStreamTarget = struct {
@@ -559,6 +568,8 @@ fn specialRequestKind(allocator: std.mem.Allocator, request_json: []const u8) !S
 
     if (std.mem.eql(u8, parsed.value.method, "tty.stream.open")) return .tty_stream_open;
     if (std.mem.eql(u8, parsed.value.method, "tty.stream.close")) return .tty_stream_close;
+    if (std.mem.eql(u8, parsed.value.method, "pane.capture.stream.open")) return .pane_capture_stream_open;
+    if (std.mem.eql(u8, parsed.value.method, "pane.scroll.stream.open")) return .pane_scroll_stream_open;
     return .none;
 }
 
@@ -760,6 +771,177 @@ fn handleTtyStreamClose(
     try session.writeFrame(success.bytes);
 }
 
+const PaneCaptureRequestKind = enum {
+    capture,
+    scroll,
+};
+
+const ResolvedPaneCaptureRequest = struct {
+    pane_id: []u8,
+    start_line: ?i64 = null,
+    end_line: ?i64 = null,
+
+    fn deinit(self: *ResolvedPaneCaptureRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.pane_id);
+    }
+};
+
+fn resolvePaneCaptureRequest(
+    allocator: std.mem.Allocator,
+    request_json: []const u8,
+    request_kind: PaneCaptureRequestKind,
+) !ResolvedPaneCaptureRequest {
+    const parsed = try protocol.parseRequest(allocator, request_json);
+    defer parsed.deinit();
+
+    const document_path = try protocol.requestDocumentPath(parsed.value);
+    try protocol.validateRootDocumentOnlyTarget(document_path);
+
+    const pane_id = protocol.getString(parsed.value.params, "paneId") orelse return error.MissingPaneId;
+    var resolved = ResolvedPaneCaptureRequest{
+        .pane_id = try allocator.dupe(u8, pane_id),
+    };
+    errdefer resolved.deinit(allocator);
+
+    if (request_kind == .scroll) {
+        resolved.start_line = protocol.getInteger(parsed.value.params, "startLine") orelse return error.MissingStartLine;
+        resolved.end_line = protocol.getInteger(parsed.value.params, "endLine") orelse return error.MissingEndLine;
+    }
+
+    return resolved;
+}
+
+fn handlePaneCaptureStreamOpen(
+    context: ConnectionContext,
+    session: *ConnectionSession,
+    request: *muxly.conversation_broker.DispatchRequest,
+    request_kind: PaneCaptureRequestKind,
+) !void {
+    const response = switch (request.response_mode) {
+        .envelope => |value| value,
+        .json_rpc => {
+            const failure = try request.buildFailureFrame(
+                context.allocator,
+                "pane capture streaming requires a conversation transport",
+            );
+            defer context.allocator.free(failure.bytes);
+            try session.writeFrame(failure.bytes);
+            return;
+        },
+    };
+
+    if (!session.tryReservePendingSlot()) {
+        const failure = try request.buildFailureFrame(
+            context.allocator,
+            "connection has too many pending requests",
+        );
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    }
+    defer session.finishPendingRequest();
+
+    var resolved = resolvePaneCaptureRequest(context.allocator, request.request_json, request_kind) catch |err| {
+        const message = try std.fmt.allocPrint(
+            context.allocator,
+            "unable to open pane capture stream: {s}",
+            .{@errorName(err)},
+        );
+        defer context.allocator.free(message);
+
+        const failure = try request.buildFailureFrame(context.allocator, message);
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+    defer resolved.deinit(context.allocator);
+
+    const capture = switch (request_kind) {
+        .capture => context.store.captureTmuxPane(resolved.pane_id),
+        .scroll => context.store.scrollTmuxPane(
+            resolved.pane_id,
+            resolved.start_line.?,
+            resolved.end_line.?,
+        ),
+    } catch |err| {
+        const message = try std.fmt.allocPrint(
+            context.allocator,
+            "unable to capture pane stream: {s}",
+            .{@errorName(err)},
+        );
+        defer context.allocator.free(message);
+
+        const failure = try request.buildFailureFrame(context.allocator, message);
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+    defer context.allocator.free(capture);
+
+    var ack_json = std.array_list.Managed(u8).init(context.allocator);
+    defer ack_json.deinit();
+    try protocol.writeSuccess(
+        ack_json.writer(),
+        if (response.request_id) |value| .{ .integer = @intCast(value) } else null,
+        "{\"attached\":true,\"mode\":\"chunked-finite\"}",
+    );
+    const ack = try protocol.allocConversationEnvelope(
+        context.allocator,
+        response.conversation_id,
+        response.request_id,
+        response.target,
+        .rpc,
+        ack_json.items,
+        false,
+        null,
+    );
+    defer context.allocator.free(ack);
+    try session.writeFrame(ack);
+
+    var offset: usize = 0;
+    while (offset < capture.len) {
+        const end = @min(capture.len, offset + max_capture_stream_chunk_bytes);
+        const chunk_json = try std.json.Stringify.valueAlloc(context.allocator, capture[offset..end], .{});
+        defer context.allocator.free(chunk_json);
+        const payload_json = try std.fmt.allocPrint(
+            context.allocator,
+            "{{\"paneId\":{f},\"chunk\":{s}}}",
+            .{ std.json.fmt(resolved.pane_id, .{}), chunk_json },
+        );
+        defer context.allocator.free(payload_json);
+
+        const frame = try protocol.allocConversationEnvelope(
+            context.allocator,
+            response.conversation_id,
+            null,
+            response.target,
+            .capture_data,
+            payload_json,
+            false,
+            null,
+        );
+        defer context.allocator.free(frame);
+        session.writeFrame(frame) catch {
+            session.markClosed();
+            return;
+        };
+        offset = end;
+    }
+
+    const closed_frame = try protocol.allocConversationEnvelope(
+        context.allocator,
+        response.conversation_id,
+        null,
+        response.target,
+        .capture_data,
+        "null",
+        true,
+        null,
+    );
+    defer context.allocator.free(closed_frame);
+    session.writeFrame(closed_frame) catch {};
+}
+
 fn resolveTtyStreamTarget(
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
@@ -852,7 +1034,7 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
     while (true) {
         const request = try request_reader.readMessageLine(
             session.stream,
-            muxly.transport.max_message_bytes,
+            context.max_message_bytes,
         ) orelse {
             session.markClosed();
             break;
@@ -887,6 +1069,18 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
                         },
                         .tty_stream_close => {
                             try handleTtyStreamClose(context, session, &owned_dispatch);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .pane_capture_stream_open => {
+                            try handlePaneCaptureStreamOpen(context, session, &owned_dispatch, .capture);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .pane_scroll_stream_open => {
+                            try handlePaneCaptureStreamOpen(context, session, &owned_dispatch, .scroll);
                             owned_dispatch.deinit();
                             if (context.single_request_per_connection) break;
                             continue;
