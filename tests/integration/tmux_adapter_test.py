@@ -172,7 +172,8 @@ def main() -> None:
 
         capabilities = run_cli(env, "capabilities", "get")["result"]
         assert capabilities["followTailSemantics"] == "stored-node-preference"
-        assert capabilities["viewStateScope"] == "shared-document"
+        assert capabilities["viewStateScope"] == "shared-document-transitional"
+        assert capabilities["viewerCompositionLocation"] == "client"
         assert capabilities["tmuxBackendMode"] == "hybrid-control-invalidation"
         assert capabilities["tmuxTargetScope"] == "root-document-only"
         assert capabilities["supportsUnixSocket"] is True

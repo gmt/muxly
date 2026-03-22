@@ -150,6 +150,92 @@ test "viewer rejects malformed projection payloads" {
     try std.testing.expectError(error.InvalidProjection, renderPayload(payload));
 }
 
+test "viewer parses an owned projection frame for client-side composition" {
+    const payload =
+        \\{
+        \\  "rows": 5,
+        \\  "cols": 20,
+        \\  "viewRootNodeId": 42,
+        \\  "regions": [
+        \\    {
+        \\      "nodeId": 42,
+        \\      "kind": "tty_leaf",
+        \\      "title": "worker",
+        \\      "x": 0,
+        \\      "y": 0,
+        \\      "width": 20,
+        \\      "height": 5,
+        \\      "focused": true,
+        \\      "followTail": false,
+        \\      "scrollable": false,
+        \\      "scrollTop": 0,
+        \\      "scrollMax": 0,
+        \\      "elided": false,
+        \\      "lines": ["pending"]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    var frame = try muxly.viewer_render.parseProjectionValue(std.testing.allocator, parsed.value);
+    defer frame.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u64, 42), frame.view_root_node_id);
+    try std.testing.expectEqual(@as(usize, 1), frame.regions.len);
+    try std.testing.expectEqualStrings("worker", frame.regions[0].title);
+
+    const replacement = [_][]const u8{ "ready", "zig build test" };
+    try frame.regions[0].replaceLines(std.testing.allocator, &replacement);
+    frame.regions[0].scrollable = true;
+    frame.regions[0].scroll_top = 1;
+    frame.regions[0].scroll_max = 1;
+
+    var output = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer output.deinit();
+    try muxly.viewer_render.renderProjectionFrame(std.testing.allocator, &frame, output.writer());
+
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "ready") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "zig build test") != null);
+}
+
+test "viewer render wrapper keeps boxed fallback path working" {
+    const payload =
+        \\{
+        \\  "rows": 4,
+        \\  "cols": 18,
+        \\  "regions": [
+        \\    {
+        \\      "nodeId": 7,
+        \\      "kind": "text_leaf",
+        \\      "title": "notes",
+        \\      "x": 0,
+        \\      "y": 0,
+        \\      "width": 18,
+        \\      "height": 4,
+        \\      "focused": false,
+        \\      "followTail": false,
+        \\      "scrollable": false,
+        \\      "scrollTop": 0,
+        \\      "scrollMax": 0,
+        \\      "elided": false,
+        \\      "lines": ["still boxed"]
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const output = try renderPayload(payload);
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "+notes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "still boxed") != null);
+}
+
 fn renderPayload(payload: []const u8) ![]u8 {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{
         .allocate = .alloc_always,

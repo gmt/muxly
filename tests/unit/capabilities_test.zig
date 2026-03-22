@@ -10,9 +10,10 @@ test "capabilities describe current phase-2 semantics truthfully" {
 
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"conversationApi\":\"library-first\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"ttyApiShape\":\"neutral-conversation\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"ttySizeNegotiation\":\"requested-vs-actual\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"ttySizeNegotiation\":\"requested-vs-actual-local-only\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"followTailSemantics\":\"stored-node-preference\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewStateScope\":\"shared-document\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewStateScope\":\"shared-document-transitional\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"viewerCompositionLocation\":\"client\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"tmuxBackendMode\":\"hybrid-control-invalidation\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buffer.items, "\"tmuxTargetScope\":\"root-document-only\"") != null);
 

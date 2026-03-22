@@ -11,10 +11,11 @@ pub const Capabilities = struct {
     ordinary_client_viewer: bool = true,
     conversation_api: []const u8 = "library-first",
     tty_api_shape: []const u8 = "neutral-conversation",
-    tty_size_negotiation: []const u8 = "requested-vs-actual",
+    tty_size_negotiation: []const u8 = "requested-vs-actual-local-only",
     tty_source_serialization: []const u8 = "derived-state-only",
     follow_tail_semantics: []const u8 = "stored-node-preference",
-    view_state_scope: []const u8 = "shared-document",
+    view_state_scope: []const u8 = "shared-document-transitional",
+    viewer_composition_location: []const u8 = "client",
     tmux_backend_mode: []const u8 = "hybrid-control-invalidation",
     tmux_target_scope: []const u8 = "root-document-only",
     supports_tty_sources: bool = true,
@@ -42,6 +43,7 @@ pub const Capabilities = struct {
         try writer.print("\"ttySerialization\":\"{s}\",", .{self.tty_source_serialization});
         try writer.print("\"followTailSemantics\":\"{s}\",", .{self.follow_tail_semantics});
         try writer.print("\"viewStateScope\":\"{s}\",", .{self.view_state_scope});
+        try writer.print("\"viewerCompositionLocation\":\"{s}\",", .{self.viewer_composition_location});
         try writer.print("\"tmuxBackendMode\":\"{s}\",", .{self.tmux_backend_mode});
         try writer.print("\"tmuxTargetScope\":\"{s}\",", .{self.tmux_target_scope});
         try writer.print("\"supportsTtySources\":{},", .{self.supports_tty_sources});

@@ -204,25 +204,28 @@ fn runLiveViewer(
         if (parsed_response.value != .object) continue;
         const result = parsed_response.value.object.getPtr("result") orelse continue;
 
-        session.refreshRegions(result.*);
+        var frame = muxly.viewer_render.parseProjectionValue(allocator, result.*) catch continue;
+        defer frame.deinit(allocator);
+
+        session.refreshRegions(&frame);
         session.drainTtyOutput();
-        session.overlayTtyProjection(result);
+        session.overlayTtyFrame(&frame);
 
         var rendered = std.array_list.Managed(u8).init(allocator);
         defer rendered.deinit();
-        muxly.viewer_render.renderProjectionValue(allocator, result.*, rendered.writer()) catch continue;
+        muxly.viewer_render.renderProjectionFrame(allocator, &frame, rendered.writer()) catch continue;
 
         writeStatusBar(&rendered, &session, viewport.cols) catch {};
 
-        const frame = rendered.toOwnedSlice() catch continue;
-        defer allocator.free(frame);
+        const rendered_frame = rendered.toOwnedSlice() catch continue;
+        defer allocator.free(rendered_frame);
 
-        if (force_redraw or previous_frame == null or !std.mem.eql(u8, previous_frame.?, frame)) {
+        if (force_redraw or previous_frame == null or !std.mem.eql(u8, previous_frame.?, rendered_frame)) {
             try stdout_file.writeAll("\x1b[2J\x1b[H");
-            try stdout_file.writeAll(frame);
+            try stdout_file.writeAll(rendered_frame);
 
             if (previous_frame) |previous| allocator.free(previous);
-            previous_frame = allocator.dupe(u8, frame) catch null;
+            previous_frame = allocator.dupe(u8, rendered_frame) catch null;
             force_redraw = false;
         }
 
@@ -243,7 +246,7 @@ fn runLiveViewer(
 
 fn writeStatusBar(buffer: *std.array_list.Managed(u8), session: *const viewer_state.ViewerSession, cols: u16) !void {
     const writer = buffer.writer();
-    const mode_label: []const u8 = switch (session.mode) {
+    const mode_label: []const u8 = switch (session.local.mode) {
         .navigate => "NAV",
         .tty_interact => "TTY",
     };
@@ -254,15 +257,15 @@ fn writeStatusBar(buffer: *std.array_list.Managed(u8), session: *const viewer_st
     else
         "-";
 
-    const scope_label: []const u8 = if (session.view_root_node_id != null) "scoped" else "root";
+    const scope_label: []const u8 = if (session.local.shared_view_root_node_id != null) "scoped" else "root";
 
     try writer.print("\x1b[7m [{s}] {s} | {s}", .{ mode_label, sel_label, scope_label });
 
-    if (session.status_message.len > 0) {
-        try writer.print(" | {s}", .{session.status_message});
+    if (session.local.status_message.len > 0) {
+        try writer.print(" | {s}", .{session.local.status_message});
     }
 
-    var wrote: usize = 10 + mode_label.len + sel_label.len + scope_label.len + session.status_message.len;
+    var wrote: usize = 10 + mode_label.len + sel_label.len + scope_label.len + session.local.status_message.len;
     while (wrote < cols) : (wrote += 1) {
         try writer.writeByte(' ');
     }
@@ -341,7 +344,7 @@ fn pollInput(stdin_file: std.fs.File, session: *viewer_state.ViewerSession, time
 
     const input = input_buffer[0..bytes_read];
 
-    if (session.mode == .tty_interact) {
+    if (session.local.mode == .tty_interact) {
         if (bytes_read == 1 and input[0] == 0x1b) return .back_out;
         if (bytes_read >= 3 and input[0] == 0x1b and input[1] == '[') {
             if (bytes_read >= 4 and input[2] == '1' and input[3] == '~') return .back_out;
@@ -442,6 +445,6 @@ fn selectRegionByPosition(session: *viewer_state.ViewerSession, x: u16, y: u16) 
     }
 
     if (best_index) |index| {
-        session.selected_index = index;
+        session.local.selected_index = index;
     }
 }

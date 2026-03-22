@@ -542,12 +542,12 @@ pub const TtyOutputStream = struct {
         defer envelope.deinit(self.state_owner.allocator);
 
         if (envelope.conversation_error != null) {
-            self.markClosed();
+            _ = self.markClosed();
             return .closed;
         }
         if (envelope.kind != .tty_data) return error.InvalidResponse;
         if (envelope.fin and std.mem.eql(u8, envelope.payload_json, "null")) {
-            self.markClosed();
+            _ = self.markClosed();
             self.state_owner.frame_router.unregisterConversation(self.conversation_id);
             return .closed;
         }
@@ -651,6 +651,9 @@ pub const TtyConversation = struct {
         defer self.state_owner.allocator.free(response);
     }
 
+    /// Records the caller's preferred tty size locally. The daemon/backend
+    /// resize contract is still provisional, so this does not resize the
+    /// server-side tty yet.
     pub fn requestSize(self: *TtyConversation, rows: u16, cols: u16) TtySize {
         self.info.requested_rows = rows;
         self.info.requested_cols = cols;
