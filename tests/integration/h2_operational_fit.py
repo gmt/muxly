@@ -47,6 +47,12 @@ class ProxyInstance:
     transport_spec: str
 
 
+@dataclass
+class MixedLoadFixture:
+    session_name: str
+    node_id: int
+
+
 def select_non_loopback_host_ipv4() -> str:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -276,6 +282,32 @@ def create_tmux_session_node(env: dict[str, str], transport_spec: str, session_n
     return int(response["result"]["nodeId"])
 
 
+def mixed_load_command(prefix: str) -> str:
+    return (
+        "sh -lc 'i=0; while [ \"$i\" -lt 6000 ]; do "
+        f"printf \"{prefix}-%04d zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n\" \"$i\"; "
+        "i=$((i+1)); "
+        "if [ $((i % 50)) -eq 0 ]; then sleep 0.01; fi; "
+        "done; sleep 30'"
+    )
+
+
+def create_mixed_load_fixture(
+    env: dict[str, str],
+    transport_spec: str,
+    session_prefix: str,
+    output_prefix: str,
+) -> MixedLoadFixture:
+    session_name = f"{session_prefix}-{uuid.uuid4().hex[:8]}"
+    node_id = create_tmux_session_node(env, transport_spec, session_name, mixed_load_command(output_prefix))
+    return MixedLoadFixture(session_name=session_name, node_id=node_id)
+
+
+def cleanup_mixed_load_fixture(fixture: MixedLoadFixture | None) -> None:
+    if fixture is not None:
+        cleanup_tmux_session(fixture.session_name)
+
+
 def cleanup_tmux_session(session_name: str) -> None:
     subprocess.run(
         ["tmux", "kill-session", "-t", session_name],
@@ -495,6 +527,25 @@ def capture_error(exc: Exception) -> dict:
     return {"error": repr(exc)}
 
 
+def summarize_report_error(value: object) -> str:
+    text = str(value)
+    first_line = text.splitlines()[0].strip()
+    return first_line or "n/a"
+
+
+def report_has_mixed_load_errors(proxy_results: list[dict], comparison_results: list[dict]) -> bool:
+    for item in proxy_results:
+        mixed = item.get("scenarios", {}).get("mixedLoad", {})
+        if "error" in mixed:
+            return True
+    for item in comparison_results:
+        for transport_key in ("http", "h2"):
+            mixed = item.get(transport_key, {}).get("mixedLoad", {})
+            if "error" in mixed:
+                return True
+    return False
+
+
 def maybe_run(fn, *args, **kwargs) -> dict:
     try:
         value = fn(*args, **kwargs)
@@ -553,15 +604,9 @@ def run_proxy_matrix(env: dict[str, str], probe_path: pathlib.Path, output_dir: 
     mixed_node_id: int | None = None
     session_name: str | None = None
     if tmux_available():
-        session_name = f"muxly-fit-{uuid.uuid4().hex[:8]}"
-        command = (
-            "sh -lc 'i=0; while [ \"$i\" -lt 6000 ]; do "
-            "printf \"fit-%04d yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n\" \"$i\"; "
-            "i=$((i+1)); "
-            "if [ $((i % 50)) -eq 0 ]; then sleep 0.01; fi; "
-            "done; sleep 30'"
-        )
-        mixed_node_id = create_tmux_session_node(env, direct_spec, session_name, command)
+        fixture = create_mixed_load_fixture(env, direct_spec, "muxly-fit", "fit")
+        session_name = fixture.session_name
+        mixed_node_id = fixture.node_id
 
     results: list[dict] = []
     try:
@@ -609,31 +654,7 @@ def run_proxy_matrix(env: dict[str, str], probe_path: pathlib.Path, output_dir: 
 
 def run_comparison_matrix(env: dict[str, str], probe_path: pathlib.Path) -> list[dict]:
     host_ipv4 = select_non_loopback_host_ipv4()
-    http_daemon = start_daemon("unsafe+http://0.0.0.0:0/rpc")
-    h2_daemon = start_daemon("unsafe+h2://0.0.0.0:0/rpc")
-    http_direct_spec = normalize_client_spec(http_daemon.actual_spec)
-    h2_direct_spec = normalize_client_spec(h2_daemon.actual_spec)
-
-    ensure_documents(env, http_direct_spec)
-    ensure_documents(env, h2_direct_spec)
-
-    http_session_name: str | None = None
-    h2_session_name: str | None = None
-    http_node_id: int | None = None
-    h2_node_id: int | None = None
-
-    if tmux_available():
-        http_session_name = f"muxly-http-fit-{uuid.uuid4().hex[:8]}"
-        h2_session_name = f"muxly-h2-fit-{uuid.uuid4().hex[:8]}"
-        command = (
-            "sh -lc 'i=0; while [ \"$i\" -lt 6000 ]; do "
-            "printf \"cmp-%04d zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\\n\" \"$i\"; "
-            "i=$((i+1)); "
-            "if [ $((i % 50)) -eq 0 ]; then sleep 0.01; fi; "
-            "done; sleep 30'"
-        )
-        http_node_id = create_tmux_session_node(env, http_direct_spec, http_session_name, command)
-        h2_node_id = create_tmux_session_node(env, h2_direct_spec, h2_session_name, command)
+    tmux_enabled = tmux_available()
 
     profiles = [
         {"name": "baseline", "delayMs": 0, "lossPct": 0.0},
@@ -643,13 +664,24 @@ def run_comparison_matrix(env: dict[str, str], probe_path: pathlib.Path) -> list
     ]
 
     results: list[dict] = []
-    try:
-        for profile in profiles:
+    for profile in profiles:
+        http_daemon = start_daemon("unsafe+http://0.0.0.0:0/rpc")
+        h2_daemon = start_daemon("unsafe+h2://0.0.0.0:0/rpc")
+        http_direct_spec = normalize_client_spec(http_daemon.actual_spec)
+        h2_direct_spec = normalize_client_spec(h2_daemon.actual_spec)
+        http_proxy: ProxyInstance | None = None
+        h2_proxy: ProxyInstance | None = None
+        http_fixture: MixedLoadFixture | None = None
+        h2_fixture: MixedLoadFixture | None = None
+        try:
+            ensure_documents(env, http_direct_spec)
+            ensure_documents(env, h2_direct_spec)
+
+            http_proxy: ProxyInstance | None = None
+            h2_proxy: ProxyInstance | None = None
             if profile["delayMs"] == 0 and profile["lossPct"] == 0.0:
                 http_spec = http_direct_spec
                 h2_spec = h2_direct_spec
-                http_proxy = None
-                h2_proxy = None
             else:
                 http_proxy = start_netem_proxy(
                     pathlib.Path(tempfile.mkdtemp(prefix="muxly-http-netem-")),
@@ -668,144 +700,152 @@ def run_comparison_matrix(env: dict[str, str], probe_path: pathlib.Path) -> list
                 http_spec = http_proxy.transport_spec
                 h2_spec = h2_proxy.transport_spec
 
-            try:
-                profile_result = {
-                    "profile": profile,
-                    "http": {},
-                    "h2": {},
-                }
-                profile_result["http"]["reachability"] = maybe_run(wait_for_ping, env, http_spec)
-                profile_result["h2"]["reachability"] = maybe_run(wait_for_ping, env, h2_spec)
+            if tmux_enabled:
+                wait_for_ping(env, http_direct_spec)
+                wait_for_ping(env, h2_direct_spec)
+                http_fixture = create_mixed_load_fixture(env, http_direct_spec, "muxly-http-fit", "cmp-http")
+                h2_fixture = create_mixed_load_fixture(env, h2_direct_spec, "muxly-h2-fit", "cmp-h2")
 
-                if "error" not in profile_result["http"]["reachability"]:
-                    profile_result["http"]["pingLoop"] = maybe_run(
+            profile_result = {
+                "profile": profile,
+                "http": {},
+                "h2": {},
+            }
+            profile_result["http"]["reachability"] = maybe_run(wait_for_ping, env, http_spec)
+            profile_result["h2"]["reachability"] = maybe_run(wait_for_ping, env, h2_spec)
+
+            if "error" not in profile_result["http"]["reachability"]:
+                profile_result["http"]["pingLoop"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "ping-loop",
+                    "--transport",
+                    http_spec,
+                    "--count",
+                    "24",
+                )
+                profile_result["http"]["sleepOverlap"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "sleep-overlap",
+                    "--transport",
+                    http_spec,
+                    "--slow-doc",
+                    "/a",
+                    "--fast-doc",
+                    "/b",
+                    "--slow-ms",
+                    "320",
+                    "--fast-ms",
+                    "120",
+                )
+                profile_result["http"]["reconnectLoop"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "reconnect-loop",
+                    "--transport",
+                    http_spec,
+                    "--count",
+                    "8",
+                )
+            else:
+                profile_result["http"]["pingLoop"] = {"skipped": True, "reason": "unreachable"}
+                profile_result["http"]["sleepOverlap"] = {"skipped": True, "reason": "unreachable"}
+                profile_result["http"]["reconnectLoop"] = {"skipped": True, "reason": "unreachable"}
+
+            if "error" not in profile_result["h2"]["reachability"]:
+                profile_result["h2"]["pingLoop"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "ping-loop",
+                    "--transport",
+                    h2_spec,
+                    "--count",
+                    "24",
+                )
+                profile_result["h2"]["sleepOverlap"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "sleep-overlap",
+                    "--transport",
+                    h2_spec,
+                    "--slow-doc",
+                    "/a",
+                    "--fast-doc",
+                    "/b",
+                    "--slow-ms",
+                    "320",
+                    "--fast-ms",
+                    "120",
+                )
+                profile_result["h2"]["reconnectLoop"] = maybe_run(
+                    run_probe,
+                    probe_path,
+                    "reconnect-loop",
+                    "--transport",
+                    h2_spec,
+                    "--count",
+                    "8",
+                )
+            else:
+                profile_result["h2"]["pingLoop"] = {"skipped": True, "reason": "unreachable"}
+                profile_result["h2"]["sleepOverlap"] = {"skipped": True, "reason": "unreachable"}
+                profile_result["h2"]["reconnectLoop"] = {"skipped": True, "reason": "unreachable"}
+
+            if http_fixture is None or h2_fixture is None:
+                profile_result["http"]["mixedLoad"] = {"skipped": True, "reason": "tmux unavailable"}
+                profile_result["h2"]["mixedLoad"] = {"skipped": True, "reason": "tmux unavailable"}
+            else:
+                profile_result["http"]["mixedLoad"] = (
+                    maybe_run(
                         run_probe,
                         probe_path,
-                        "ping-loop",
+                        "mixed-load",
                         "--transport",
                         http_spec,
-                        "--count",
+                        "--node-id",
+                        str(http_fixture.node_id),
+                        "--rpc-count",
                         "24",
                     )
-                    profile_result["http"]["sleepOverlap"] = maybe_run(
+                    if "error" not in profile_result["http"]["reachability"]
+                    else {"skipped": True, "reason": "unreachable"}
+                )
+                profile_result["h2"]["mixedLoad"] = (
+                    maybe_run(
                         run_probe,
                         probe_path,
-                        "sleep-overlap",
-                        "--transport",
-                        http_spec,
-                        "--slow-doc",
-                        "/a",
-                        "--fast-doc",
-                        "/b",
-                        "--slow-ms",
-                        "320",
-                        "--fast-ms",
-                        "120",
-                    )
-                    profile_result["http"]["reconnectLoop"] = maybe_run(
-                        run_probe,
-                        probe_path,
-                        "reconnect-loop",
-                        "--transport",
-                        http_spec,
-                        "--count",
-                        "8",
-                    )
-                else:
-                    profile_result["http"]["pingLoop"] = {"skipped": True, "reason": "unreachable"}
-                    profile_result["http"]["sleepOverlap"] = {"skipped": True, "reason": "unreachable"}
-                    profile_result["http"]["reconnectLoop"] = {"skipped": True, "reason": "unreachable"}
-
-                if "error" not in profile_result["h2"]["reachability"]:
-                    profile_result["h2"]["pingLoop"] = maybe_run(
-                        run_probe,
-                        probe_path,
-                        "ping-loop",
+                        "mixed-load",
                         "--transport",
                         h2_spec,
-                        "--count",
+                        "--node-id",
+                        str(h2_fixture.node_id),
+                        "--rpc-count",
                         "24",
                     )
-                    profile_result["h2"]["sleepOverlap"] = maybe_run(
-                        run_probe,
-                        probe_path,
-                        "sleep-overlap",
-                        "--transport",
-                        h2_spec,
-                        "--slow-doc",
-                        "/a",
-                        "--fast-doc",
-                        "/b",
-                        "--slow-ms",
-                        "320",
-                        "--fast-ms",
-                        "120",
-                    )
-                    profile_result["h2"]["reconnectLoop"] = maybe_run(
-                        run_probe,
-                        probe_path,
-                        "reconnect-loop",
-                        "--transport",
-                        h2_spec,
-                        "--count",
-                        "8",
-                    )
-                else:
-                    profile_result["h2"]["pingLoop"] = {"skipped": True, "reason": "unreachable"}
-                    profile_result["h2"]["sleepOverlap"] = {"skipped": True, "reason": "unreachable"}
-                    profile_result["h2"]["reconnectLoop"] = {"skipped": True, "reason": "unreachable"}
-
-                if http_node_id is None or h2_node_id is None:
-                    profile_result["http"]["mixedLoad"] = {"skipped": True, "reason": "tmux unavailable"}
-                    profile_result["h2"]["mixedLoad"] = {"skipped": True, "reason": "tmux unavailable"}
-                else:
-                    profile_result["http"]["mixedLoad"] = (
-                        maybe_run(
-                            run_probe,
-                            probe_path,
-                            "mixed-load",
-                            "--transport",
-                            http_spec,
-                            "--node-id",
-                            str(http_node_id),
-                            "--rpc-count",
-                            "24",
-                        )
-                        if "error" not in profile_result["http"]["reachability"]
-                        else {"skipped": True, "reason": "unreachable"}
-                    )
-                    profile_result["h2"]["mixedLoad"] = (
-                        maybe_run(
-                            run_probe,
-                            probe_path,
-                            "mixed-load",
-                            "--transport",
-                            h2_spec,
-                            "--node-id",
-                            str(h2_node_id),
-                            "--rpc-count",
-                            "24",
-                        )
-                        if "error" not in profile_result["h2"]["reachability"]
-                        else {"skipped": True, "reason": "unreachable"}
-                    )
-                results.append(profile_result)
-            finally:
-                if profile["delayMs"] != 0 or profile["lossPct"] != 0.0:
-                    stop_proxy_container(http_proxy)
-                    stop_proxy_container(h2_proxy)
-    finally:
-        if http_session_name:
-            cleanup_tmux_session(http_session_name)
-        if h2_session_name:
-            cleanup_tmux_session(h2_session_name)
-        stop_daemon(http_daemon)
-        stop_daemon(h2_daemon)
+                    if "error" not in profile_result["h2"]["reachability"]
+                    else {"skipped": True, "reason": "unreachable"}
+                )
+            results.append(profile_result)
+        finally:
+            had_fixture = http_fixture is not None or h2_fixture is not None
+            cleanup_mixed_load_fixture(http_fixture)
+            cleanup_mixed_load_fixture(h2_fixture)
+            if had_fixture:
+                time.sleep(0.2)
+            if http_proxy is not None:
+                stop_proxy_container(http_proxy)
+            if h2_proxy is not None:
+                stop_proxy_container(h2_proxy)
+            stop_daemon(http_daemon)
+            stop_daemon(h2_daemon)
 
     return results
 
 
 def summarize_recommendation(proxy_results: list[dict], comparison_results: list[dict]) -> str:
+    if report_has_mixed_load_errors(proxy_results, comparison_results):
+        return "needs-human-call"
     proxy_successes = sum(1 for item in proxy_results if item.get("name") != "direct" and "error" not in item)
     h2_better_profiles = 0
     comparable_profiles = 0
@@ -857,8 +897,8 @@ def render_markdown(report: dict) -> str:
             )
         else:
             lines.append(
-                f"- Ping loop errors: HTTP `{http_ping.get('error', http_ping.get('reason', 'n/a'))}`; "
-                f"H2 `{h2_ping.get('error', h2_ping.get('reason', 'n/a'))}`"
+                f"- Ping loop errors: HTTP `{summarize_report_error(http_ping.get('error', http_ping.get('reason', 'n/a')))}`; "
+                f"H2 `{summarize_report_error(h2_ping.get('error', h2_ping.get('reason', 'n/a')))}`"
             )
 
         http_reconnect = item["http"].get("reconnectLoop", {})
@@ -870,8 +910,8 @@ def render_markdown(report: dict) -> str:
             )
         else:
             lines.append(
-                f"- Reconnect errors: HTTP `{http_reconnect.get('error', http_reconnect.get('reason', 'n/a'))}`; "
-                f"H2 `{h2_reconnect.get('error', h2_reconnect.get('reason', 'n/a'))}`"
+                f"- Reconnect errors: HTTP `{summarize_report_error(http_reconnect.get('error', http_reconnect.get('reason', 'n/a')))}`; "
+                f"H2 `{summarize_report_error(h2_reconnect.get('error', h2_reconnect.get('reason', 'n/a')))}`"
             )
         http_mixed = item['http'].get('mixedLoad', {})
         h2_mixed = item['h2'].get('mixedLoad', {})
@@ -884,8 +924,8 @@ def render_markdown(report: dict) -> str:
             )
         else:
             lines.append(
-                f"- Mixed-load notes: HTTP `{http_mixed.get('error', http_mixed.get('reason', 'n/a'))}`; "
-                f"H2 `{h2_mixed.get('error', h2_mixed.get('reason', 'n/a'))}`"
+                f"- Mixed-load notes: HTTP `{summarize_report_error(http_mixed.get('error', http_mixed.get('reason', 'n/a')))}`; "
+                f"H2 `{summarize_report_error(h2_mixed.get('error', h2_mixed.get('reason', 'n/a')))}`"
             )
         lines.append("")
 
@@ -915,7 +955,7 @@ def render_pdf(report: dict, output_dir: pathlib.Path) -> pathlib.Path | None:
 
     for item in report["proxyMatrix"]:
         if "error" in item:
-            line = f"- {item['name']} ({item['mode']}): fail - {item['error']}"
+            line = f"- {item['name']} ({item['mode']}): fail - {summarize_report_error(item['error'])}"
         else:
             line = f"- {item['name']} ({item['mode']}): pass - {item['transportSpec']}"
         story.append(Paragraph(line, styles["BodyText"]))
@@ -936,7 +976,8 @@ def render_pdf(report: dict, output_dir: pathlib.Path) -> pathlib.Path | None:
         else:
             story.append(
                 Paragraph(
-                    f"Ping notes: HTTP {http_ping.get('error', http_ping.get('reason', 'n/a'))}; H2 {h2_ping.get('error', h2_ping.get('reason', 'n/a'))}",
+                    f"Ping notes: HTTP {summarize_report_error(http_ping.get('error', http_ping.get('reason', 'n/a')))}; "
+                    f"H2 {summarize_report_error(h2_ping.get('error', h2_ping.get('reason', 'n/a')))}",
                     styles["BodyText"],
                 )
             )
@@ -952,7 +993,8 @@ def render_pdf(report: dict, output_dir: pathlib.Path) -> pathlib.Path | None:
         else:
             story.append(
                 Paragraph(
-                    f"Mixed-load notes: HTTP {http_mixed.get('error', http_mixed.get('reason', 'n/a'))}; H2 {h2_mixed.get('error', h2_mixed.get('reason', 'n/a'))}",
+                    f"Mixed-load notes: HTTP {summarize_report_error(http_mixed.get('error', http_mixed.get('reason', 'n/a')))}; "
+                    f"H2 {summarize_report_error(h2_mixed.get('error', h2_mixed.get('reason', 'n/a')))}",
                     styles["BodyText"],
                 )
             )
