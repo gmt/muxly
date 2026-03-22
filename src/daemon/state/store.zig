@@ -209,6 +209,7 @@ pub const Store = struct {
 
     pub fn refreshSourcesForDocument(self: *Store, document: *document_mod.Document) !void {
         for (document.nodes.items) |*node| {
+            const node_id = node.id;
             switch (node.source) {
                 .none => {},
                 .tty => |tty| {
@@ -220,16 +221,16 @@ pub const Store = struct {
                                 pane_id,
                                 tty.session_name,
                             });
-                            try node.setContent(self.allocator, fallback.items);
+                            try document.setNodeContent(node_id, fallback.items);
                             continue;
                         };
                         defer self.allocator.free(capture);
-                        try node.setContent(self.allocator, capture);
+                        try document.setNodeContent(node_id, capture);
                     } else {
                         var buffer = std.array_list.Managed(u8).init(self.allocator);
                         defer buffer.deinit();
                         try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
-                        try node.setContent(self.allocator, buffer.items);
+                        try document.setNodeContent(node_id, buffer.items);
                     }
                 },
                 .terminal_artifact => {},
@@ -241,11 +242,11 @@ pub const Store = struct {
                             file.path,
                             @errorName(err),
                         });
-                        try node.setContent(self.allocator, fallback.items);
+                        try document.setNodeContent(node_id, fallback.items);
                         continue;
                     };
                     defer self.allocator.free(content);
-                    try node.setContent(self.allocator, content);
+                    try document.setNodeContent(node_id, content);
                 },
             }
         }
@@ -683,7 +684,7 @@ pub const Store = struct {
             .surface => try captureSurfaceArtifact(self.allocator, pane_id),
         };
         defer self.allocator.free(capture.content);
-        try node.setContent(self.allocator, capture.content);
+        try document.setNodeContent(node_id, capture.content);
         return capture.sections;
     }
 

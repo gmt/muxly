@@ -137,6 +137,8 @@ pub const Document = struct {
     pub fn removeNode(self: *Document, node_id: ids.NodeId) !void {
         const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
         if (self.nodes.items[index].children.items.len != 0) return error.NodeHasChildren;
+        const node_content_len = self.nodes.items[index].content.len;
+        if (node_content_len > self.content_bytes) return error.ContentAccountingDrift;
 
         if (self.nodes.items[index].parent_id) |parent_id| {
             const parent_index = self.findNodeIndex(parent_id) orelse return error.UnknownParent;
@@ -152,7 +154,7 @@ pub const Document = struct {
             }
         }
 
-        self.content_bytes -= self.nodes.items[index].content.len;
+        self.content_bytes -= node_content_len;
         self.nodes.items[index].deinit(self.allocator);
         _ = self.nodes.swapRemove(index);
 
@@ -530,4 +532,25 @@ test "document content cap is enforced across node updates and appends" {
     );
     try std.testing.expectEqual(@as(usize, 4), document.content_bytes);
     try std.testing.expectEqualStrings("abcd", document.findNode(first).?.content);
+}
+
+test "removeNode reports content accounting drift instead of underflowing" {
+    var document = try Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const node_id = try document.appendNode(
+        document.root_node_id,
+        .scroll_region,
+        "drift",
+        .{ .none = {} },
+    );
+
+    const node = document.findNode(node_id) orelse return error.TestExpectedEqual;
+    try node.setContent(std.testing.allocator, "untracked-content");
+
+    try std.testing.expectError(
+        error.ContentAccountingDrift,
+        document.removeNode(node_id),
+    );
+    try std.testing.expect(document.findNode(node_id) != null);
 }
