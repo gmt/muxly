@@ -168,6 +168,20 @@ To run the local HTTP/H3WT transport integration coverage, use:
 zig build test-transport
 ```
 
+To run the randomized async transport soak, use:
+
+```sh
+zig build test-transport-stress
+```
+
+The soak is opt-in, prints its random seed and worker count at startup, and
+accepts overrides like `--seed`, `--seconds-per-transport`, and
+`--transports tcp,h2` via the underlying script:
+
+```sh
+python3 tests/integration/transport_stress_test.py --seed 123 --seconds-per-transport 3 --transports h2
+```
+
 To run the Docker-backed integration coverage explicitly, including the raw TCP
 path that requires
 `--i-know-this-is-unencrypted-and-unauthenticated`, use either:

@@ -87,6 +87,20 @@ pub fn build(b: *std.Build) void {
     const install_guided_tour = b.addInstallArtifact(guided_tour, .{});
     b.getInstallStep().dependOn(&install_guided_tour.step);
 
+    const async_transport_stress_probe = b.addExecutable(.{
+        .name = "muxly-async-transport-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/async_transport_stress_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
+    });
+    const install_async_transport_stress_probe = b.addInstallArtifact(async_transport_stress_probe, .{});
+    b.getInstallStep().dependOn(&install_async_transport_stress_probe.step);
+
     const install_transport_bridge = b.addInstallDirectory(.{
         .source_dir = b.path("tools/transport_bridge"),
         .install_dir = .prefix,
@@ -243,6 +257,30 @@ pub fn build(b: *std.Build) void {
     test_transport_step.dependOn(&run_transport_tests.step);
     test_transport_step.dependOn(&run_async_transport_validation_tests.step);
 
+    const run_transport_stress_tests = b.addSystemCommand(&.{
+        "python3",
+        "tests/integration/transport_stress_test.py",
+        "--skip-build",
+    });
+    run_transport_stress_tests.setCwd(b.path("."));
+    run_transport_stress_tests.step.dependOn(&install_daemon.step);
+    run_transport_stress_tests.step.dependOn(&install_transport_bridge.step);
+    run_transport_stress_tests.step.dependOn(&install_async_transport_stress_probe.step);
+    run_transport_stress_tests.setEnvironmentVariable(
+        "MUXLY_TEST_DAEMON_BINARY",
+        b.getInstallPath(.prefix, "bin/muxlyd"),
+    );
+    run_transport_stress_tests.setEnvironmentVariable(
+        "MUXLY_ASYNC_STRESS_PROBE_BINARY",
+        b.getInstallPath(.prefix, "bin/muxly-async-transport-probe"),
+    );
+
+    const test_transport_stress_step = b.step(
+        "test-transport-stress",
+        "Run randomized transport stress coverage",
+    );
+    test_transport_stress_step.dependOn(&run_transport_stress_tests.step);
+
     const test_ci_step = b.step(
         "test-ci",
         "Run CI tests; add Docker transport coverage when MUXLY_ENABLE_DOCKER_TESTS is enabled",
@@ -272,6 +310,12 @@ pub fn build(b: *std.Build) void {
 
     const guided_tour_step = b.step("muxguide", "Build muxguide guided tour demo");
     guided_tour_step.dependOn(&install_guided_tour.step);
+
+    const async_transport_stress_probe_step = b.step(
+        "async-transport-stress-probe",
+        "Build async transport stress probe",
+    );
+    async_transport_stress_probe_step.dependOn(&install_async_transport_stress_probe.step);
 
     const ffi_docs_step = b.step("docs-ffi", "Build generated C/FFI reference docs");
     ffi_docs_step.dependOn(&build_ffi_docs.step);

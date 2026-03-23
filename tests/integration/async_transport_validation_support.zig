@@ -1,7 +1,5 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const muxly = @import("muxly");
-const support = @import("async_transport_validation_support.zig");
 
 const daemon_ready_prefix = "muxlyd listening on ";
 const same_lane_sleep_ms: u32 = 240;
@@ -13,11 +11,37 @@ const listen_timeout_ms: i32 = 20_000;
 const request_gap_ms: u64 = 20;
 const poll_interval_ms: u64 = 10;
 
-const TransportKind = enum {
+pub const TransportKind = enum {
     tcp,
     http,
     h2,
     h3wt,
+
+    pub fn parse(text: []const u8) !TransportKind {
+        if (std.mem.eql(u8, text, "tcp")) return .tcp;
+        if (std.mem.eql(u8, text, "http")) return .http;
+        if (std.mem.eql(u8, text, "h2")) return .h2;
+        if (std.mem.eql(u8, text, "h3wt")) return .h3wt;
+        return error.InvalidTransportKind;
+    }
+
+    pub fn name(self: TransportKind) []const u8 {
+        return switch (self) {
+            .tcp => "tcp",
+            .http => "http",
+            .h2 => "h2",
+            .h3wt => "h3wt",
+        };
+    }
+
+    pub fn requestedTransportSpec(self: TransportKind) []const u8 {
+        return switch (self) {
+            .tcp => "tcp://127.0.0.1:0",
+            .http => "http://127.0.0.1:0/rpc",
+            .h2 => "h2://127.0.0.1:0/rpc",
+            .h3wt => "h3wt://127.0.0.1:0/mux",
+        };
+    }
 };
 
 const FirstReady = union(enum) {
@@ -46,247 +70,18 @@ const DaemonInstance = struct {
     }
 };
 
-test "async validation matrix over tcp transport" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try support.runTransportValidation(std.testing.allocator, .tcp);
-}
-
-test "async validation matrix over http transport" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try support.runTransportValidation(std.testing.allocator, .http);
-}
-
-test "async validation matrix over h2 transport" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try support.runTransportValidation(std.testing.allocator, .h2);
-}
-
-test "async validation matrix over h3wt transport" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try support.runTransportValidation(std.testing.allocator, .h3wt);
-}
-
-test "async validation resolves trds wtp descriptors onto direct h3wt daemons" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/rpc");
-    defer daemon.deinit();
-
-    const descriptor = try trdsDescriptorFromActualSpec(std.testing.allocator, daemon.actual_spec);
-    defer std.testing.allocator.free(descriptor);
-
-    var client = try muxly.client.Client.init(std.testing.allocator, descriptor);
-    defer client.deinit();
-
-    const response = try client.request("ping", "{}");
-    defer std.testing.allocator.free(response);
-
-    try expectPong(std.testing.allocator, response);
-}
-
-test "async validation keeps h3wt tty streams isolated and reattachable" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try ensureTmuxAvailable(std.testing.allocator);
-
-    var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
-    defer daemon.deinit();
-
-    const hot_session_name = try uniqueSessionName(std.testing.allocator, "muxly-async-hot");
-    defer std.testing.allocator.free(hot_session_name);
-    defer cleanupTmuxSession(std.testing.allocator, hot_session_name);
-
-    const quiet_session_name = try uniqueSessionName(std.testing.allocator, "muxly-async-quiet");
-    defer std.testing.allocator.free(quiet_session_name);
-    defer cleanupTmuxSession(std.testing.allocator, quiet_session_name);
-
-    const hot_command =
-        "sh -lc 'i=0; while [ \"$i\" -lt 300 ]; do printf \"hot-%03d\\n\" \"$i\"; i=$((i+1)); sleep 0.02; done; sleep 10'";
-    const quiet_command =
-        "sh -lc 'i=0; while [ \"$i\" -lt 80 ]; do printf \"quiet-%03d\\n\" \"$i\"; i=$((i+1)); sleep 0.20; done; sleep 10'";
-
-    const hot_node_id = try createTmuxSessionNode(
-        std.testing.allocator,
-        daemon.actual_spec,
-        hot_session_name,
-        hot_command,
-    );
-    const quiet_node_id = try createTmuxSessionNode(
-        std.testing.allocator,
-        daemon.actual_spec,
-        quiet_session_name,
-        quiet_command,
-    );
-
-    {
-        var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
-        defer client.deinit();
-
-        var hot_tty = try client.openTty(.{
-            .documentPath = "/",
-            .nodeId = hot_node_id,
-        }, .{});
-        defer hot_tty.deinit();
-
-        var quiet_tty = try client.openTty(.{
-            .documentPath = "/",
-            .nodeId = quiet_node_id,
-        }, .{});
-        defer quiet_tty.deinit();
-
-        var hot_stream = try hot_tty.openOutputStream();
-        defer hot_stream.deinit();
-
-        var quiet_stream = try quiet_tty.openOutputStream();
-        defer quiet_stream.deinit();
-
-        const hot_first = try waitForAnyStreamData(&hot_stream, 5_000);
-        defer std.testing.allocator.free(hot_first);
-        try std.testing.expect(std.mem.indexOf(u8, hot_first, "hot-") != null);
-
-        const quiet_first = try waitForAnyStreamData(&quiet_stream, 5_000);
-        defer std.testing.allocator.free(quiet_first);
-        try std.testing.expect(std.mem.indexOf(u8, quiet_first, "quiet-") != null);
-
-        const ping_started = try std.time.Instant.now();
-        const ping_response = try client.request("ping", "{}");
-        defer std.testing.allocator.free(ping_response);
-        try expectPong(std.testing.allocator, ping_response);
-        try std.testing.expect((try elapsedMsSince(ping_started)) < 1_500);
-
-        const status_response = try client.request("document.status", "{}");
-        defer std.testing.allocator.free(status_response);
-        try expectDocumentStatus(std.testing.allocator, status_response);
-
-        try quiet_tty.setFollowTail(false);
-        try quiet_tty.setFollowTail(true);
-
-        const hot_next = try waitForAnyStreamData(&hot_stream, 5_000);
-        defer std.testing.allocator.free(hot_next);
-        try std.testing.expect(std.mem.indexOf(u8, hot_next, "hot-") != null);
-
-        const quiet_next = try waitForAnyStreamData(&quiet_stream, 5_000);
-        defer std.testing.allocator.free(quiet_next);
-        try std.testing.expect(std.mem.indexOf(u8, quiet_next, "quiet-") != null);
-    }
-
-    std.Thread.sleep(150 * std.time.ns_per_ms);
-
-    {
-        var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
-        defer client.deinit();
-
-        var hot_tty = try client.openTty(.{
-            .documentPath = "/",
-            .nodeId = hot_node_id,
-        }, .{});
-        defer hot_tty.deinit();
-
-        var hot_stream = try hot_tty.openOutputStream();
-        defer hot_stream.deinit();
-
-        const reattached = try waitForAnyStreamData(&hot_stream, 5_000);
-        defer std.testing.allocator.free(reattached);
-        try std.testing.expect(std.mem.indexOf(u8, reattached, "hot-") != null);
-    }
-}
-
-test "async validation streams pane capture and scroll over h2" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try ensureTmuxAvailable(std.testing.allocator);
-    try runPaneCaptureStreamValidation(std.testing.allocator, "h2://127.0.0.1:0/rpc");
-}
-
-test "async validation streams pane capture and scroll over h3wt" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    try ensureTmuxAvailable(std.testing.allocator);
-    try runPaneCaptureStreamValidation(std.testing.allocator, "h3wt://127.0.0.1:0/mux");
-}
-
-test "async validation surfaces node.get rpc failure instead of InvalidResponse" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-
-    var daemon = try startDaemon(std.testing.allocator, "tcp://127.0.0.1:0");
-    defer daemon.deinit();
-
-    var client = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
-    defer client.deinit();
-
-    try std.testing.expectError(
-        error.RequestFailed,
-        client.openTty(.{
-            .documentPath = "/",
-            .nodeId = 999_999,
-        }, .{}),
-    );
-}
-
-fn runPaneCaptureStreamValidation(
-    allocator: std.mem.Allocator,
-    transport_spec: []const u8,
-) !void {
-    var daemon = try startDaemon(allocator, transport_spec);
-    defer daemon.deinit();
-
-    const session_name = try uniqueSessionName(allocator, "muxly-capture");
-    defer allocator.free(session_name);
-    defer cleanupTmuxSession(allocator, session_name);
-
-    const command =
-        "sh -lc 'i=0; while [ \"$i\" -lt 1400 ]; do printf \"cap-%04d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n\" \"$i\"; i=$((i+1)); if [ $((i % 25)) -eq 0 ]; then sleep 0.01; fi; done; sleep 10'";
-    const node_id = try createTmuxSessionNode(
-        allocator,
-        daemon.actual_spec,
-        session_name,
-        command,
-    );
-
-    var client = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
-    defer client.deinit();
-
-    const pane_id = try resolveTtyPaneId(
-        allocator,
-        &client,
-        node_id,
-    );
-    defer allocator.free(pane_id);
-
-    std.Thread.sleep(800 * std.time.ns_per_ms);
-
-    var capture_stream = try client.openPaneCaptureStream(pane_id);
-    defer capture_stream.deinit();
-    const ping_response = try client.request("ping", "{}");
-    defer allocator.free(ping_response);
-    try expectPong(allocator, ping_response);
-
-    const capture = try collectPaneCaptureStream(allocator, &capture_stream, 10_000);
-    defer allocator.free(capture.bytes);
-
-    try std.testing.expect(capture.chunk_count > 1);
-    try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, capture.bytes, "cap-0100") != null);
-
-    var scroll_stream = try client.openPaneScrollStream(pane_id, 0, 20);
-    defer scroll_stream.deinit();
-    const scroll = try collectPaneCaptureStream(allocator, &scroll_stream, 10_000);
-    defer allocator.free(scroll.bytes);
-
-    try std.testing.expect(scroll.chunk_count >= 1);
-    try std.testing.expect(std.mem.indexOf(u8, scroll.bytes, "cap-") != null);
-}
-
-fn runRpcValidationMatrix(
+pub fn runTransportValidation(
     allocator: std.mem.Allocator,
     kind: TransportKind,
-    requested_transport: []const u8,
 ) !void {
-    var daemon = try startDaemon(allocator, requested_transport);
+    var daemon = try startDaemon(allocator, kind.requestedTransportSpec());
     defer daemon.deinit();
 
     var admin = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
     defer admin.deinit();
 
-    try createDocument(&admin, "/a");
-    try createDocument(&admin, "/b");
+    try createDocument(allocator, &admin, "/a");
+    try createDocument(allocator, &admin, "/b");
 
     try runDifferentDocumentOverlap(allocator, kind, daemon.actual_spec);
     try runSameDocumentSerialization(allocator, kind, daemon.actual_spec);
@@ -503,71 +298,21 @@ fn runDisconnectReconnect(allocator: std.mem.Allocator, actual_spec: []const u8)
     try expectDocumentStatus(allocator, status_response);
 }
 
-fn createDocument(client: *muxly.client.ConversationClient, path: []const u8) !void {
-    const path_json = try std.json.Stringify.valueAlloc(std.testing.allocator, path, .{});
-    defer std.testing.allocator.free(path_json);
-
-    const params_json = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":{s}}}", .{path_json});
-    defer std.testing.allocator.free(params_json);
-
-    const response = try client.request("document.create", params_json);
-    defer std.testing.allocator.free(response);
-    var parsed = try parseSuccessResponse(std.testing.allocator, response);
-    parsed.deinit();
-}
-
-fn createTmuxSessionNode(
-    allocator: std.mem.Allocator,
-    actual_spec: []const u8,
-    session_name: []const u8,
-    command: []const u8,
-) !u64 {
-    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
-    defer client.deinit();
-
-    const session_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
-    defer allocator.free(session_json);
-    const command_json = try std.json.Stringify.valueAlloc(allocator, command, .{});
-    defer allocator.free(command_json);
-    const params_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"sessionName\":{s},\"command\":{s}}}",
-        .{ session_json, command_json },
-    );
-    defer allocator.free(params_json);
-
-    const response = try client.request("session.create", params_json);
-    defer allocator.free(response);
-    return try extractNodeId(allocator, response);
-}
-
-fn resolveTtyPaneId(
+fn createDocument(
     allocator: std.mem.Allocator,
     client: *muxly.client.ConversationClient,
-    node_id: u64,
-) ![]u8 {
-    const response = try client.requestTarget(.{
-        .documentPath = "/",
-        .nodeId = node_id,
-    }, "node.get", "{}");
+    path: []const u8,
+) !void {
+    const path_json = try std.json.Stringify.valueAlloc(allocator, path, .{});
+    defer allocator.free(path_json);
+
+    const params_json = try std.fmt.allocPrint(allocator, "{{\"path\":{s}}}", .{path_json});
+    defer allocator.free(params_json);
+
+    const response = try client.request("document.create", params_json);
     defer allocator.free(response);
-
-    const parsed = try parseSuccessResponse(allocator, response);
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
-    if (result != .object) return error.InvalidResponse;
-
-    const source_value = result.object.get("source") orelse return error.InvalidResponse;
-    if (source_value != .object) return error.InvalidResponse;
-
-    const kind_value = source_value.object.get("kind") orelse return error.InvalidResponse;
-    if (kind_value != .string) return error.InvalidResponse;
-    if (!std.mem.eql(u8, kind_value.string, "tty")) return error.InvalidTtyTarget;
-
-    const pane_id_value = source_value.object.get("paneId") orelse return error.InvalidTtyTarget;
-    if (pane_id_value != .string) return error.InvalidResponse;
-    return try allocator.dupe(u8, pane_id_value.string);
+    var parsed = try parseSuccessResponse(allocator, response);
+    parsed.deinit();
 }
 
 fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !DaemonInstance {
@@ -721,53 +466,6 @@ fn waitForReady(
     return error.TestTimeout;
 }
 
-fn waitForAnyStreamData(
-    stream: *muxly.client.TtyOutputStream,
-    timeout_ms: u64,
-) ![]u8 {
-    const started = try std.time.Instant.now();
-    while ((try elapsedMsSince(started)) < timeout_ms) {
-        switch (try stream.pollChunk()) {
-            .pending => {},
-            .overflow => {},
-            .closed => return error.EndOfStream,
-            .data => |bytes| return bytes,
-        }
-        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
-    }
-    return error.TestTimeout;
-}
-
-fn collectPaneCaptureStream(
-    allocator: std.mem.Allocator,
-    stream: *muxly.client.PaneCaptureStream,
-    timeout_ms: u64,
-) !struct { bytes: []u8, chunk_count: usize } {
-    var collected = std.array_list.Managed(u8).init(allocator);
-    errdefer collected.deinit();
-
-    const started = try std.time.Instant.now();
-    var chunk_count: usize = 0;
-    while ((try elapsedMsSince(started)) < timeout_ms) {
-        switch (try stream.pollChunk()) {
-            .pending => {},
-            .data => |bytes| {
-                defer allocator.free(bytes);
-                try collected.appendSlice(bytes);
-                chunk_count += 1;
-            },
-            .closed => {
-                return .{
-                    .bytes = try collected.toOwnedSlice(),
-                    .chunk_count = chunk_count,
-                };
-            },
-        }
-        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
-    }
-    return error.TestTimeout;
-}
-
 fn elapsedMsSince(started: std.time.Instant) !u64 {
     const now = try std.time.Instant.now();
     return now.since(started) / std.time.ns_per_ms;
@@ -789,17 +487,6 @@ fn parseSuccessResponse(
     }
     _ = parsed.value.object.get("result") orelse return error.InvalidResponse;
     return parsed;
-}
-
-fn extractNodeId(allocator: std.mem.Allocator, response: []const u8) !u64 {
-    const parsed = try parseSuccessResponse(allocator, response);
-    defer parsed.deinit();
-
-    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
-    if (result != .object) return error.InvalidResponse;
-    const node_id_value = result.object.get("nodeId") orelse return error.InvalidResponse;
-    if (node_id_value != .integer or node_id_value.integer < 0) return error.InvalidResponse;
-    return @intCast(node_id_value.integer);
 }
 
 fn expectSleptMs(allocator: std.mem.Allocator, response: []const u8, expected_ms: u32) !void {
@@ -849,37 +536,6 @@ fn expectCanceled(result: muxly.client.RpcRequestPoll) !void {
     }
 }
 
-fn ensureTmuxAvailable(allocator: std.mem.Allocator) !void {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "tmux", "-V" },
-        .max_output_bytes = 4096,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
-    allocator.free(result.stdout);
-    allocator.free(result.stderr);
-}
-
-fn cleanupTmuxSession(allocator: std.mem.Allocator, session_name: []const u8) void {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "tmux", "kill-session", "-t", session_name },
-        .max_output_bytes = 0,
-    }) catch return;
-    allocator.free(result.stdout);
-    allocator.free(result.stderr);
-}
-
-fn uniqueSessionName(allocator: std.mem.Allocator, prefix: []const u8) ![]u8 {
-    return try std.fmt.allocPrint(
-        allocator,
-        "{s}-{x}",
-        .{ prefix, std.crypto.random.int(u32) },
-    );
-}
-
 fn daemonBinaryPath(allocator: std.mem.Allocator) ![]u8 {
     return try std.process.getEnvVarOwned(allocator, "MUXLY_TEST_DAEMON_BINARY");
 }
@@ -898,24 +554,4 @@ fn normalizedDaemonTransportSpec(allocator: std.mem.Allocator, requested_transpo
         "tcp://127.0.0.1:{d}",
         .{probe.listen_address.getPort()},
     );
-}
-
-fn trdsDescriptorFromActualSpec(allocator: std.mem.Allocator, actual_spec: []const u8) ![]u8 {
-    var address = try muxly.transport.Address.parse(allocator, actual_spec);
-    defer address.deinit(allocator);
-
-    return switch (address.target) {
-        .h3wt => |h3wt| blk: {
-            var rendered = std.array_list.Managed(u8).init(allocator);
-            defer rendered.deinit();
-            try rendered.appendSlice("trds://wtp|");
-            try rendered.writer().print("{s}:{d}{s}", .{ h3wt.host, h3wt.port, h3wt.path });
-            if (h3wt.certificate_hash) |hash| {
-                try rendered.appendSlice("?sha256=");
-                try rendered.appendSlice(hash);
-            }
-            break :blk try rendered.toOwnedSlice();
-        },
-        else => error.InvalidTransportAddress,
-    };
 }
