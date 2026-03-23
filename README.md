@@ -14,15 +14,24 @@ The web metaphor breaks down pretty quickly, however: I suppose muxly would be a
 
 ## No, *what?*
 
-The project is far from fully implemented&mdash;a work in progress. It has:
+This entire project is a work in progress & far from fully implemented. If you are looking for a project that does useful stuff, now, try tmux! It it does what it says on the tin, and is a mature working implementation; at this time muxly largely doesn't and isn't, respectively. But, if you are interested in looking into this project or helping with development, here is the broad
+shape of what is being built here:
 
 - a shared library with a C ABI
 - an xml serialization format, sort of
 - an undocumented but well-defined JSON-RPC control protocol
-- a daemon to hold the object model
+- a daemon to hold object model instances
 - a command line to orchestrate daemons and manipulate the object model
-- a reference client to interact with and use muxly instances
+- a reference viewer to interact with and use the resulting interfaces
 - a bunch of glue for different languages and platforms
+
+## OK but... why?
+
+Because tmux, although totally amazing and powerful, is not exactly intended as a way to build an application. It's more like a way to get a bunch of terminals, well, *mux*'ed&mdash;that is, multiplexed&mdash;into a single terminal, and lay them out in a useful way, and also demultiplexed, in the sense that multiple clients can connect to a single tmux session and share it.
+
+This is incredibly useful but the layout and positioning is more-or-less the user's job in tmux. Powerful automations are achievable but they require building up from scratch. tmux really isn't trying to be any kind of development environment or design substrate; that part is left as an exercise for the user.
+
+Muxly is trying to complete the exercise, stealing ideas from the web and other frameworks to hopefully construct a more suitable substrate for designing applications that may be both embedded in code or syndicated as a service to end-users. 'Trying,' to be clear, is not humility; it is a description of the work. This thing is buggy, full of vibe-coded slop muddled by rapid terminological and conceptual drift, and just basically a hot mess. I have not given up and am very much on the war-path, but that is the status-quo. You have been warned.
 
 ## Cast and characters
 
@@ -30,15 +39,11 @@ The project is far from fully implemented&mdash;a work in progress. It has:
 
 Unlike the web, the muxly "object model" lives in the server. It works kind of like a MUD: clients connect and enter a shared universe. Except instead of orcs or voxels this world is full of ttys
 
-
-
 **TTYs are endpoints, not serialized program state**
 
 muxly traffics in layout relationships, not program states; however event hooks are (supposed to be) provided which would make it possible to treat muxly tty clients as if program state were "in" the document, if you wanted. You would have to provide the code to accomplish this, however.
 
 Instead, muxly gives you, the developer, a canvas. You paint layouts on the canvas. Then you put terminals in the layouts.
-
-
 
 **The TOM**
 
@@ -49,15 +54,15 @@ Everything in the TOM is a node; nodes are rectangles made of text and you can s
 - file-backed text objects are meant to be read-only windows onto text files; they are a candidate for deletion from the model as I'm not sure these shouldn't be promoted to be terminals running less or something similar
 
 - pseudo-ttys to which programs may be multiplexed via their stdin and stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be accessed in the viewer.
-
+  
   Because programs attached to terminals need to know the dimensions of the terminal, the long-term model wants three kinds of terminal viewers:
-
+  
    - detached ***virtual*** viewers simply hold the terminal at a given virtual size, while
-
+  
    - ***primary*** viewers, whose physical terminal size is meant to optionally force virtual terminal resizing to change as the virtual size changes, and finally
-
+  
    - ***secondary*** viewers, who may be thought of as spectators, have read-only connections and do not control virtual terminal size.
-
+  
   [TODO] This detached/primary/secondary role model is part of the intended
   design, but it is not yet implemented end-to-end in the current reference
   viewer/library cutline.
@@ -199,13 +204,19 @@ TOM Resource Descriptors combine a transport, a document path, and an optional
 TOM selector into one string. The short version is:
 
 - `trd://builds/demo`
+
 - `trd://webtransport|host.lan:4433/mux?sha256=...//doc/path#node/path`
+
 - `trd://http|127.0.0.1:8080/rpc//#welcome`
+
 - `trd:#welcome/child`
 
 - document comes first, selector comes after `#`
+
 - `trd://...` is absolute
+
 - `trd:#...` stays on the current transport and current document
+
 - `trd://#...` means selector within the root document on the runtime-default transport
 
 Supported public transport names are `unix`, `tcp`, `ssh`, `http`, and
@@ -307,7 +318,7 @@ MUXLY_ENABLE_SYSTEMD_USER_TESTS=1 python3 tests/integration/systemd_secure_deplo
 
 Start with [doc/README.md](doc/README.md) for the source-tree documentation map.
 
-## Examples, such as they are
+## Examples
 
 - `examples/artifacts/freeze-demo/` — runnable `node.freeze` text/surface demo
 - `examples/artifacts/c-freeze/` — C `libmuxly` artifact freeze playbook
