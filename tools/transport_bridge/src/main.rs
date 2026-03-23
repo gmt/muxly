@@ -549,7 +549,8 @@ where
 
     while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
         trace(&format!(
-            "h2 session client request bytes={}",
+            "h2 session client request {} bytes={}",
+            summarize_transport_payload(&request),
             request.len()
         ));
         let stdout = stdout.clone();
@@ -579,6 +580,7 @@ where
 }
 
 async fn run_h2_server(args: HttpServerArgs) -> Result<()> {
+    let lanes = Arc::new(tokio::sync::Mutex::new(HashMap::<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>::new()));
     let listener = TcpListener::bind((args.listen_host.as_str(), args.listen_port))
         .await
         .with_context(|| {
@@ -605,8 +607,9 @@ async fn run_h2_server(args: HttpServerArgs) -> Result<()> {
         let path = args.path.clone();
         let upstream_unix = args.upstream_unix.clone();
         let max_message_bytes = args.max_message_bytes;
+        let lanes = lanes.clone();
         tokio::spawn(async move {
-            let _ = handle_h2_connection(socket, upstream_unix, path, max_message_bytes).await;
+            let _ = handle_h2_connection(socket, upstream_unix, path, max_message_bytes, lanes).await;
         });
     }
 }
@@ -616,6 +619,7 @@ async fn handle_h2_connection(
     upstream_unix: PathBuf,
     path: String,
     max_message_bytes: usize,
+    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>>>,
 ) -> Result<()> {
     let mut builder = server::Builder::new();
     configure_h2_server_windows(&mut builder, max_message_bytes);
@@ -628,6 +632,7 @@ async fn handle_h2_connection(
         let (request, respond) = result?;
         let expected_path = path.clone();
         let upstream_unix = upstream_unix.clone();
+        let lanes = lanes.clone();
         // Preserve upstream request handoff order in H2 stream accept order so
         // daemon-side FIFO lanes see the same ordering the client submitted.
         let active = match start_h2_stream(
@@ -636,6 +641,7 @@ async fn handle_h2_connection(
             upstream_unix,
             expected_path,
             max_message_bytes,
+            lanes,
         )
         .await
         {
@@ -653,6 +659,14 @@ async fn handle_h2_connection(
 struct ActiveServerH2Stream {
     upstream: BufStream<UnixStream>,
     send: SendStream<Bytes>,
+    trace_summary: String,
+    _lane_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum UpstreamLaneKey {
+    Root,
+    Document(String),
 }
 
 async fn start_h2_stream(
@@ -661,6 +675,7 @@ async fn start_h2_stream(
     upstream_unix: PathBuf,
     expected_path: String,
     max_message_bytes: usize,
+    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>>>,
 ) -> Result<ActiveServerH2Stream> {
     if request.uri().path() != expected_path {
         let response = http::Response::builder()
@@ -673,7 +688,21 @@ async fn start_h2_stream(
     }
 
     let request = read_h2_request_body(request, max_message_bytes).await?;
-    trace(&format!("h2 server request bytes={}", request.len()));
+    let lane_key = classify_upstream_lane_key(&request);
+    let lane_mutex = {
+        let mut lane_map = lanes.lock().await;
+        lane_map
+            .entry(lane_key)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let lane_guard = lane_mutex.lock_owned().await;
+    let trace_summary = summarize_transport_payload(&request);
+    trace(&format!(
+        "h2 server request {} bytes={}",
+        trace_summary,
+        request.len()
+    ));
 
     let upstream = UnixStream::connect(&upstream_unix)
         .await
@@ -689,7 +718,12 @@ async fn start_h2_stream(
         .context("unable to build H2 response")?;
     let send = respond.send_response(response, false)?;
 
-    Ok(ActiveServerH2Stream { upstream, send })
+    Ok(ActiveServerH2Stream {
+        upstream,
+        send,
+        trace_summary,
+        _lane_guard: lane_guard,
+    })
 }
 
 async fn finish_server_h2_stream(
@@ -698,7 +732,11 @@ async fn finish_server_h2_stream(
 ) -> Result<()> {
     let mut wrote_response = false;
     while let Some(response) = read_line_message(&mut active.upstream, max_message_bytes).await? {
-        trace(&format!("h2 server response bytes={}", response.len()));
+        trace(&format!(
+            "h2 server response {} bytes={}",
+            active.trace_summary,
+            response.len()
+        ));
         wrote_response = true;
         active.send.send_data(Bytes::from(response), false)?;
         active.send.send_data(Bytes::from_static(b"\n"), false)?;
@@ -1262,7 +1300,11 @@ async fn copy_h2_body_to_shared_stdout(
     let mut decoder = H2LineDecoder::new(max_message_bytes);
     while let Some(chunk) = body.data().await {
         for line in decoder.push_chunk(&chunk?)? {
-            trace(&format!("h2 session client response bytes={}", line.len()));
+            trace(&format!(
+                "h2 session client response {} bytes={}",
+                summarize_transport_payload(&line),
+                line.len()
+            ));
             let mut stdout = stdout.lock().await;
             stdout.write_all(&line).await?;
             stdout.write_all(b"\n").await?;
@@ -1271,7 +1313,11 @@ async fn copy_h2_body_to_shared_stdout(
     }
 
     for line in decoder.finish() {
-        trace(&format!("h2 session client response bytes={}", line.len()));
+        trace(&format!(
+            "h2 session client response {} bytes={}",
+            summarize_transport_payload(&line),
+            line.len()
+        ));
         let mut stdout = stdout.lock().await;
         stdout.write_all(&line).await?;
         stdout.write_all(b"\n").await?;
@@ -1481,6 +1527,104 @@ fn trace(message: &str) {
     }
 }
 
+fn classify_upstream_lane_key(bytes: &[u8]) -> UpstreamLaneKey {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return UpstreamLaneKey::Root;
+    };
+
+    let request_value = value
+        .get("payload")
+        .filter(|payload| payload.get("method").is_some())
+        .unwrap_or(&value);
+
+    let document_path = request_value
+        .get("target")
+        .and_then(|target| target.get("documentPath"))
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("/");
+    if document_path == "/" {
+        return UpstreamLaneKey::Root;
+    }
+
+    let method = request_value
+        .get("method")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("");
+    if !request_runs_on_document_lane(method, request_value.get("params")) {
+        return UpstreamLaneKey::Root;
+    }
+
+    UpstreamLaneKey::Document(document_path.to_string())
+}
+
+fn request_runs_on_document_lane(method: &str, params: Option<&serde_json::Value>) -> bool {
+    matches!(
+        method,
+        "document.get"
+            | "graph.get"
+            | "view.get"
+            | "projection.get"
+            | "document.status"
+            | "document.serialize"
+            | "document.freeze"
+            | "debug.sleep"
+            | "node.get"
+            | "node.append"
+            | "node.update"
+            | "node.freeze"
+            | "node.remove"
+            | "view.setRoot"
+            | "view.clearRoot"
+            | "view.elide"
+            | "view.expand"
+            | "view.reset"
+            | "leaf.source.get"
+            | "file.capture"
+            | "file.followTail"
+    ) || (method == "leaf.source.attach"
+        && params
+            .and_then(|value| value.get("kind"))
+            .and_then(|entry| entry.as_str())
+            .map(|kind| kind == "static-file" || kind == "monitored-file")
+            .unwrap_or(false))
+}
+
+fn summarize_transport_payload(bytes: &[u8]) -> String {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return "non-json".to_string();
+    };
+
+    let conversation_id = value
+        .get("conversationId")
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("?");
+    let request_id = value
+        .get("requestId")
+        .and_then(|entry| entry.as_u64())
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let method = value
+        .get("payload")
+        .and_then(|payload| payload.get("method"))
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("?");
+    let document_path = value
+        .get("target")
+        .and_then(|target| target.get("documentPath"))
+        .or_else(|| {
+            value.get("payload")
+                .and_then(|payload| payload.get("target"))
+                .and_then(|target| target.get("documentPath"))
+        })
+        .and_then(|entry| entry.as_str())
+        .unwrap_or("?");
+
+    format!(
+        "conversation={} request={} method={} document={}",
+        conversation_id, request_id, method, document_path
+    )
+}
+
 fn h2_window_bytes(max_message_bytes: usize) -> u32 {
     u32::try_from(max_message_bytes).unwrap_or(u32::MAX)
 }
@@ -1647,5 +1791,30 @@ mod tests {
             }
             other => panic!("expected H3wtClient, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_uses_envelope_payload_target() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"debug.sleep","params":{"ms":50}}"#;
+        let envelope = format!(
+            r#"{{"conversationId":"c-1","requestId":1,"target":{{"documentPath":"/demo"}},"kind":"rpc","payload":{}}}"#,
+            std::str::from_utf8(request).expect("request should be utf8"),
+        );
+
+        assert_eq!(
+            classify_upstream_lane_key(envelope.as_bytes()),
+            UpstreamLaneKey::Document("/demo".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_keeps_root_only_requests_on_root_lane() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"session.create","params":{"sessionName":"demo"}}"#;
+        let envelope = format!(
+            r#"{{"conversationId":"c-1","requestId":1,"target":{{"documentPath":"/demo"}},"kind":"rpc","payload":{}}}"#,
+            std::str::from_utf8(request).expect("request should be utf8"),
+        );
+
+        assert_eq!(classify_upstream_lane_key(envelope.as_bytes()), UpstreamLaneKey::Root);
     }
 }
