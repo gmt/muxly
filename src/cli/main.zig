@@ -1,6 +1,7 @@
 const std = @import("std");
 const muxly = @import("muxly");
 const cli_args = muxly.cli_args;
+const admin_generate = @import("admin_generate.zig");
 const cli_format = @import("format.zig");
 const target_arg = @import("target_arg.zig");
 
@@ -30,6 +31,12 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, args[cursor], "transport") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "relay")) {
         return try runTransportRelay(allocator, transport_spec);
+    }
+    if (std.mem.eql(u8, args[cursor], "admin") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "generate-caddy")) {
+        return try admin_generate.run(allocator, .caddy, args[cursor + 2 ..]);
+    }
+    if (std.mem.eql(u8, args[cursor], "admin") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "generate-systemd")) {
+        return try admin_generate.run(allocator, .systemd, args[cursor + 2 ..]);
     }
 
     const response = if (std.mem.eql(u8, args[cursor], "ping"))
@@ -276,6 +283,8 @@ fn printUsage() !void {
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view set-root <node-id>
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view elide <node-id>
         \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view expand <node-id>
+        \\  muxly admin generate-caddy --descriptor TRDS --mode <user|system> --output-dir PATH [--upstream-port PORT] [--upstream-host HOST] [--upstream-path PATH] [--caddy-bin PATH] [--muxlyd-bin PATH]
+        \\  muxly admin generate-systemd --descriptor TRDS --mode <user|system> --output-dir PATH [--upstream-port PORT] [--upstream-host HOST] [--upstream-path PATH] [--service-user USER] [--service-group GROUP] [--caddy-bin PATH] [--muxlyd-bin PATH]
         \\
         \\transport notes:
         \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, or h3wt://
@@ -284,6 +293,7 @@ fn printUsage() !void {
         \\    node get, node append, session create-under, projection get [focused target], view set-root
         \\  explicit-node targets (#selector or numeric id) are required by:
         \\    node update/freeze/remove, leaf source-get, file capture/follow-tail, view elide/expand
+        \\  TRDS is a secure deployment descriptor like trds://host:8443/rpc//docs/demo#left
         \\
     );
 }

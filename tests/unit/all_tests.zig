@@ -16,6 +16,7 @@ comptime {
     _ = @import("router_document_test.zig");
     _ = @import("transport_test.zig");
     _ = @import("trd_test.zig");
+    _ = @import("trds_test.zig");
     _ = @import("muxml_test.zig");
     _ = @import("view_test.zig");
     _ = @import("viewer_app_test.zig");

@@ -21,6 +21,9 @@ explicit, testable, and debuggable.
 - stdio embedding/testing transport is planned but **not** yet implemented
 - `capabilities.get` reports only transports that actually exist on the current
   runtime target
+- `trds://...` secure deployment descriptors now exist as config-generation
+  metadata, but they are **not** reported as implemented client transports in
+  this slice
 
 ## Currently implemented methods
 

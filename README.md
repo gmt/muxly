@@ -213,6 +213,43 @@ See [doc/trine.md](doc/trine.md) for the normative TRD doctrine and full
 grammar. Some CLI arguments already accept lazy selector-bearing TRDs; a few
 id-only paths still require numeric node ids and say so in their command help.
 
+### `trds://` secure deployment descriptors
+
+`trds://...` is a secure deployment/share descriptor, not a direct muxly
+transport in this slice. It describes a Caddy-fronted HTTPS edge plus the same
+document/selector targeting shape used by TRDs:
+
+- `trds://127.0.0.1:9443/rpc//docs/demo#left`
+- `trds://mux.example.com//`
+
+Defaults:
+
+- missing port defaults to `443`
+- missing HTTPS path defaults to `/rpc`
+- missing document defaults to `/`
+
+Use the admin generators to render Caddy and systemd artifacts from a secure
+descriptor:
+
+```sh
+./zig-out/bin/muxly admin generate-caddy --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-systemd --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+```
+
+Current boundaries:
+
+- `trds://` is deployment metadata, not a client transport spec
+- generated secure deployments use Caddy as the HTTPS fixer in front of loopback
+  `h2://...` muxlyd upstreams
+- bare `trd://host/...` keeps its normal meaning; secure shorthand promotion is
+  deferred
+
+There is also an opt-in user-mode smoke test for the generated artifacts:
+
+```sh
+MUXLY_ENABLE_SYSTEMD_USER_TESTS=1 python3 tests/integration/systemd_secure_deploy_test.py
+```
+
 ### Viewer keys, exremely preliminary
 
 - `j`/`k` or up/down arrows: select region

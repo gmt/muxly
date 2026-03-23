@@ -43,3 +43,9 @@
 # Zig build outputs
 .zig-cache/
 zig-out/
+
+# Local tool scratch
+.playwright-cli/
+
+# Rust bridge build outputs
+tools/transport_bridge/target/

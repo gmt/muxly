@@ -52,6 +52,8 @@ pub const transport = @import("lib/transport.zig");
 pub const conversation_router = @import("lib/conversation_router.zig");
 /// TOM resource descriptor parsing and selector resolution helpers.
 pub const trd = @import("lib/trd.zig");
+/// Secure deployment descriptor parsing and config-generation helpers.
+pub const trds = @import("lib/trds.zig");
 
 /// Backend implementation modules used by the daemon.
 pub const daemon = struct {

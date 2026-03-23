@@ -115,6 +115,20 @@ CLI docs should distinguish between:
 The CLI may be temporarily more restrictive than the underlying target model,
 but the docs should say so plainly instead of hand-waving it.
 
+### `trds://` is deployment-first, not transport-first
+
+- `trds://...` is the secure deployment/share descriptor family
+- it reuses the same document-first grammar after the HTTPS authority/path:
+  - `trds://host:port/path//doc#selector`
+- it is absolute-only in this slice
+- it does **not** imply a first-class native muxly client transport yet
+- its current job is to feed config generation for:
+  - Caddy as the HTTPS fixer
+  - loopback H2C upstream to `muxlyd`
+  - user-level or system-level systemd deployment artifacts
+- bare `trd://host/...` should remain conservative until a later explicit
+  promotion decision is made
+
 ### Projection over mutation
 
 - the TOM is the persistent abstract structure, not a live framebuffer
