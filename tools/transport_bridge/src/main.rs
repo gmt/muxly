@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use h2::client::SendRequest;
-use h2::{client, server, RecvStream};
+use h2::{client, server, RecvStream, SendStream};
 use http::Request;
 use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer, ServerName};
@@ -552,17 +552,18 @@ where
             "h2 session client request bytes={}",
             request.len()
         ));
-        let sender = sender.clone();
         let stdout = stdout.clone();
         let host = args.host.clone();
         let path = args.path.clone();
         let port = args.port;
         let max_message_bytes = args.max_message_bytes;
+        // Keep H2 stream creation in stdin order so daemon-side FIFO lanes
+        // observe the same request ordering the client submitted.
+        let response_future = {
+            let sender = sender.lock().await;
+            start_h2_request(&sender, &host, port, &path, request).await?
+        };
         tasks.push(tokio::spawn(async move {
-            let response_future = {
-                let sender = sender.lock().await;
-                start_h2_request(&sender, &host, port, &path, request).await?
-            };
             let mut response = finish_h2_request(response_future).await?;
             copy_h2_body_to_shared_stdout(&mut response, max_message_bytes, stdout).await
         }));
@@ -627,28 +628,40 @@ async fn handle_h2_connection(
         let (request, respond) = result?;
         let expected_path = path.clone();
         let upstream_unix = upstream_unix.clone();
+        // Preserve upstream request handoff order in H2 stream accept order so
+        // daemon-side FIFO lanes see the same ordering the client submitted.
+        let active = match start_h2_stream(
+            request,
+            respond,
+            upstream_unix,
+            expected_path,
+            max_message_bytes,
+        )
+        .await
+        {
+            Ok(active) => active,
+            Err(_) => continue,
+        };
         tokio::spawn(async move {
-            let _ = handle_h2_stream(
-                request,
-                respond,
-                upstream_unix,
-                expected_path,
-                max_message_bytes,
-            )
-            .await;
+            let _ = finish_server_h2_stream(active, max_message_bytes).await;
         });
     }
 
     Ok(())
 }
 
-async fn handle_h2_stream(
+struct ActiveServerH2Stream {
+    upstream: BufStream<UnixStream>,
+    send: SendStream<Bytes>,
+}
+
+async fn start_h2_stream(
     request: Request<RecvStream>,
     mut respond: server::SendResponse<Bytes>,
     upstream_unix: PathBuf,
     expected_path: String,
     max_message_bytes: usize,
-) -> Result<()> {
+) -> Result<ActiveServerH2Stream> {
     if request.uri().path() != expected_path {
         let response = http::Response::builder()
             .status(404)
@@ -656,7 +669,7 @@ async fn handle_h2_stream(
             .context("unable to build H2 404 response")?;
         let mut send = respond.send_response(response, false)?;
         send.send_data(Bytes::new(), true)?;
-        return Ok(());
+        bail!("unexpected H2 path: {}", request.uri().path());
     }
 
     let request = read_h2_request_body(request, max_message_bytes).await?;
@@ -674,20 +687,27 @@ async fn handle_h2_stream(
         .status(200)
         .body(())
         .context("unable to build H2 response")?;
-    let mut send = respond.send_response(response, false)?;
+    let send = respond.send_response(response, false)?;
 
+    Ok(ActiveServerH2Stream { upstream, send })
+}
+
+async fn finish_server_h2_stream(
+    mut active: ActiveServerH2Stream,
+    max_message_bytes: usize,
+) -> Result<()> {
     let mut wrote_response = false;
-    while let Some(response) = read_line_message(&mut upstream, max_message_bytes).await? {
+    while let Some(response) = read_line_message(&mut active.upstream, max_message_bytes).await? {
         trace(&format!("h2 server response bytes={}", response.len()));
         wrote_response = true;
-        send.send_data(Bytes::from(response), false)?;
-        send.send_data(Bytes::from_static(b"\n"), false)?;
+        active.send.send_data(Bytes::from(response), false)?;
+        active.send.send_data(Bytes::from_static(b"\n"), false)?;
     }
     if !wrote_response {
         bail!("upstream closed before sending a response");
     }
 
-    send.send_data(Bytes::new(), true)?;
+    active.send.send_data(Bytes::new(), true)?;
     Ok(())
 }
 
