@@ -196,6 +196,13 @@ or the underlying script directly:
 python3 tests/integration/docker_transport_test.py
 ```
 
+The HTTP/H2/H3WT transport matrix now runs under `pytest`:
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest -q tests/integration/http_h3wt_transport_test.py
+```
+
 ### TRD descriptors
 
 TOM Resource Descriptors combine a transport, a document path, and an optional

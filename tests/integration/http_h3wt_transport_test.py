@@ -1,41 +1,39 @@
-import argparse
+from dataclasses import dataclass
+import hashlib
 import json
 import os
 import pathlib
 import select
-import signal
 import subprocess
-import tempfile
 import time
+
+import pytest
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 MUXLY = REPO / "zig-out/bin/muxly"
 MUXLYD = REPO / "zig-out/bin/muxlyd"
 LISTENING_PREFIX = "muxlyd listening on "
+TRANSPORT_MATRIX = (
+    pytest.param("http://127.0.0.1:0/rpc", id="http"),
+    pytest.param("h2://127.0.0.1:0/rpc", id="h2"),
+    pytest.param("h3wt://127.0.0.1:0/mux", id="h3wt"),
+)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run HTTP and H3WT transport integration coverage."
-    )
-    parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="assume zig-out/bin/muxly and zig-out/bin/muxlyd already exist",
-    )
-    return parser.parse_args()
+@dataclass(frozen=True)
+class TransportCase:
+    cwd: pathlib.Path
+    env: dict[str, str]
+    requested_transport: str
+    actual_transport: str
 
 
-def build_binaries() -> None:
-    subprocess.run(["zig", "build", "muxly", "muxlyd"], cwd=REPO, check=True)
-
-
-def run_cli(cwd: pathlib.Path, env: dict[str, str], *args: str) -> dict:
+def run_cli(case: TransportCase, *args: str) -> dict:
     completed = subprocess.run(
         [str(MUXLY), *args],
-        cwd=cwd,
-        env=env,
+        cwd=case.cwd,
+        env=case.env,
         text=True,
         capture_output=True,
         check=True,
@@ -44,17 +42,12 @@ def run_cli(cwd: pathlib.Path, env: dict[str, str], *args: str) -> dict:
     return json.loads(completed.stdout)
 
 
-def run_transport_relay(
-    cwd: pathlib.Path,
-    env: dict[str, str],
-    transport_spec: str,
-    requests: list[dict],
-) -> list[dict]:
+def run_transport_relay(case: TransportCase, requests: list[dict]) -> list[dict]:
     payload = "\n".join(json.dumps(request) for request in requests) + "\n"
     completed = subprocess.run(
-        [str(MUXLY), "--transport", transport_spec, "transport", "relay"],
-        cwd=cwd,
-        env=env,
+        [str(MUXLY), "--transport", case.actual_transport, "transport", "relay"],
+        cwd=case.cwd,
+        env=case.env,
         text=True,
         input=payload,
         capture_output=True,
@@ -185,29 +178,32 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
     proc.wait(timeout=5)
 
 
-def assert_ping_and_document(cwd: pathlib.Path, env: dict[str, str], transport_spec: str) -> None:
-    ping = run_cli(cwd, env, "--transport", transport_spec, "ping")
+def unique_name(request: pytest.FixtureRequest, prefix: str) -> str:
+    slug = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}-{slug}"
+
+
+def check_ping_and_document(case: TransportCase) -> None:
+    ping = run_cli(case, "--transport", case.actual_transport, "ping")
     assert ping["result"]["pong"] is True
 
-    document = run_cli(cwd, env, "--transport", transport_spec, "document", "get")
+    document = run_cli(case, "--transport", case.actual_transport, "document", "get")
     assert document["result"]["rootNodeId"] == 1
     assert len(document["result"]["nodes"]) >= 2
 
 
-def assert_trd_resolution(cwd: pathlib.Path, env: dict[str, str], transport_spec: str) -> None:
-    relative = run_cli(cwd, env, "--transport", transport_spec, "node", "get", "trd:#welcome")
+def check_trd_resolution(case: TransportCase) -> None:
+    relative = run_cli(case, "--transport", case.actual_transport, "node", "get", "trd:#welcome")
     assert relative["result"]["title"] == "welcome"
 
-    absolute_trd = transport_to_absolute_trd(transport_spec, "welcome")
-    absolute = run_cli(cwd, env, "node", "get", absolute_trd)
+    absolute_trd = transport_to_absolute_trd(case.actual_transport, "welcome")
+    absolute = run_cli(case, "node", "get", absolute_trd)
     assert absolute["result"]["title"] == "welcome"
 
 
-def assert_session_reuse(cwd: pathlib.Path, env: dict[str, str], transport_spec: str) -> None:
+def check_session_reuse(case: TransportCase) -> None:
     responses = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}},
             {"jsonrpc": "2.0", "id": 2, "method": "document.status", "params": {}},
@@ -217,13 +213,9 @@ def assert_session_reuse(cwd: pathlib.Path, env: dict[str, str], transport_spec:
     assert responses[1]["result"]["rootNodeId"] == 1
 
 
-def assert_document_target_handling(
-    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
-) -> None:
+def check_document_target_handling(case: TransportCase) -> None:
     responses = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
@@ -246,22 +238,24 @@ def assert_document_target_handling(
     assert "not supported yet" in responses[1]["error"]["message"]
 
 
-def assert_document_catalog_and_scoping(
-    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+def check_document_catalog_and_scoping(
+    case: TransportCase,
+    request: pytest.FixtureRequest,
 ) -> None:
-    attached_file = cwd / "scoped-demo.txt"
+    slug = unique_name(request, "scoped")
+    document_path = f"/demo/{slug}"
+    attached_file = case.cwd / f"{slug}.txt"
+    session_name = f"{slug}-session"
     attached_file.write_text("scoped file content\n", encoding="utf-8")
 
     responses = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "document.create",
-                "params": {"path": "/demo/doc"},
+                "params": {"path": document_path},
             },
             {
                 "jsonrpc": "2.0",
@@ -272,21 +266,21 @@ def assert_document_catalog_and_scoping(
             {
                 "jsonrpc": "2.0",
                 "id": 3,
-                "target": {"documentPath": "/demo/doc"},
+                "target": {"documentPath": document_path},
                 "method": "leaf.source.attach",
                 "params": {"kind": "static-file", "path": str(attached_file)},
             },
             {
                 "jsonrpc": "2.0",
                 "id": 4,
-                "target": {"documentPath": "/demo/doc"},
+                "target": {"documentPath": document_path},
                 "method": "file.capture",
                 "params": {"nodeId": 2},
             },
             {
                 "jsonrpc": "2.0",
                 "id": 5,
-                "target": {"documentPath": "/demo/doc"},
+                "target": {"documentPath": document_path},
                 "method": "document.get",
                 "params": {},
             },
@@ -300,17 +294,17 @@ def assert_document_catalog_and_scoping(
             {
                 "jsonrpc": "2.0",
                 "id": 7,
-                "target": {"documentPath": "/demo/doc"},
+                "target": {"documentPath": document_path},
                 "method": "session.create",
-                "params": {"sessionName": "should-not-cross"},
+                "params": {"sessionName": session_name},
             },
         ],
     )
 
-    assert responses[0]["result"]["path"] == "/demo/doc"
+    assert responses[0]["result"]["path"] == document_path
     listed_paths = [entry["path"] for entry in responses[1]["result"]]
     assert "/" in listed_paths
-    assert "/demo/doc" in listed_paths
+    assert document_path in listed_paths
     assert responses[2]["result"]["nodeId"] == 2
     assert responses[3]["result"]["content"] == "scoped file content\n"
 
@@ -323,19 +317,19 @@ def assert_document_catalog_and_scoping(
     assert "root document target /" in responses[6]["error"]["message"]
 
 
-def assert_node_target_shape(
-    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+def check_node_target_shape(
+    case: TransportCase,
+    request: pytest.FixtureRequest,
 ) -> None:
+    node_title = unique_name(request, "node")
     created = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "node.append",
-                "params": {"parentId": 1, "kind": "scroll_region", "title": "node-target-demo"},
+                "params": {"parentId": 1, "kind": "scroll_region", "title": node_title},
             },
         ],
     )
@@ -343,9 +337,7 @@ def assert_node_target_shape(
     node_id = created[0]["result"]["nodeId"]
 
     responses = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
@@ -357,7 +349,7 @@ def assert_node_target_shape(
             {
                 "jsonrpc": "2.0",
                 "id": 3,
-                "target": {"documentPath": "/", "selector": "node-target-demo"},
+                "target": {"documentPath": "/", "selector": node_title},
                 "method": "node.get",
                 "params": {},
             },
@@ -372,129 +364,178 @@ def assert_node_target_shape(
     )
 
     assert responses[0]["result"]["id"] == node_id
-    assert responses[0]["result"]["title"] == "node-target-demo"
+    assert responses[0]["result"]["title"] == node_title
     assert responses[1]["result"]["id"] == node_id
-    assert responses[1]["result"]["title"] == "node-target-demo"
+    assert responses[1]["result"]["title"] == node_title
     assert responses[2]["error"]["code"] == -32602
     assert "does not match any node" in responses[2]["error"]["message"]
 
 
-def assert_cli_trd_target_modes(
-    cwd: pathlib.Path, env: dict[str, str], transport_spec: str
+def check_cli_trd_target_modes(
+    case: TransportCase,
+    request: pytest.FixtureRequest,
 ) -> None:
+    slug = unique_name(request, "doc")
+    document_path = f"/docs/{slug}"
+    doc_root_child_title = f"{slug}-doc-root-child"
+    selector_child_title = f"{slug}-welcome-child"
+
     run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "document.create",
-                "params": {"path": "/docs/demo"},
+                "params": {"path": document_path},
             },
         ],
     )
 
-    doc_trd = transport_to_absolute_document_trd(transport_spec, "/docs/demo")
-    composite_doc_trd = transport_to_composite_document_trd(transport_spec, "/docs/demo")
-    root_node = run_cli(cwd, env, "--transport", transport_spec, "node", "get", doc_trd)
+    doc_trd = transport_to_absolute_document_trd(case.actual_transport, document_path)
+    composite_doc_trd = transport_to_composite_document_trd(case.actual_transport, document_path)
+    root_node = run_cli(case, "--transport", case.actual_transport, "node", "get", doc_trd)
     assert root_node["result"]["kind"] == "document"
-    assert root_node["result"]["title"] == "demo"
+    assert root_node["result"]["title"] == slug
 
     composite_root_node = run_cli(
-        cwd, env, "--transport", transport_spec, "node", "get", composite_doc_trd
+        case,
+        "--transport",
+        case.actual_transport,
+        "node",
+        "get",
+        composite_doc_trd,
     )
     assert composite_root_node["result"]["kind"] == "document"
-    assert composite_root_node["result"]["title"] == "demo"
+    assert composite_root_node["result"]["title"] == slug
 
-    if transport_spec.startswith("http://") or transport_spec.startswith("h2://"):
-        htp_doc_trd = transport_to_htp_document_trd(transport_spec, "/docs/demo")
+    if case.actual_transport.startswith("http://") or case.actual_transport.startswith("h2://"):
+        htp_doc_trd = transport_to_htp_document_trd(case.actual_transport, document_path)
         htp_root_node = run_cli(
-            cwd, env, "--transport", transport_spec, "node", "get", htp_doc_trd
+            case,
+            "--transport",
+            case.actual_transport,
+            "node",
+            "get",
+            htp_doc_trd,
         )
         assert htp_root_node["result"]["kind"] == "document"
-        assert htp_root_node["result"]["title"] == "demo"
+        assert htp_root_node["result"]["title"] == slug
 
     appended_under_root = run_cli(
-        cwd,
-        env,
+        case,
         "--transport",
-        transport_spec,
+        case.actual_transport,
         "node",
         "append",
         doc_trd,
         "scroll_region",
-        "doc-root-child",
+        doc_root_child_title,
     )
     assert appended_under_root["result"]["kind"] == "scroll_region"
 
     appended_under_selector = run_cli(
-        cwd,
-        env,
+        case,
         "--transport",
-        transport_spec,
+        case.actual_transport,
         "node",
         "append",
         "trd:#welcome",
         "scroll_region",
-        "welcome-child",
+        selector_child_title,
     )
     assert appended_under_selector["result"]["kind"] == "scroll_region"
 
     appended_doc = run_transport_relay(
-        cwd,
-        env,
-        transport_spec,
+        case,
         [
             {
                 "jsonrpc": "2.0",
                 "id": 2,
-                "target": {"documentPath": "/docs/demo"},
+                "target": {"documentPath": document_path},
                 "method": "document.get",
                 "params": {},
             },
         ],
     )[0]
     appended_titles = [node["title"] for node in appended_doc["result"]["nodes"]]
-    assert "doc-root-child" in appended_titles
+    assert doc_root_child_title in appended_titles
 
-    selector_child = run_cli(cwd, env, "--transport", transport_spec, "node", "get", "trd:#welcome/welcome-child")
-    assert selector_child["result"]["title"] == "welcome-child"
+    selector_child = run_cli(
+        case,
+        "--transport",
+        case.actual_transport,
+        "node",
+        "get",
+        f"trd:#welcome/{selector_child_title}",
+    )
+    assert selector_child["result"]["title"] == selector_child_title
 
 
-def exercise_transport(
-    cwd: pathlib.Path,
-    env: dict[str, str],
-    requested_transport: str,
-) -> None:
-    proc, actual_transport = start_daemon(cwd, env, requested_transport)
+def transport_id(transport_spec: str) -> str:
+    if transport_spec.startswith("http://"):
+        return "http"
+    if transport_spec.startswith("h2://"):
+        return "h2"
+    if transport_spec.startswith("h3wt://"):
+        return "h3wt"
+    raise AssertionError(f"unexpected transport spec {transport_spec!r}")
+
+
+@pytest.fixture(params=TRANSPORT_MATRIX)
+def transport_case(
+    request: pytest.FixtureRequest,
+    tmp_path: pathlib.Path,
+) -> TransportCase:
+    requested_transport = request.param
+    temp_dir = tmp_path
+    env = os.environ.copy()
+    env["MUXLY_H3WT_IDENTITY_DIR"] = str(temp_dir / "identity")
+
+    proc, actual_transport = start_daemon(temp_dir, env, requested_transport)
     try:
-        assert_ping_and_document(cwd, env, actual_transport)
-        assert_trd_resolution(cwd, env, actual_transport)
-        assert_session_reuse(cwd, env, actual_transport)
-        assert_document_target_handling(cwd, env, actual_transport)
-        assert_document_catalog_and_scoping(cwd, env, actual_transport)
-        assert_node_target_shape(cwd, env, actual_transport)
-        assert_cli_trd_target_modes(cwd, env, actual_transport)
+        yield TransportCase(
+            cwd=temp_dir,
+            env=env,
+            requested_transport=requested_transport,
+            actual_transport=actual_transport,
+        )
     finally:
         stop_process(proc)
 
 
-def main() -> None:
-    args = parse_args()
-    if not args.skip_build:
-        build_binaries()
-
-    with tempfile.TemporaryDirectory(prefix="muxly-http-h3wt-") as temp_dir_str:
-        temp_dir = pathlib.Path(temp_dir_str)
-        env = os.environ.copy()
-        env["MUXLY_H3WT_IDENTITY_DIR"] = str(temp_dir / "identity")
-
-        exercise_transport(temp_dir, env, "http://127.0.0.1:0/rpc")
-        exercise_transport(temp_dir, env, "h2://127.0.0.1:0/rpc")
-        exercise_transport(temp_dir, env, "h3wt://127.0.0.1:0/mux")
+def test_ping_and_document(transport_case: TransportCase) -> None:
+    check_ping_and_document(transport_case)
 
 
-if __name__ == "__main__":
-    main()
+def test_trd_resolution(transport_case: TransportCase) -> None:
+    check_trd_resolution(transport_case)
+
+
+def test_session_reuse(transport_case: TransportCase) -> None:
+    check_session_reuse(transport_case)
+
+
+def test_document_target_handling(transport_case: TransportCase) -> None:
+    check_document_target_handling(transport_case)
+
+
+def test_document_catalog_and_scoping(
+    transport_case: TransportCase,
+    request: pytest.FixtureRequest,
+) -> None:
+    check_document_catalog_and_scoping(transport_case, request)
+
+
+def test_node_target_shape(
+    transport_case: TransportCase,
+    request: pytest.FixtureRequest,
+) -> None:
+    check_node_target_shape(transport_case, request)
+
+
+def test_cli_trd_target_modes(
+    transport_case: TransportCase,
+    request: pytest.FixtureRequest,
+) -> None:
+    check_cli_trd_target_modes(transport_case, request)

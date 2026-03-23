@@ -255,8 +255,10 @@ pub fn build(b: *std.Build) void {
 
     const run_transport_tests = addTimedSystemCommand(b, transport_integration_timeout_seconds, &.{
         "python3",
+        "-m",
+        "pytest",
+        "-q",
         "tests/integration/http_h3wt_transport_test.py",
-        "--skip-build",
     });
     run_transport_tests.setCwd(b.path("."));
     run_transport_tests.step.dependOn(&install_cli.step);
