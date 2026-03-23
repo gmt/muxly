@@ -4,19 +4,31 @@ const muxly = @import("muxly");
 test "trd parser keeps explicit server, document, and selector components" {
     var parsed = try muxly.trd.parse(
         std.testing.allocator,
-        "trd://webtransport|127.0.0.1:4433/mux?sha256=deadbeef//doc/u/ment/id#node/path/in/TOM",
+        "trd://wtp|127.0.0.1:4433/mux?sha256=deadbeef::/doc/u/ment/id#node/path/in/TOM",
     );
     defer parsed.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(muxly.trd.Parsed.Kind.absolute, parsed.kind);
-    try std.testing.expectEqualStrings("webtransport", parsed.transport_code.?);
+    try std.testing.expectEqualStrings("wtp", parsed.transport_code.?);
     try std.testing.expectEqualStrings("127.0.0.1:4433/mux?sha256=deadbeef", parsed.endpoint.?);
     try std.testing.expectEqualStrings("/doc/u/ment/id", parsed.document_path.?);
     try std.testing.expectEqualStrings("node/path/in/TOM", parsed.selector.?);
 }
 
-test "trd parsed properties expose the main semantic cuts without reparsing" {
-    var doc_only = try muxly.trd.parse(std.testing.allocator, "trd://welcome");
+test "trd parsed properties expose authority-first and document-only cuts" {
+    var host_only = try muxly.trd.parse(std.testing.allocator, "trd://mux.example.com");
+    defer host_only.deinit(std.testing.allocator);
+    const host_only_props = host_only.properties();
+    try std.testing.expect(host_only_props.is_absolute);
+    try std.testing.expect(!host_only_props.is_relative);
+    try std.testing.expect(host_only_props.has_explicit_server);
+    try std.testing.expect(!host_only_props.has_explicit_document);
+    try std.testing.expect(host_only_props.is_document_only);
+    try std.testing.expect(!host_only_props.is_node_targeted);
+    try std.testing.expect(!host_only_props.inherits_transport);
+    try std.testing.expect(!host_only_props.inherits_document);
+
+    var doc_only = try muxly.trd.parse(std.testing.allocator, "trd://::/welcome");
     defer doc_only.deinit(std.testing.allocator);
     const doc_only_props = doc_only.properties();
     try std.testing.expect(doc_only_props.is_absolute);
@@ -40,19 +52,10 @@ test "trd parsed properties expose the main semantic cuts without reparsing" {
     try std.testing.expect(relative_props.is_node_targeted);
     try std.testing.expect(relative_props.inherits_transport);
     try std.testing.expect(relative_props.inherits_document);
-
-    var explicit_server = try muxly.trd.parse(std.testing.allocator, "trd://http|host.lan/rpc//docs/demo#left");
-    defer explicit_server.deinit(std.testing.allocator);
-    const explicit_server_props = explicit_server.properties();
-    try std.testing.expect(explicit_server_props.is_absolute);
-    try std.testing.expect(explicit_server_props.has_explicit_server);
-    try std.testing.expect(explicit_server_props.has_explicit_document);
-    try std.testing.expect(explicit_server_props.has_selector);
-    try std.testing.expect(explicit_server_props.is_node_targeted);
 }
 
 test "trd document shorthand resolves to the runtime default transport" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://welcome");
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://::/welcome");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -70,7 +73,7 @@ test "trd document shorthand resolves to the runtime default transport" {
     try std.testing.expect(resolved.selector == null);
 }
 
-test "absolute trd selector on default transport keeps the root document" {
+test "absolute trd selector on local-default transport keeps the root document" {
     var parsed = try muxly.trd.parse(std.testing.allocator, "trd://#welcome");
     defer parsed.deinit(std.testing.allocator);
 
@@ -122,8 +125,8 @@ test "relative trd selectors can stay lazy through request targets" {
     try std.testing.expectEqualStrings("welcome/child", target.selector.?);
 }
 
-test "h2 trd transport references resolve to h2 transport specs" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://h2|127.0.0.1:8080/rpc//docs/demo#left");
+test "ht2 trd transport references resolve to h2 transport specs" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://ht2|127.0.0.1:8080/rpc::/docs/demo#left");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -138,8 +141,8 @@ test "h2 trd transport references resolve to h2 transport specs" {
     try std.testing.expectEqualStrings("left", resolved.selector.?);
 }
 
-test "trd explicit unix server defaults endpoint when omitted" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://unix|//x/y");
+test "trd explicit unx server defaults endpoint when omitted" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://unx|::/x/y");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -157,8 +160,8 @@ test "trd explicit unix server defaults endpoint when omitted" {
     try std.testing.expect(resolved.selector == null);
 }
 
-test "trd explicit default transport code falls back to unix" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://|relative.sock//y");
+test "trd local-default shorthand resolves through the runtime default transport" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://.::/y");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -168,13 +171,16 @@ test "trd explicit default transport code falls back to unix" {
     );
     defer resolved.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("relative.sock", resolved.transport_spec);
+    const expected_default = try muxly.api.runtimeDefaultTransportSpecOwned(std.testing.allocator);
+    defer std.testing.allocator.free(expected_default);
+
+    try std.testing.expectEqualStrings(expected_default, resolved.transport_spec);
     try std.testing.expectEqualStrings("/y", resolved.document_path);
     try std.testing.expect(resolved.selector == null);
 }
 
-test "trd explicit webtransport server defaults host path and root document" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://webtransport|foo//");
+test "trd explicit wtp server defaults host path and root document" {
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://wtp|foo");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -190,7 +196,7 @@ test "trd explicit webtransport server defaults host path and root document" {
 }
 
 test "trd explicit tcp server defaults localhost and the canonical muxly tcp port" {
-    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://tcp|//");
+    var parsed = try muxly.trd.parse(std.testing.allocator, "trd://tcp|::/");
     defer parsed.deinit(std.testing.allocator);
 
     var resolved = try parsed.resolve(
@@ -207,12 +213,12 @@ test "trd explicit tcp server defaults localhost and the canonical muxly tcp por
 
 test "trd parser rejects non-canonical document paths at parse time" {
     const invalid = [_][]const u8{
-        "trd://docs/demo/",
-        "trd://docs//demo",
-        "trd://docs/./demo",
-        "trd://docs/../demo",
-        "trd://unix|//docs/demo/",
-        "trd://http|host.lan/rpc//docs/../demo",
+        "trd://::/docs/demo/",
+        "trd://::/docs//demo",
+        "trd://::/docs/./demo",
+        "trd://::/docs/../demo",
+        "trd://unx|::/docs/demo/",
+        "trd://ht1|host.lan/rpc::/docs/../demo",
     };
 
     for (invalid) |text| {

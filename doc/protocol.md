@@ -24,12 +24,12 @@ explicit, testable, and debuggable.
   runtime target
 - `trds://...` secure descriptors now split muxly-native and HTTP-family secure
   attach:
-  - plain `trds://...` => prefer `trds://wt|...`, then `trds://ht|...`
-  - `trds://wt|...` => strict `h3wt://`
-  - `trds://ht|...` => secure HTTP family (`https://`)
-  - `trds://h2|...` => strict secure H2
-  - `trds://h1|...` => strict secure H1
-  - `trds://h3|...` is reserved; generic secure HTTP/3 is not yet implemented
+  - plain `trds://...` => prefer `trds://wtp|...`, then `trds://htp|...`
+  - `trds://wtp|...` => strict `h3wt://`
+  - `trds://htp|...` => secure HTTP family (`https://`)
+  - `trds://ht2|...` => strict secure H2
+  - `trds://ht1|...` => strict secure H1
+  - `trds://ht3|...` is reserved; generic secure HTTP/3 is not yet implemented
 - secure client trust defaults to the OS trust store, with explicit local
   overrides for CA bundle, pin, and SNI
 - H3/WebTransport clients now use that same trust vocabulary: explicit CA
@@ -191,7 +191,7 @@ explicit, testable, and debuggable.
   - `viewStateScope: "shared-document-transitional"`
   - `bufferPolicy: "runtime-configurable"`
   - `paneCaptureStreaming: "h2-and-h3wt"`
-  - `secureClientModes: "trds-wt-ht-h2-h1"`
+  - `secureClientModes: "trds-wtp-htp-ht2-ht1"`
   - `maxMessageBytes: <effective runtime cap>`
   - `maxDocumentContentBytes: <effective runtime cap>`
   - `tmuxBackendMode: "hybrid-control-invalidation"`

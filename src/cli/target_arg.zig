@@ -147,18 +147,41 @@ fn resolveLazy(
         return error.ExplicitNodeTargetRequired;
     }
 
-    var resolved = try parsed.resolve(allocator, current_transport_spec, current_document_path);
-    defer resolved.deinit(allocator);
+    var resolved_transport_spec: []u8 = undefined;
+    var resolved_document_path: []u8 = undefined;
+    var resolved_selector: ?[]u8 = null;
+    defer allocator.free(resolved_transport_spec);
+    defer allocator.free(resolved_document_path);
+    defer if (resolved_selector) |selector| allocator.free(selector);
 
-    const node_target = if (resolved.selector) |selector|
+    if (props.is_absolute and props.has_explicit_server) {
+        resolved_transport_spec = try muxly.client.resolveTrdParsedTransportSpec(
+            allocator,
+            parsed,
+            overrides,
+        );
+        resolved_document_path = if (parsed.document_path) |value|
+            try allocator.dupe(u8, value)
+        else
+            try allocator.dupe(u8, muxly.protocol.default_document_path);
+        resolved_selector = if (parsed.selector) |value| try allocator.dupe(u8, value) else null;
+    } else {
+        var resolved = try parsed.resolve(allocator, current_transport_spec, current_document_path);
+        defer resolved.deinit(allocator);
+        resolved_transport_spec = try applySecureTransportOverrides(allocator, resolved.transport_spec, overrides);
+        resolved_document_path = try allocator.dupe(u8, resolved.document_path);
+        resolved_selector = if (resolved.selector) |value| try allocator.dupe(u8, value) else null;
+    }
+
+    const node_target = if (resolved_selector) |selector|
         muxly.api.NodeRequestTarget{ .selector = try allocator.dupe(u8, selector) }
     else
         muxly.api.NodeRequestTarget{ .selector = try allocator.dupe(u8, "/") };
     errdefer if (node_target.selector) |selector| allocator.free(selector);
 
     return .{
-        .transport_spec = try applySecureTransportOverrides(allocator, resolved.transport_spec, overrides),
-        .document_path = try allocator.dupe(u8, resolved.document_path),
+        .transport_spec = try allocator.dupe(u8, resolved_transport_spec),
+        .document_path = try allocator.dupe(u8, resolved_document_path),
         .node_target = node_target,
     };
 }
@@ -170,16 +193,36 @@ fn resolveConcrete(
     descriptor_text: []const u8,
     overrides: SecureTransportOverrides,
 ) !Arg {
-    var target = try muxly.trd.resolveNodeTarget(
-        allocator,
-        current_transport_spec,
-        current_document_path,
-        descriptor_text,
-    );
+    var parsed = try muxly.trd.parse(allocator, descriptor_text);
+    defer parsed.deinit(allocator);
+
+    var target: muxly.trd.NodeTarget = undefined;
+    if (parsed.kind == .absolute and parsed.properties().has_explicit_server) {
+        const resolved_transport_spec = try muxly.client.resolveTrdParsedTransportSpec(
+            allocator,
+            parsed,
+            overrides,
+        );
+        defer allocator.free(resolved_transport_spec);
+
+        target = try muxly.trd.resolveNodeTargetFromResolved(
+            allocator,
+            resolved_transport_spec,
+            parsed.document_path orelse muxly.protocol.default_document_path,
+            parsed.selector,
+        );
+    } else {
+        target = try muxly.trd.resolveNodeTarget(
+            allocator,
+            current_transport_spec,
+            current_document_path,
+            descriptor_text,
+        );
+    }
     defer target.deinit(allocator);
 
     return .{
-        .transport_spec = try applySecureTransportOverrides(allocator, target.transport_spec, overrides),
+        .transport_spec = try allocator.dupe(u8, target.transport_spec),
         .document_path = try allocator.dupe(u8, target.document_path),
         .node_target = .{ .node_id = target.node_id },
     };

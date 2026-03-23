@@ -42,7 +42,7 @@ necessary to preserve responsiveness, clarity, and control fidelity.
 - when those terms refer to muxly's own server object rather than an exogenous
   concept, prefer **TOM** instead for clarity and consistency
 
-### TRD grammar is document-first
+### TRD grammar is authority-first
 
 This section is the normative home for TRD semantics. Other docs may summarize
 or teach the syntax, but when examples drift or implementation questions come
@@ -52,22 +52,21 @@ up, this section wins.
   - `$srv`: transport plus optional authority/path details
   - `$doc`: document path
   - `$nod`: node selector
-- the default reading is document-first, not selector-first
-- if there is no `|` before a `#`, everything after `trd://` is `$doc`
 - `#` introduces `$nod`
-- `|` introduces an explicit `$srv`
-- `//` after `$srv` introduces `$doc`
+- `|` introduces an explicit transport code inside `$srv`
+- `::/` introduces `$doc` in absolute descriptors
+- without `::/`, absolute descriptors default `$doc` to `/`
 
 Inheritance rules:
 
-- `trd://foo` means default transport, document `/foo`, no selector
-- `trd://foo#bar` means default transport, document `/foo`, selector `bar`
-- `trd://#bar` means default transport, document `/`, selector `bar`
+- `trd://foo` means authority-first attach to host `foo`, with document `/`
+- `trd://::/foo` means runtime-default transport, document `/foo`
+- `trd://#bar` means runtime-default transport, document `/`, selector `bar`
 - `trd:#bar` means current transport, current document, selector `bar`
 - relative selectors inherit the current document only; they do **not** inherit
   an ambient current node
-- path-targeted descriptors and node-targeted descriptors are the same shape:
-  the document comes first, then optional `#selector` narrowing
+- `trd://.` is the explicit local-default shorthand, and bare `trd://` is an
+  alias for it
 
 Canonicality rules:
 
@@ -78,35 +77,36 @@ Canonicality rules:
 
 Examples:
 
-- `trd://foo` means document `/foo` on the runtime-default transport
-- `trd://foo/bar#left/pane` means document `/foo/bar`, selector `left/pane`
+- `trd://mux.example.com::/foo` means document `/foo` on host `mux.example.com`
+- `trd://::/foo/bar#left/pane` means document `/foo/bar`, selector `left/pane`
 - `trd://#welcome` means selector `welcome` in document `/` on the runtime-default transport
 - `trd:#welcome` means selector `welcome` on the current transport and current document
-- `trd://http|host.lan/rpc//builds/demo#log` means explicit server, document `/builds/demo`, selector `log`
+- `trd://ht1|host.lan/rpc::/builds/demo#log` means explicit server, document `/builds/demo`, selector `log`
 
 Server defaults:
 
-- an empty explicit transport code defaults to `unix`
-- `trd://|path//doc` is shorthand for `trd://unix|path//doc`
-- `trd://unix|//doc` uses the runtime-default unix socket path
-- `trd://http|//doc` uses `localhost`
-- `trd://webtransport|//doc` uses `localhost`
-- `trd://tcp|//doc` uses `localhost:4488`
+- `trd://` and `trd://.` use the runtime-default transport
+- `trd://unx|::/doc` uses the runtime-default unix socket path
+- `trd://ht1|` uses `localhost`
+- `trd://wtp|` uses `localhost`
+- `trd://tcp|` uses `localhost:4488`
+- bare `trd://host...` prefers `wtp`, then `htp`
+- `trd://htp|host...` prefers `ht2`, then `ht1`
 
 Public transport names should be written consistently:
 
-- `unix`
+- `unx`
 - `tcp`
 - `ssh`
-- `http`
-- `webtransport`
-
-Short aliases such as `ux` and `wt` may be accepted for compatibility, but
-they are not the preferred public spelling.
+- `wtp`
+- `htp`
+- `ht2`
+- `ht1`
+- `ht3` reserved
 
 CLI docs should distinguish between:
 
-- `document-or-node` target slots, where `trd://doc` means the document root
+- `document-or-node` target slots, where `trd://::/doc` means the document root
 - `explicit-node` target slots, where callers must provide `#selector` or a
   concrete node id
 - commands that still take backend-scoped pane/session/window ids rather than
@@ -118,25 +118,26 @@ but the docs should say so plainly instead of hand-waving it.
 ### `trds://` is the secure descriptor family
 
 - `trds://...` is the secure deployment/share/client descriptor family
-- it reuses the same document-first grammar after the HTTPS authority/path:
-  - `trds://wt|host:port/path//doc#selector`
+- it uses the same absolute `$srv ::/ $doc # $nod` shape:
+  - `trds://wtp|host:port/path::/doc#selector`
 - it is absolute-only in this slice
-- omitted secure code defaults to `wt`, then `ht`
+- omitted secure code defaults to `wtp`, then `htp`
 - secure codes mean:
-  - `wt`: muxly-native WebTransport/QUIC
-  - `ht`: secure HTTP family
-  - `h2`: strict secure HTTP/2
-  - `h1`: strict secure HTTP/1.1
+  - `wtp`: muxly-native WebTransport/QUIC
+  - `htp`: secure HTTP family
+  - `ht2`: strict secure HTTP/2
+  - `ht1`: strict secure HTTP/1.1
+  - `ht3`: reserved
 - its current jobs are:
   - feed config generation for Caddy-fronted secure deployments
-  - resolve native secure clients onto a `wt`-then-`ht` preference hierarchy
+  - resolve native secure clients onto a `wtp`-then-`htp` preference hierarchy
 - Caddy remains the HTTPS fixer in front of loopback muxly upstreams in this
   slice
-- `trds://wt|...` currently reuses the existing `h3wt://` WebTransport-over-HTTP/3
+- `trds://wtp|...` currently reuses the existing `h3wt://` WebTransport-over-HTTP/3
   transport
-- `trds://h3|...` is reserved for future generic secure HTTP/3 support
+- `trds://ht3|...` is reserved for future generic secure HTTP/3 support
 - the current generated deployment shape still provisions the secure HTTP
-  fallback endpoint for plain `trds://...` and `trds://wt|...`
+  fallback endpoint for plain `trds://...` and `trds://wtp|...`
 - shareable descriptors may carry `sha256=` pin and `sni=` metadata, but local
   CA bundle paths stay outside the descriptor
 

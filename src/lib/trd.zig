@@ -10,6 +10,34 @@ const protocol = @import("../core/protocol.zig");
 
 pub const default_tcp_port: u16 = 4488;
 const default_host = "localhost";
+pub const absolute_document_separator = "::/";
+const local_default_endpoint = ".";
+
+pub const TransportCode = enum {
+    none,
+    local_default,
+    auto,
+    unx,
+    tcp,
+    ssh,
+    wtp,
+    htp,
+    ht3,
+    ht2,
+    ht1,
+
+    pub fn parseExplicit(text: []const u8) !TransportCode {
+        if (std.mem.eql(u8, text, "unx")) return .unx;
+        if (std.mem.eql(u8, text, "tcp")) return .tcp;
+        if (std.mem.eql(u8, text, "ssh")) return .ssh;
+        if (std.mem.eql(u8, text, "wtp")) return .wtp;
+        if (std.mem.eql(u8, text, "htp")) return .htp;
+        if (std.mem.eql(u8, text, "ht3")) return .ht3;
+        if (std.mem.eql(u8, text, "ht2")) return .ht2;
+        if (std.mem.eql(u8, text, "ht1")) return .ht1;
+        return error.UnsupportedResourceTransport;
+    }
+};
 
 pub const Parsed = struct {
     kind: Kind,
@@ -156,54 +184,58 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Parsed {
     if (without_selector.len == 0) {
         return .{
             .kind = .absolute,
+            .endpoint = try allocator.dupe(u8, local_default_endpoint),
             .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
         };
     }
 
-    if (std.mem.indexOfScalar(u8, without_selector, '|')) |pipe_index| {
-        const transport_code = without_selector[0..pipe_index];
-        const endpoint_and_document = without_selector[pipe_index + 1 ..];
-        var endpoint = endpoint_and_document;
-        var document_path: ?[]const u8 = null;
-        if (std.mem.indexOf(u8, endpoint_and_document, "//")) |doc_sep| {
-            endpoint = endpoint_and_document[0..doc_sep];
-            document_path = endpoint_and_document[doc_sep + 2 ..];
-        }
-
-        const owned_transport_code = if (transport_code.len != 0)
-            try allocator.dupe(u8, transport_code)
-        else
-            null;
-        errdefer if (owned_transport_code) |value| allocator.free(value);
-
-        const owned_endpoint = try allocator.dupe(u8, endpoint);
-        errdefer allocator.free(owned_endpoint);
-
-        const owned_document_path = if (document_path) |value|
-            try normalizeDocumentPathOwned(allocator, value)
-        else
-            null;
-        errdefer if (owned_document_path) |value| allocator.free(value);
-
-        const owned_selector = if (selector) |value|
-            try allocator.dupe(u8, value)
-        else
-            null;
-        errdefer if (owned_selector) |value| allocator.free(value);
-
-        return .{
-            .kind = .absolute,
-            .transport_code = owned_transport_code,
-            .endpoint = owned_endpoint,
-            .document_path = owned_document_path,
-            .selector = owned_selector,
-        };
+    var endpoint_and_document = without_selector;
+    var document_path: ?[]const u8 = null;
+    if (std.mem.indexOf(u8, without_selector, absolute_document_separator)) |doc_sep| {
+        endpoint_and_document = without_selector[0..doc_sep];
+        document_path = without_selector[doc_sep + absolute_document_separator.len - 1 ..];
     }
+
+    var transport_code: ?[]const u8 = null;
+    var endpoint: ?[]const u8 = if (endpoint_and_document.len != 0) endpoint_and_document else null;
+    if (std.mem.indexOfScalar(u8, endpoint_and_document, '|')) |pipe_index| {
+        const explicit_transport_code = endpoint_and_document[0..pipe_index];
+        if (explicit_transport_code.len == 0) return error.UnsupportedResourceTransport;
+        _ = try TransportCode.parseExplicit(explicit_transport_code);
+        transport_code = explicit_transport_code;
+        endpoint = endpoint_and_document[pipe_index + 1 ..];
+    }
+
+    const owned_transport_code = if (transport_code) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_transport_code) |value| allocator.free(value);
+
+    const owned_endpoint = if (endpoint) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_endpoint) |value| allocator.free(value);
+
+    const owned_document_path = if (document_path) |value|
+        try normalizeDocumentPathOwned(allocator, value)
+    else
+        null;
+    errdefer if (owned_document_path) |value| allocator.free(value);
+
+    const owned_selector = if (selector) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_selector) |value| allocator.free(value);
 
     return .{
         .kind = .absolute,
-        .document_path = try normalizeDocumentPathOwned(allocator, without_selector),
-        .selector = if (selector) |value| try allocator.dupe(u8, value) else null,
+        .transport_code = owned_transport_code,
+        .endpoint = owned_endpoint,
+        .document_path = owned_document_path,
+        .selector = owned_selector,
     };
 }
 
@@ -259,34 +291,45 @@ pub fn isDescriptor(text: []const u8) bool {
     return std.mem.startsWith(u8, text, "trd:");
 }
 
-fn transportSpecFromReference(
+pub fn classifyTransportCode(transport_code: ?[]const u8, endpoint: ?[]const u8) !TransportCode {
+    if (transport_code) |value| return try TransportCode.parseExplicit(value);
+    if (endpoint) |value| {
+        if (std.mem.eql(u8, value, local_default_endpoint)) return .local_default;
+        return .auto;
+    }
+    return .none;
+}
+
+pub fn transportSpecFromReference(
     allocator: std.mem.Allocator,
     transport_code: ?[]const u8,
     endpoint: []const u8,
 ) ![]u8 {
-    const code = transport_code orelse "unix";
-    if (std.mem.eql(u8, code, "unix") or std.mem.eql(u8, code, "ux")) {
-        if (endpoint.len == 0) return try api.runtimeDefaultTransportSpecOwned(allocator);
-        return try allocator.dupe(u8, endpoint);
+    switch (try classifyTransportCode(transport_code, if (endpoint.len == 0) null else endpoint)) {
+        .none, .local_default => return try api.runtimeDefaultTransportSpecOwned(allocator),
+        .auto, .htp, .ht3 => return error.UnsupportedResourceTransport,
+        .unx => {
+            if (endpoint.len == 0) return try api.runtimeDefaultTransportSpecOwned(allocator);
+            return try allocator.dupe(u8, endpoint);
+        },
+        .tcp => {
+            const authority = try tcpEndpointWithDefaultPortOwned(allocator, endpoint);
+            defer allocator.free(authority);
+            return try std.fmt.allocPrint(allocator, "tcp://{s}", .{authority});
+        },
+        .ssh => {
+            return try std.fmt.allocPrint(allocator, "ssh://{s}", .{if (endpoint.len == 0) default_host else endpoint});
+        },
+        .ht1 => {
+            return try std.fmt.allocPrint(allocator, "http://{s}", .{if (endpoint.len == 0) default_host else endpoint});
+        },
+        .ht2 => {
+            return try std.fmt.allocPrint(allocator, "h2://{s}", .{if (endpoint.len == 0) default_host else endpoint});
+        },
+        .wtp => {
+            return try std.fmt.allocPrint(allocator, "h3wt://{s}", .{if (endpoint.len == 0) default_host else endpoint});
+        },
     }
-    if (std.mem.eql(u8, code, "tcp")) {
-        const authority = try tcpEndpointWithDefaultPortOwned(allocator, endpoint);
-        defer allocator.free(authority);
-        return try std.fmt.allocPrint(allocator, "tcp://{s}", .{authority});
-    }
-    if (std.mem.eql(u8, code, "ssh")) {
-        return try std.fmt.allocPrint(allocator, "ssh://{s}", .{if (endpoint.len == 0) default_host else endpoint});
-    }
-    if (std.mem.eql(u8, code, "http")) {
-        return try std.fmt.allocPrint(allocator, "http://{s}", .{if (endpoint.len == 0) default_host else endpoint});
-    }
-    if (std.mem.eql(u8, code, "h2") or std.mem.eql(u8, code, "http2")) {
-        return try std.fmt.allocPrint(allocator, "h2://{s}", .{if (endpoint.len == 0) default_host else endpoint});
-    }
-    if (std.mem.eql(u8, code, "webtransport") or std.mem.eql(u8, code, "wt") or std.mem.eql(u8, code, "h3wt")) {
-        return try std.fmt.allocPrint(allocator, "h3wt://{s}", .{if (endpoint.len == 0) default_host else endpoint});
-    }
-    return error.UnsupportedResourceTransport;
 }
 
 fn normalizeDocumentPathOwned(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

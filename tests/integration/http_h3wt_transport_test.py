@@ -67,32 +67,56 @@ def run_transport_relay(
 def transport_to_absolute_trd(transport_spec: str, selector: str) -> str:
     if transport_spec.startswith("http://"):
         endpoint = transport_spec[len("http://") :]
-        return f"trd://http|{endpoint}//#{selector}"
+        return f"trd://ht1|{endpoint}::/#{selector}"
     if transport_spec.startswith("h2://"):
         endpoint = transport_spec[len("h2://") :]
-        return f"trd://h2|{endpoint}//#{selector}"
+        return f"trd://ht2|{endpoint}::/#{selector}"
     if transport_spec.startswith("h3wt://"):
         endpoint = transport_spec[len("h3wt://") :]
-        return f"trd://wt|{endpoint}//#{selector}"
+        return f"trd://wtp|{endpoint}::/#{selector}"
     raise AssertionError(f"unexpected transport spec {transport_spec!r}")
 
 
 def transport_to_absolute_document_trd(transport_spec: str, document_path: str) -> str:
     normalized = document_path if document_path.startswith("/") else f"/{document_path}"
     if normalized == "/":
-        doc_suffix = ""
+        doc_suffix = "/"
     else:
-        doc_suffix = normalized[1:]
+        doc_suffix = normalized
 
     if transport_spec.startswith("http://"):
         endpoint = transport_spec[len("http://") :]
-        return f"trd://http|{endpoint}//{doc_suffix}"
+        return f"trd://ht1|{endpoint}::{doc_suffix}"
     if transport_spec.startswith("h2://"):
         endpoint = transport_spec[len("h2://") :]
-        return f"trd://h2|{endpoint}//{doc_suffix}"
+        return f"trd://ht2|{endpoint}::{doc_suffix}"
     if transport_spec.startswith("h3wt://"):
         endpoint = transport_spec[len("h3wt://") :]
-        return f"trd://wt|{endpoint}//{doc_suffix}"
+        return f"trd://wtp|{endpoint}::{doc_suffix}"
+    raise AssertionError(f"unexpected transport spec {transport_spec!r}")
+
+
+def transport_to_composite_document_trd(transport_spec: str, document_path: str) -> str:
+    normalized = document_path if document_path.startswith("/") else f"/{document_path}"
+    if normalized == "/":
+        return f"trd://{transport_endpoint(transport_spec)}"
+    return f"trd://{transport_endpoint(transport_spec)}::{normalized}"
+
+
+def transport_to_htp_document_trd(transport_spec: str, document_path: str) -> str:
+    normalized = document_path if document_path.startswith("/") else f"/{document_path}"
+    if normalized == "/":
+        return f"trd://htp|{transport_endpoint(transport_spec)}"
+    return f"trd://htp|{transport_endpoint(transport_spec)}::{normalized}"
+
+
+def transport_endpoint(transport_spec: str) -> str:
+    if transport_spec.startswith("http://"):
+        return transport_spec[len("http://") :]
+    if transport_spec.startswith("h2://"):
+        return transport_spec[len("h2://") :]
+    if transport_spec.startswith("h3wt://"):
+        return transport_spec[len("h3wt://") :]
     raise AssertionError(f"unexpected transport spec {transport_spec!r}")
 
 
@@ -373,9 +397,24 @@ def assert_cli_trd_target_modes(
     )
 
     doc_trd = transport_to_absolute_document_trd(transport_spec, "/docs/demo")
+    composite_doc_trd = transport_to_composite_document_trd(transport_spec, "/docs/demo")
     root_node = run_cli(cwd, env, "--transport", transport_spec, "node", "get", doc_trd)
     assert root_node["result"]["kind"] == "document"
     assert root_node["result"]["title"] == "demo"
+
+    composite_root_node = run_cli(
+        cwd, env, "--transport", transport_spec, "node", "get", composite_doc_trd
+    )
+    assert composite_root_node["result"]["kind"] == "document"
+    assert composite_root_node["result"]["title"] == "demo"
+
+    if transport_spec.startswith("http://") or transport_spec.startswith("h2://"):
+        htp_doc_trd = transport_to_htp_document_trd(transport_spec, "/docs/demo")
+        htp_root_node = run_cli(
+            cwd, env, "--transport", transport_spec, "node", "get", htp_doc_trd
+        )
+        assert htp_root_node["result"]["kind"] == "document"
+        assert htp_root_node["result"]["title"] == "demo"
 
     appended_under_root = run_cli(
         cwd,

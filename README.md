@@ -115,7 +115,7 @@ Client-side secure transports also include:
 - `https://rpc.example.com/rpc`
 - `https1://rpc.example.com/rpc`
 - `https2://rpc.example.com/rpc`
-- `trds://rpc.example.com//docs/demo`
+- `trds://rpc.example.com::/docs/demo`
 
 When no transport is specified, muxly prefers
 `${XDG_RUNTIME_DIR}/muxly.sock`, then `/run/user/$UID/muxly.sock`, and finally
@@ -187,15 +187,17 @@ python3 tests/integration/docker_transport_test.py
 TOM Resource Descriptors combine a transport, a document path, and an optional
 TOM selector into one string. The short version is:
 
-- `trd://builds/demo`
+- `trd://::/builds/demo`
 
-- `trd://webtransport|host.lan:4433/mux?sha256=...//doc/path#node/path`
+- `trd://wtp|host.lan:4433/mux?sha256=...::/doc/path#node/path`
 
-- `trd://http|127.0.0.1:8080/rpc//#welcome`
+- `trd://ht1|127.0.0.1:8080/rpc#welcome`
+
+- `trd://mux.example.com::/docs/demo`
 
 - `trd:#welcome/child`
 
-- document comes first, selector comes after `#`
+- `::/` introduces an explicit document path in absolute descriptors
 
 - `trd://...` is absolute
 
@@ -203,19 +205,19 @@ TOM selector into one string. The short version is:
 
 - `trd://#...` means selector within the root document on the runtime-default transport
 
-Supported public transport names are `unix`, `tcp`, `ssh`, `http`, and
-`webtransport`. `ux` and `wt` remain accepted as aliases.
+Supported public transport names are `unx`, `tcp`, `ssh`, `wtp`, `htp`,
+`ht2`, and `ht1`. `ht3` is reserved for future non-WebTransport HTTP/3.
 
 Defaults:
 
-- `trd://` resolves to the root document on the runtime-default transport
-- `trd://foo` resolves to document `/foo` on the runtime-default transport
+- `trd://` and `trd://.` resolve to the root document on the runtime-default transport
+- `trd://::/foo` resolves to document `/foo` on the runtime-default transport
 - `trd://#foo` resolves selector `foo` in document `/` on the runtime-default transport
-- `trd://unix|//foo` uses the runtime-default unix socket path and document `/foo`
-- `trd://|relative.sock//foo` is shorthand for `trd://unix|relative.sock//foo`
-- `trd://http|//` defaults the endpoint to `localhost`
-- `trd://webtransport|//` defaults the endpoint to `localhost`
-- `trd://tcp|//` defaults to `localhost:4488`
+- `trd://host...` is authority-first and prefers `wtp`, then `htp`
+- `trd://unx|::/foo` uses the runtime-default unix socket path and document `/foo`
+- `trd://ht1|` defaults the endpoint to `localhost`
+- `trd://wtp|` defaults the endpoint to `localhost`
+- `trd://tcp|` defaults to `localhost:4488`
 
 See [doc/trine.md](doc/trine.md) for the normative TRD doctrine and full
 grammar. Some CLI arguments already accept lazy selector-bearing TRDs; a few
@@ -228,25 +230,26 @@ describes a secure edge plus the same document/selector targeting shape used by
 TRDs, and it now prefers muxly-native WebTransport before falling back to the
 secure HTTP family:
 
-- `trds://wt|mux.example.com//docs/demo`
-- `trds://ht|127.0.0.1:9443/rpc//docs/demo#left`
-- `trds://h1|mux.example.com//`
-- `trds://h2|mux.example.com:9443/rpc//docs/demo`
-- `trds://mux.example.com//` defaults to `wt`, then `ht`
+- `trds://wtp|mux.example.com::/docs/demo`
+- `trds://htp|127.0.0.1:9443/rpc::/docs/demo#left`
+- `trds://ht1|mux.example.com`
+- `trds://ht2|mux.example.com:9443/rpc::/docs/demo`
+- `trds://mux.example.com` defaults to `wtp`, then `htp`
 
 Defaults:
 
 - missing port defaults to `443`
 - missing HTTPS path defaults to `/rpc`
 - missing document defaults to `/`
-- missing secure transport code defaults to `wt`, then `ht`
+- missing secure transport code defaults to `wtp`, then `htp`
 
 Secure transport codes:
 
-- `wt` means muxly-native WebTransport/QUIC
-- `ht` means the secure HTTP family, equivalent to lower-level `https://`
-- `h2` means strict secure HTTP/2
-- `h1` means strict secure HTTP/1.1
+- `wtp` means muxly-native WebTransport/QUIC
+- `htp` means the secure HTTP family, equivalent to lower-level `https://`
+- `ht2` means strict secure HTTP/2
+- `ht1` means strict secure HTTP/1.1
+- `ht3` is reserved for future generic secure HTTP/3
 
 Trust metadata:
 
@@ -259,8 +262,8 @@ Use the admin generators to render Caddy and systemd artifacts from a secure
 descriptor:
 
 ```sh
-./zig-out/bin/muxly admin generate-caddy --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
-./zig-out/bin/muxly admin generate-systemd --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-caddy --descriptor trds://127.0.0.1:9443/rpc::/docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-systemd --descriptor trds://127.0.0.1:9443/rpc::/docs/demo --mode user --output-dir /tmp/muxly-secure
 ```
 
 Connect natively through that HTTPS edge with the same descriptor family:
@@ -271,15 +274,15 @@ Connect natively through that HTTPS edge with the same descriptor family:
 
 Current boundaries:
 
-- plain `trds://...` now means: prefer `trds://wt|...`, then `trds://ht|...`
-- `trds://wt|...` maps to the existing `h3wt://` WebTransport-over-HTTP/3
+- plain `trds://...` now means: prefer `trds://wtp|...`, then `trds://htp|...`
+- `trds://wtp|...` maps to the existing `h3wt://` WebTransport-over-HTTP/3
   transport
 - generated secure deployments use Caddy as the HTTPS fixer in front of loopback
   `h2://...` muxlyd upstreams
 - direct `muxlyd --transport https://...` listeners are still deferred
-- `trds://h3|...` is reserved for future generic secure HTTP/3 support
+- `trds://ht3|...` is reserved for future generic secure HTTP/3 support
 - the current generators still provision the secure HTTP fallback endpoint for
-  plain `trds://...` and `trds://wt|...` deployments in this slice
+  plain `trds://...` and `trds://wtp|...` deployments in this slice
 
 There is also an opt-in user-mode smoke test for the generated artifacts:
 

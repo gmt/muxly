@@ -21,7 +21,7 @@ test "cli argument parser accepts secure transport overrides" {
     const args = [_][]const u8{
         "muxly",
         "--transport",
-        "trds://ht|mux.example.com:9443/rpc",
+        "trds://htp|mux.example.com:9443/rpc",
         "--tls-ca-file",
         "/tmp/root.crt",
         "--tls-pin-sha256",
@@ -32,7 +32,7 @@ test "cli argument parser accepts secure transport overrides" {
     };
 
     const parsed = try cli_args.parse(&args, "/tmp/default.sock");
-    try std.testing.expectEqualStrings("trds://ht|mux.example.com:9443/rpc", parsed.transport_spec);
+    try std.testing.expectEqualStrings("trds://htp|mux.example.com:9443/rpc", parsed.transport_spec);
     try std.testing.expectEqualStrings("/tmp/root.crt", parsed.tls_ca_file.?);
     try std.testing.expectEqualStrings("deadbeef", parsed.tls_pin_sha256.?);
     try std.testing.expectEqualStrings("rpc.example.com", parsed.tls_server_name.?);

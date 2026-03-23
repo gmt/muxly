@@ -7,7 +7,7 @@ test "document-or-node lazy mode maps document-only TRDs to document root" {
         std.testing.allocator,
         "http://127.0.0.1:8080/rpc",
         "/current/doc",
-        "trd://docs/demo",
+        "trd://::/docs/demo",
         .document_or_node_lazy,
         .{},
     );
@@ -29,7 +29,7 @@ test "explicit-node lazy mode rejects document-only TRDs" {
             std.testing.allocator,
             "http://127.0.0.1:8080/rpc",
             "/current/doc",
-            "trd://docs/demo",
+            "trd://::/docs/demo",
             .explicit_node_lazy,
             .{},
         ),
@@ -58,7 +58,7 @@ test "document-or-node lazy mode accepts secure trds descriptors" {
         std.testing.allocator,
         "http://127.0.0.1:8080/rpc",
         "/current/doc",
-        "trds://h2|mux.example.com:9443/rpc//docs/demo#left",
+        "trds://ht2|mux.example.com:9443/rpc::/docs/demo#left",
         .document_or_node_lazy,
         .{},
     );
@@ -74,7 +74,7 @@ test "secure target resolution applies TLS overrides" {
         std.testing.allocator,
         "http://127.0.0.1:8080/rpc",
         "/current/doc",
-        "trds://h2|mux.example.com:9443/rpc//docs/demo#left",
+        "trds://ht2|mux.example.com:9443/rpc::/docs/demo#left",
         .document_or_node_lazy,
         .{
             .tls_ca_file = "/tmp/root.crt",

@@ -385,15 +385,15 @@ fn printUsage() !void {
         \\transport notes:
         \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, https://, https1://, https2://, h3wt://, or connectable trds://...
         \\  bare/default sockets use ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
-        \\  document-or-node targets (trd://doc, trd://doc#node, trd:#node) are accepted by:
+        \\  document-or-node targets (trd://::/doc, trd://host::/doc#node, trd:#node) are accepted by:
         \\    node get, node append, session create-under, projection get [focused target], view set-root
         \\  explicit-node targets (#selector or numeric id) are required by:
         \\    node update/freeze/remove, leaf source-get, file capture/follow-tail, view elide/expand
-        \\  TRDS is a secure descriptor like trds://wt|host:8443/rpc//docs/demo#left
+        \\  TRDS is a secure descriptor like trds://wtp|host:8443/rpc::/docs/demo#left
         \\  plain trds://host... now prefers WebTransport, then falls back to secure HTTP
-        \\  trds://wt|... forces WebTransport; trds://ht|... uses the secure HTTP family
-        \\  trds://h2|... forces secure H2; trds://h1|... forces secure H1.1
-        \\  trds://h3|... is reserved for future generic secure HTTP/3 support
+        \\  trds://wtp|... forces WebTransport; trds://htp|... uses the secure HTTP family
+        \\  trds://ht2|... forces secure H2; trds://ht1|... forces secure H1.1
+        \\  trds://ht3|... is reserved for future generic secure HTTP/3 support
         \\  --tls-ca-file is local-machine state and is intentionally not embedded in trds://
         \\
     );

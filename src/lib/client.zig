@@ -9,6 +9,7 @@ const protocol = @import("../core/protocol.zig");
 const runtime_config = @import("../core/runtime_config.zig");
 const conversation_router = @import("conversation_router.zig");
 const transport = @import("transport.zig");
+const trd = @import("trd.zig");
 const trds = @import("trds.zig");
 
 pub const default_tty_rows: u16 = 24;
@@ -274,27 +275,27 @@ fn resolveTrdsParsedTransportSpecWithRuntimeLimits(
     resolved_runtime_limits: runtime_config.RuntimeLimits,
 ) ![]u8 {
     switch (parsed.transport_code) {
-        .h1, .h2 => {
+        .ht1, .ht2 => {
             var secure = try buildSecureHttpAddressFromTrds(allocator, parsed);
             defer secureAddressDeinit(allocator, &secure);
             try applyOverridesToSecureHttpAddress(allocator, &secure, overrides);
             return try buildSecureTransportSpecOwned(
                 allocator,
                 switch (parsed.transport_code) {
-                    .h1 => .https1,
-                    .h2 => .https2,
+                    .ht1 => .https1,
+                    .ht2 => .https2,
                     else => unreachable,
                 },
                 secure,
             );
         },
-        .ht => {
+        .htp => {
             var secure = try buildSecureHttpAddressFromTrds(allocator, parsed);
             defer secureAddressDeinit(allocator, &secure);
             try applyOverridesToSecureHttpAddress(allocator, &secure, overrides);
             return try buildSecureTransportSpecOwned(allocator, .https, secure);
         },
-        .wt => {
+        .wtp => {
             var h3wt = try buildH3wtAddressFromTrds(allocator, parsed);
             defer h3wtAddressDeinit(allocator, &h3wt);
             try applyOverridesToH3wtAddress(allocator, &h3wt, overrides);
@@ -319,8 +320,99 @@ fn resolveTrdsParsedTransportSpecWithRuntimeLimits(
                 return try buildSecureTransportSpecOwned(allocator, .https, fallback_secure);
             };
         },
-        .h3 => return error.UnsupportedResourceTransport,
+        .ht3 => return error.UnsupportedResourceTransport,
     }
+}
+
+pub fn resolveTrdParsedTransportSpec(
+    allocator: std.mem.Allocator,
+    parsed: trd.Parsed,
+    overrides: SecureTransportOverrides,
+) ![]u8 {
+    return try resolveTrdParsedTransportSpecWithRuntimeLimits(
+        allocator,
+        parsed,
+        overrides,
+        try runtime_config.loadClientLimits(allocator),
+    );
+}
+
+fn resolveTrdParsedTransportSpecWithRuntimeLimits(
+    allocator: std.mem.Allocator,
+    parsed: trd.Parsed,
+    overrides: SecureTransportOverrides,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
+) ![]u8 {
+    const code = try trd.classifyTransportCode(parsed.transport_code, parsed.endpoint);
+    const endpoint = parsed.endpoint orelse "";
+    const document_path = parsed.document_path orelse protocol.default_document_path;
+
+    switch (code) {
+        .none, .local_default, .unx, .tcp, .ssh, .wtp, .ht1, .ht2 => {
+            const concrete = try trd.transportSpecFromReference(allocator, parsed.transport_code, endpoint);
+            errdefer allocator.free(concrete);
+            const final_transport = try applySecureTransportOverrides(allocator, concrete, overrides);
+            allocator.free(concrete);
+            return final_transport;
+        },
+        .auto => {
+            const wtp_spec = try trd.transportSpecFromReference(allocator, "wtp", endpoint);
+            errdefer allocator.free(wtp_spec);
+            const final_wtp_spec = try applySecureTransportOverrides(allocator, wtp_spec, overrides);
+            allocator.free(wtp_spec);
+            return probeTransportSpec(
+                allocator,
+                final_wtp_spec,
+                document_path,
+                resolved_runtime_limits,
+            ) catch {
+                allocator.free(final_wtp_spec);
+                return try resolvePreferredDirectHttpTransportSpec(
+                    allocator,
+                    endpoint,
+                    document_path,
+                    overrides,
+                    resolved_runtime_limits,
+                );
+            };
+        },
+        .htp => {
+            return try resolvePreferredDirectHttpTransportSpec(
+                allocator,
+                endpoint,
+                document_path,
+                overrides,
+                resolved_runtime_limits,
+            );
+        },
+        .ht3 => return error.UnsupportedResourceTransport,
+    }
+}
+
+fn resolvePreferredDirectHttpTransportSpec(
+    allocator: std.mem.Allocator,
+    endpoint: []const u8,
+    document_path: []const u8,
+    overrides: SecureTransportOverrides,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
+) ![]u8 {
+    const h2_spec = try trd.transportSpecFromReference(allocator, "ht2", endpoint);
+    errdefer allocator.free(h2_spec);
+    const final_h2_spec = try applySecureTransportOverrides(allocator, h2_spec, overrides);
+    allocator.free(h2_spec);
+    return probeTransportSpec(
+        allocator,
+        final_h2_spec,
+        document_path,
+        resolved_runtime_limits,
+    ) catch {
+        allocator.free(final_h2_spec);
+        const h1_spec = try trd.transportSpecFromReference(allocator, "ht1", endpoint);
+        errdefer allocator.free(h1_spec);
+        const final_h1_spec = try applySecureTransportOverrides(allocator, h1_spec, overrides);
+        allocator.free(h1_spec);
+        return final_h1_spec;
+    };
 }
 
 fn cloneSecureHttpAddress(

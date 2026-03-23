@@ -65,7 +65,7 @@ test "async validation matrix over h3wt transport" {
     try runRpcValidationMatrix(std.testing.allocator, .h3wt, "h3wt://127.0.0.1:0/mux");
 }
 
-test "async validation resolves trds wt descriptors onto direct h3wt daemons" {
+test "async validation resolves trds wtp descriptors onto direct h3wt daemons" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/rpc");
@@ -907,7 +907,7 @@ fn trdsDescriptorFromActualSpec(allocator: std.mem.Allocator, actual_spec: []con
         .h3wt => |h3wt| blk: {
             var rendered = std.array_list.Managed(u8).init(allocator);
             defer rendered.deinit();
-            try rendered.appendSlice("trds://wt|");
+            try rendered.appendSlice("trds://wtp|");
             try rendered.writer().print("{s}:{d}{s}", .{ h3wt.host, h3wt.port, h3wt.path });
             if (h3wt.certificate_hash) |hash| {
                 try rendered.appendSlice("?sha256=");
