@@ -10,6 +10,7 @@ const cancel_sleep_ms: u32 = 400;
 const listen_timeout_ms: i32 = 20_000;
 const request_gap_ms: u64 = 20;
 const poll_interval_ms: u64 = 10;
+const stderr_drain_poll_ms: i32 = 100;
 
 pub const TransportKind = enum {
     tcp,
@@ -44,6 +45,15 @@ pub const TransportKind = enum {
     }
 };
 
+pub const Scenario = enum {
+    full,
+    different_document_overlap,
+    same_document_serialization,
+    root_vs_document_overlap,
+    cancel_and_follow_on,
+    disconnect_reconnect,
+};
+
 const FirstReady = union(enum) {
     first: []u8,
     second: []u8,
@@ -52,21 +62,67 @@ const FirstReady = union(enum) {
 const DaemonInstance = struct {
     allocator: std.mem.Allocator,
     child: std.process.Child,
-    stderr_file: std.fs.File,
+    stderr_drain: *DaemonStderrDrain,
     actual_spec: []u8,
     tmp_dir: std.testing.TmpDir,
     identity_path: []u8,
+    preserve_tmp: bool = false,
 
     fn deinit(self: *DaemonInstance) void {
-        self.stderr_file.close();
         _ = self.child.kill() catch |err| switch (err) {
             error.AlreadyTerminated => {},
             else => {},
         };
         _ = self.child.wait() catch {};
+        self.stderr_drain.deinit();
         self.allocator.free(self.actual_spec);
         self.allocator.free(self.identity_path);
-        self.tmp_dir.cleanup();
+        if (!self.preserve_tmp) self.tmp_dir.cleanup();
+    }
+
+    fn preserveArtifacts(self: *DaemonInstance) void {
+        self.preserve_tmp = true;
+    }
+};
+
+const DaemonStderrDrain = struct {
+    allocator: std.mem.Allocator,
+    stderr_file: std.fs.File,
+    log_file: std.fs.File,
+    log_path: []u8,
+    shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    thread: ?std.Thread = null,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        dir: std.fs.Dir,
+        stderr_file: std.fs.File,
+    ) !*DaemonStderrDrain {
+        const log_file = try dir.createFile("daemon-stderr.log", .{ .truncate = true, .read = true });
+        errdefer log_file.close();
+        const log_path = try dir.realpathAlloc(allocator, "daemon-stderr.log");
+        errdefer allocator.free(log_path);
+
+        const drain = try allocator.create(DaemonStderrDrain);
+        errdefer allocator.destroy(drain);
+        drain.* = .{
+            .allocator = allocator,
+            .stderr_file = stderr_file,
+            .log_file = log_file,
+            .log_path = log_path,
+        };
+        errdefer drain.stderr_file.close();
+        errdefer drain.log_file.close();
+
+        drain.thread = try std.Thread.spawn(.{}, drainDaemonStderr, .{drain});
+        return drain;
+    }
+
+    fn deinit(self: *DaemonStderrDrain) void {
+        self.shutdown.store(true, .release);
+        if (self.thread) |thread| thread.join();
+        self.allocator.free(self.log_path);
+        self.allocator.destroy(self);
     }
 };
 
@@ -74,7 +130,22 @@ pub fn runTransportValidation(
     allocator: std.mem.Allocator,
     kind: TransportKind,
 ) !void {
+    return runTransportScenario(allocator, kind, .full);
+}
+
+pub fn runTransportScenario(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    scenario: Scenario,
+) !void {
     var daemon = try startDaemon(allocator, kind.requestedTransportSpec());
+    errdefer {
+        daemon.preserveArtifacts();
+        std.debug.print(
+            "transport validation failure preserved daemon stderr at {s}\n",
+            .{daemon.stderr_drain.log_path},
+        );
+    }
     defer daemon.deinit();
 
     var admin = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
@@ -83,11 +154,20 @@ pub fn runTransportValidation(
     try createDocument(allocator, &admin, "/a");
     try createDocument(allocator, &admin, "/b");
 
-    try runDifferentDocumentOverlap(allocator, kind, daemon.actual_spec);
-    try runSameDocumentSerialization(allocator, kind, daemon.actual_spec);
-    try runRootVsDocumentOverlap(allocator, kind, daemon.actual_spec);
-    try runCancelAndFollowOn(allocator, daemon.actual_spec);
-    try runDisconnectReconnect(allocator, daemon.actual_spec);
+    switch (scenario) {
+        .full => {
+            try runDifferentDocumentOverlap(allocator, kind, daemon.actual_spec);
+            try runSameDocumentSerialization(allocator, kind, daemon.actual_spec);
+            try runRootVsDocumentOverlap(allocator, kind, daemon.actual_spec);
+            try runCancelAndFollowOn(allocator, daemon.actual_spec);
+            try runDisconnectReconnect(allocator, daemon.actual_spec);
+        },
+        .different_document_overlap => try runDifferentDocumentOverlap(allocator, kind, daemon.actual_spec),
+        .same_document_serialization => try runSameDocumentSerialization(allocator, kind, daemon.actual_spec),
+        .root_vs_document_overlap => try runRootVsDocumentOverlap(allocator, kind, daemon.actual_spec),
+        .cancel_and_follow_on => try runCancelAndFollowOn(allocator, daemon.actual_spec),
+        .disconnect_reconnect => try runDisconnectReconnect(allocator, daemon.actual_spec),
+    }
 }
 
 fn runDifferentDocumentOverlap(
@@ -353,16 +433,50 @@ fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !D
 
     const actual_spec = try readListeningSpec(allocator, stderr_file, listen_timeout_ms);
     errdefer allocator.free(actual_spec);
-    errdefer stderr_file.close();
+    const stderr_drain = try DaemonStderrDrain.init(allocator, tmp_dir.dir, stderr_file);
+    errdefer stderr_drain.deinit();
 
     return .{
         .allocator = allocator,
         .child = child,
-        .stderr_file = stderr_file,
+        .stderr_drain = stderr_drain,
         .actual_spec = actual_spec,
         .tmp_dir = tmp_dir,
         .identity_path = identity_path,
     };
+}
+
+fn drainDaemonStderr(drain: *DaemonStderrDrain) void {
+    defer drain.stderr_file.close();
+    defer drain.log_file.close();
+
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        if (drain.shutdown.load(.acquire)) return;
+
+        var pollfds = [_]std.posix.pollfd{
+            .{
+                .fd = drain.stderr_file.handle,
+                .events = std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR,
+                .revents = 0,
+            },
+        };
+        const ready = std.posix.poll(&pollfds, stderr_drain_poll_ms) catch return;
+        if (ready == 0) continue;
+
+        if ((pollfds[0].revents & std.posix.POLL.IN) != 0) {
+            const bytes_read = drain.stderr_file.read(&buffer) catch return;
+            if (bytes_read == 0) return;
+            drain.log_file.writeAll(buffer[0..bytes_read]) catch return;
+            continue;
+        }
+
+        if ((pollfds[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL)) != 0) {
+            const bytes_read = drain.stderr_file.read(&buffer) catch return;
+            if (bytes_read == 0) return;
+            drain.log_file.writeAll(buffer[0..bytes_read]) catch return;
+        }
+    }
 }
 
 fn readListeningSpec(

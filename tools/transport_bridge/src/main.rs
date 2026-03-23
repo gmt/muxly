@@ -106,6 +106,7 @@ async fn main() {
 
 async fn real_main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    install_parent_death_signal()?;
     match parse_args()? {
         Command::HttpClient(args) => run_http_client(args).await,
         Command::HttpServer(args) => run_http_server(args).await,
@@ -116,6 +117,29 @@ async fn real_main() -> Result<()> {
         Command::H3wtSessionClient(args) => run_h3wt_session_client(args).await,
         Command::H3wtServer(args) => run_h3wt_server(args).await,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn install_parent_death_signal() -> Result<()> {
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("unable to install bridge parent-death signal");
+        }
+
+        // If the parent already died before PR_SET_PDEATHSIG took effect,
+        // Linux will not deliver a retroactive signal.
+        if libc::getppid() == 1 {
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_parent_death_signal() -> Result<()> {
+    Ok(())
 }
 
 fn parse_args() -> Result<Command> {
@@ -646,10 +670,15 @@ async fn handle_h2_connection(
         .await
         {
             Ok(active) => active,
-            Err(_) => continue,
+            Err(err) => {
+                trace(&format!("h2 server request setup failed: {err:#}"));
+                continue;
+            }
         };
         tokio::spawn(async move {
-            let _ = finish_server_h2_stream(active, max_message_bytes).await;
+            if let Err(err) = finish_server_h2_stream(active, max_message_bytes).await {
+                trace(&format!("h2 server response forwarding failed: {err:#}"));
+            }
         });
     }
 
@@ -678,16 +707,17 @@ async fn start_h2_stream(
     lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>>>,
 ) -> Result<ActiveServerH2Stream> {
     if request.uri().path() != expected_path {
-        let response = http::Response::builder()
-            .status(404)
-            .body(())
-            .context("unable to build H2 404 response")?;
-        let mut send = respond.send_response(response, false)?;
-        send.send_data(Bytes::new(), true)?;
+        send_h2_error_response(&mut respond, 404)?;
         bail!("unexpected H2 path: {}", request.uri().path());
     }
 
-    let request = read_h2_request_body(request, max_message_bytes).await?;
+    let request = match read_h2_request_body(request, max_message_bytes).await {
+        Ok(request) => request,
+        Err(err) => {
+            let _ = send_h2_error_response(&mut respond, 400);
+            return Err(err);
+        }
+    };
     let lane_key = classify_upstream_lane_key(&request);
     let lane_mutex = {
         let mut lane_map = lanes.lock().await;
@@ -704,13 +734,29 @@ async fn start_h2_stream(
         request.len()
     ));
 
-    let upstream = UnixStream::connect(&upstream_unix)
+    let upstream = match UnixStream::connect(&upstream_unix)
         .await
-        .with_context(|| format!("unable to connect to upstream {}", upstream_unix.display()))?;
+        .with_context(|| format!("unable to connect to upstream {}", upstream_unix.display()))
+    {
+        Ok(upstream) => upstream,
+        Err(err) => {
+            let _ = send_h2_error_response(&mut respond, 502);
+            return Err(err);
+        }
+    };
     let mut upstream = BufStream::new(upstream);
-    upstream.write_all(&request).await?;
-    upstream.write_all(b"\n").await?;
-    upstream.flush().await?;
+    if let Err(err) = upstream.write_all(&request).await {
+        let _ = send_h2_error_response(&mut respond, 502);
+        return Err(err.into());
+    }
+    if let Err(err) = upstream.write_all(b"\n").await {
+        let _ = send_h2_error_response(&mut respond, 502);
+        return Err(err.into());
+    }
+    if let Err(err) = upstream.flush().await {
+        let _ = send_h2_error_response(&mut respond, 502);
+        return Err(err.into());
+    }
 
     let response = http::Response::builder()
         .status(200)
@@ -746,6 +792,16 @@ async fn finish_server_h2_stream(
     }
 
     active.send.send_data(Bytes::new(), true)?;
+    Ok(())
+}
+
+fn send_h2_error_response(respond: &mut server::SendResponse<Bytes>, status: u16) -> Result<()> {
+    let response = http::Response::builder()
+        .status(status)
+        .body(())
+        .with_context(|| format!("unable to build H2 {status} response"))?;
+    let mut send = respond.send_response(response, false)?;
+    send.send_data(Bytes::new(), true)?;
     Ok(())
 }
 
