@@ -103,10 +103,10 @@ test "h2 transport parses, validates local-only defaults, and round-trips" {
     try std.testing.expectEqualStrings("unsafe+h2://10.0.0.5:9000/api", serialized.items);
 }
 
-test "h3wt transport parses sha256 pins and round-trips" {
+test "h3wt transport parses trust query parameters and round-trips" {
     var address = try muxly.transport.Address.parse(
         std.testing.allocator,
-        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef",
+        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef&sni=rpc.example.com&ca=/tmp/root.crt",
     );
     defer address.deinit(std.testing.allocator);
 
@@ -116,6 +116,8 @@ test "h3wt transport parses sha256 pins and round-trips" {
             try std.testing.expectEqual(@as(u16, 4433), h3wt.port);
             try std.testing.expectEqualStrings("/mux", h3wt.path);
             try std.testing.expectEqualStrings("deadbeef", h3wt.certificate_hash.?);
+            try std.testing.expectEqualStrings("rpc.example.com", h3wt.server_name.?);
+            try std.testing.expectEqualStrings("/tmp/root.crt", h3wt.ca_file.?);
         },
         else => try std.testing.expect(false),
     }
@@ -124,7 +126,7 @@ test "h3wt transport parses sha256 pins and round-trips" {
     defer serialized.deinit();
     try address.write(serialized.writer());
     try std.testing.expectEqualStrings(
-        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef",
+        "h3wt://127.0.0.1:4433/mux?sha256=deadbeef&sni=rpc.example.com&ca=/tmp/root.crt",
         serialized.items,
     );
 }

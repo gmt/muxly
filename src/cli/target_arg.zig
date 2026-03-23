@@ -23,11 +23,7 @@ pub const Arg = struct {
     }
 };
 
-pub const SecureTransportOverrides = struct {
-    tls_ca_file: ?[]const u8 = null,
-    tls_pin_sha256: ?[]const u8 = null,
-    tls_server_name: ?[]const u8 = null,
-};
+pub const SecureTransportOverrides = muxly.client.SecureTransportOverrides;
 
 pub fn resolve(
     allocator: std.mem.Allocator,
@@ -86,22 +82,22 @@ fn resolveLazyTrds(
     allow_document_only: bool,
     overrides: SecureTransportOverrides,
 ) !Arg {
-    var resolved = try muxly.trds.resolve(allocator, descriptor_text);
-    defer resolved.deinit(allocator);
+    var parsed = try muxly.trds.parse(allocator, descriptor_text);
+    defer parsed.deinit(allocator);
 
-    if (resolved.selector == null and !allow_document_only) {
+    if (parsed.selector == null and !allow_document_only) {
         return error.ExplicitNodeTargetRequired;
     }
 
-    const node_target = if (resolved.selector) |selector|
+    const node_target = if (parsed.selector) |selector|
         muxly.api.NodeRequestTarget{ .selector = try allocator.dupe(u8, selector) }
     else
         muxly.api.NodeRequestTarget{ .selector = try allocator.dupe(u8, "/") };
     errdefer if (node_target.selector) |selector| allocator.free(selector);
 
     return .{
-        .transport_spec = try applySecureTransportOverrides(allocator, resolved.transport_spec, overrides),
-        .document_path = try allocator.dupe(u8, resolved.document_path),
+        .transport_spec = try muxly.client.resolveTrdsParsedTransportSpec(allocator, parsed, overrides),
+        .document_path = try allocator.dupe(u8, parsed.document_path),
         .node_target = node_target,
     };
 }
@@ -111,19 +107,25 @@ fn resolveConcreteTrds(
     descriptor_text: []const u8,
     overrides: SecureTransportOverrides,
 ) !Arg {
-    var resolved = try muxly.trds.resolve(allocator, descriptor_text);
-    defer resolved.deinit(allocator);
+    var parsed = try muxly.trds.parse(allocator, descriptor_text);
+    defer parsed.deinit(allocator);
+    const resolved_transport_spec = try muxly.client.resolveTrdsParsedTransportSpec(
+        allocator,
+        parsed,
+        overrides,
+    );
+    defer allocator.free(resolved_transport_spec);
 
     var target = try muxly.trd.resolveNodeTargetFromResolved(
         allocator,
-        resolved.transport_spec,
-        resolved.document_path,
-        resolved.selector,
+        resolved_transport_spec,
+        parsed.document_path,
+        parsed.selector,
     );
     defer target.deinit(allocator);
 
     return .{
-        .transport_spec = try applySecureTransportOverrides(allocator, target.transport_spec, overrides),
+        .transport_spec = try allocator.dupe(u8, target.transport_spec),
         .document_path = try allocator.dupe(u8, target.document_path),
         .node_target = .{ .node_id = target.node_id },
     };
@@ -199,6 +201,7 @@ fn applySecureTransportOverrides(
         .https => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
         .https1 => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
         .https2 => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
+        .h3wt => |*h3wt| try applyOverridesToH3wtAddress(allocator, h3wt, overrides),
         else => return try allocator.dupe(u8, transport_spec),
     }
 
@@ -224,5 +227,24 @@ fn applyOverridesToSecureHttpAddress(
     if (overrides.tls_server_name) |value| {
         if (https.server_name) |existing| allocator.free(existing);
         https.server_name = try allocator.dupe(u8, value);
+    }
+}
+
+fn applyOverridesToH3wtAddress(
+    allocator: std.mem.Allocator,
+    h3wt: *muxly.transport.Address.H3wtAddress,
+    overrides: SecureTransportOverrides,
+) !void {
+    if (overrides.tls_ca_file) |value| {
+        if (h3wt.ca_file) |existing| allocator.free(existing);
+        h3wt.ca_file = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_pin_sha256) |value| {
+        if (h3wt.certificate_hash) |existing| allocator.free(existing);
+        h3wt.certificate_hash = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_server_name) |value| {
+        if (h3wt.server_name) |existing| allocator.free(existing);
+        h3wt.server_name = try allocator.dupe(u8, value);
     }
 }

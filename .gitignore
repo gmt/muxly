@@ -49,3 +49,7 @@ zig-out/
 
 # Rust bridge build outputs
 tools/transport_bridge/target/
+
+# Python bytecode caches
+__pycache__/
+*.pyc

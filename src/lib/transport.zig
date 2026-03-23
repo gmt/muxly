@@ -131,6 +131,8 @@ pub const Address = struct {
         port: u16,
         path: []u8,
         certificate_hash: ?[]u8,
+        server_name: ?[]u8,
+        ca_file: ?[]u8,
 
         pub fn resolve(self: H3wtAddress) !std.net.Address {
             return try std.net.Address.resolveIp(self.host, self.port);
@@ -264,6 +266,8 @@ pub const Address = struct {
                 allocator.free(h3wt.host);
                 allocator.free(h3wt.path);
                 if (h3wt.certificate_hash) |value| allocator.free(value);
+                if (h3wt.server_name) |value| allocator.free(value);
+                if (h3wt.ca_file) |value| allocator.free(value);
             },
         }
     }
@@ -291,7 +295,7 @@ pub const Address = struct {
             .https => |https| try writeSecureHttpSpec(writer, "https", https),
             .https1 => |https1| try writeSecureHttpSpec(writer, "https1", https1),
             .https2 => |https2| try writeSecureHttpSpec(writer, "https2", https2),
-            .h3wt => |h3wt| try writeHttpLikeSpec(writer, "h3wt", h3wt.host, h3wt.port, h3wt.path, h3wt.certificate_hash),
+            .h3wt => |h3wt| try writeSecureH3wtSpec(writer, h3wt),
         }
     }
 
@@ -607,10 +611,7 @@ pub const ProcessSession = struct {
         defer allocator.free(max_message_bytes_text);
         try argv.append("--max-message-bytes");
         try argv.append(max_message_bytes_text);
-        if (h3wt.certificate_hash) |hash| {
-            try argv.append("--sha256");
-            try argv.append(hash);
-        }
+        try appendH3wtClientFlags(&argv, h3wt);
         return try spawn(allocator, argv.items);
     }
 
@@ -641,10 +642,7 @@ pub const ProcessSession = struct {
         defer allocator.free(max_message_bytes_text);
         try argv.append("--max-message-bytes");
         try argv.append(max_message_bytes_text);
-        if (h3wt.certificate_hash) |hash| {
-            try argv.append("--sha256");
-            try argv.append(hash);
-        }
+        try appendH3wtClientFlags(&argv, h3wt);
         return try spawn(allocator, argv.items);
     }
 
@@ -888,15 +886,19 @@ fn parseHttps2(allocator: std.mem.Allocator, spec: []const u8) !Address.SecureHt
 }
 
 fn parseH3wt(allocator: std.mem.Allocator, spec: []const u8) !Address.H3wtAddress {
-    const parsed = try parseHttpLike(allocator, spec, 443, h3wt_default_path, true);
+    const parsed = try parseSecureHttpLike(allocator, spec, 443, h3wt_default_path);
     errdefer allocator.free(parsed.host);
     errdefer allocator.free(parsed.path);
     errdefer if (parsed.sha256) |value| allocator.free(value);
+    errdefer if (parsed.server_name) |value| allocator.free(value);
+    errdefer if (parsed.ca_file) |value| allocator.free(value);
     return .{
         .host = parsed.host,
         .port = parsed.port,
         .path = parsed.path,
         .certificate_hash = parsed.sha256,
+        .server_name = parsed.server_name,
+        .ca_file = parsed.ca_file,
     };
 }
 
@@ -1132,6 +1134,38 @@ fn writeSecureHttpSpec(
     }
 }
 
+fn writeSecureH3wtSpec(
+    writer: anytype,
+    h3wt: Address.H3wtAddress,
+) !void {
+    try writer.writeAll("h3wt://");
+    if (std.mem.indexOfScalar(u8, h3wt.host, ':') != null) {
+        try writer.print("[{s}]:{d}", .{ h3wt.host, h3wt.port });
+    } else {
+        try writer.print("{s}:{d}", .{ h3wt.host, h3wt.port });
+    }
+    try writer.writeAll(h3wt.path);
+
+    var wrote_query = false;
+    if (h3wt.certificate_hash) |hash| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try writer.writeAll("sha256=");
+        try writer.writeAll(hash);
+    }
+    if (h3wt.server_name) |server_name| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try writer.writeAll("sni=");
+        try writer.writeAll(server_name);
+    }
+    if (h3wt.ca_file) |ca_file| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        try writer.writeAll("ca=");
+        try writer.writeAll(ca_file);
+    }
+}
+
 fn appendSecureHttpClientFlags(
     allocator: std.mem.Allocator,
     argv: *std.array_list.Managed([]const u8),
@@ -1148,6 +1182,24 @@ fn appendSecureHttpClientFlags(
         try argv.append(hash);
     }
     if (https.ca_file) |ca_file| {
+        try argv.append("--tls-ca-file");
+        try argv.append(ca_file);
+    }
+}
+
+fn appendH3wtClientFlags(
+    argv: *std.array_list.Managed([]const u8),
+    h3wt: Address.H3wtAddress,
+) !void {
+    if (h3wt.certificate_hash) |hash| {
+        try argv.append("--sha256");
+        try argv.append(hash);
+    }
+    if (h3wt.server_name) |server_name| {
+        try argv.append("--tls-server-name");
+        try argv.append(server_name);
+    }
+    if (h3wt.ca_file) |ca_file| {
         try argv.append("--tls-ca-file");
         try argv.append(ca_file);
     }

@@ -119,20 +119,24 @@ but the docs should say so plainly instead of hand-waving it.
 
 - `trds://...` is the secure deployment/share/client descriptor family
 - it reuses the same document-first grammar after the HTTPS authority/path:
-  - `trds://ht|host:port/path//doc#selector`
+  - `trds://wt|host:port/path//doc#selector`
 - it is absolute-only in this slice
-- omitted secure code defaults to `ht`
+- omitted secure code defaults to `wt`, then `ht`
 - secure codes mean:
-  - `ht`: secure TCP, prefer HTTP/2, allow HTTP/1.1 fallback
-  - `ht1`: secure TCP, strict HTTP/1.1
-  - `ht2`: secure TCP, strict HTTP/2
+  - `wt`: muxly-native WebTransport/QUIC
+  - `ht`: secure HTTP family
+  - `h2`: strict secure HTTP/2
+  - `h1`: strict secure HTTP/1.1
 - its current jobs are:
   - feed config generation for Caddy-fronted secure deployments
-  - resolve native secure clients onto lower-level secure TCP transport specs
+  - resolve native secure clients onto a `wt`-then-`ht` preference hierarchy
 - Caddy remains the HTTPS fixer in front of loopback muxly upstreams in this
   slice
-- direct secure `muxlyd` listeners and UDP/QUIC secure descriptors are still
-  deferred
+- `trds://wt|...` currently reuses the existing `h3wt://` WebTransport-over-HTTP/3
+  transport
+- `trds://h3|...` is reserved for future generic secure HTTP/3 support
+- the current generated deployment shape still provisions the secure HTTP
+  fallback endpoint for plain `trds://...` and `trds://wt|...`
 - shareable descriptors may carry `sha256=` pin and `sni=` metadata, but local
   CA bundle paths stay outside the descriptor
 

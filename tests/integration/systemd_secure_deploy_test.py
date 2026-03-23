@@ -15,7 +15,7 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TMP_ROOT = pathlib.Path("/tmp/muxlyd-service-sandbox")
-DESCRIPTOR = "trds://ht|127.0.0.1:9443/rpc"
+DESCRIPTOR = "trds://127.0.0.1:9443/rpc"
 UPSTREAM_PORT = "29443"
 
 

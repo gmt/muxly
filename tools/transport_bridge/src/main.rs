@@ -6,10 +6,12 @@ use http::Request;
 use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer, ServerName};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{
@@ -20,9 +22,7 @@ use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::time::{timeout, Duration};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
-use wtransport::tls::Sha256Digest;
 use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig, VarInt};
-use sha2::{Digest, Sha256};
 
 const DEFAULT_MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
@@ -66,6 +66,8 @@ struct H3wtClientArgs {
     port: u16,
     path: String,
     sha256: Option<String>,
+    tls_server_name: Option<String>,
+    tls_ca_file: Option<String>,
     max_message_bytes: usize,
 }
 
@@ -211,6 +213,8 @@ where
                 .context("invalid --port")?,
             path: required(&values, "path")?,
             sha256: values.get("sha256").cloned(),
+            tls_server_name: values.get("tls-server-name").cloned(),
+            tls_ca_file: values.get("tls-ca-file").cloned(),
             max_message_bytes: optional_usize(&values, "max-message-bytes")?
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
@@ -221,6 +225,8 @@ where
                 .context("invalid --port")?,
             path: required(&values, "path")?,
             sha256: values.get("sha256").cloned(),
+            tls_server_name: values.get("tls-server-name").cloned(),
+            tls_ca_file: values.get("tls-ca-file").cloned(),
             max_message_bytes: optional_usize(&values, "max-message-bytes")?
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
         })),
@@ -259,7 +265,10 @@ struct EstablishedTls {
     stream: TlsStream<TcpStream>,
 }
 
-async fn connect_tls_client(args: &HttpClientArgs, alpn_protocols: &[&[u8]]) -> Result<EstablishedTls> {
+async fn connect_tls_client(
+    args: &HttpClientArgs,
+    alpn_protocols: &[&[u8]],
+) -> Result<EstablishedTls> {
     let mut roots = RootCertStore::empty();
 
     let native = rustls_native_certs::load_native_certs();
@@ -294,8 +303,8 @@ async fn connect_tls_client(args: &HttpClientArgs, alpn_protocols: &[&[u8]]) -> 
         .as_deref()
         .unwrap_or(args.host.as_str())
         .to_string();
-    let server_name = ServerName::try_from(server_name_text)
-        .map_err(|_| anyhow!("invalid TLS server name"))?;
+    let server_name =
+        ServerName::try_from(server_name_text).map_err(|_| anyhow!("invalid TLS server name"))?;
 
     let tcp = TcpStream::connect((args.host.as_str(), args.port))
         .await
@@ -722,17 +731,18 @@ async fn finish_h2_request(response: client::ResponseFuture) -> Result<RecvStrea
 }
 
 async fn run_h3wt_client(args: H3wtClientArgs) -> Result<()> {
-    let client_config = build_h3wt_client_config(&args.host, args.sha256.as_deref()).await?;
+    let (client_config, url_host) = build_h3wt_client_config(&args).await?;
     let endpoint = Endpoint::client(client_config)?;
     let url = format!(
         "https://{}{}{}",
-        authority(&args.host, args.port),
+        authority(&url_host, args.port),
         args.path,
         ""
     );
     let connection = timeout(Duration::from_secs(5), endpoint.connect(&url))
         .await
         .context("timed out while connecting WebTransport session")??;
+    verify_h3wt_pin(&connection, args.sha256.as_deref())?;
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
 
@@ -772,17 +782,18 @@ async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    let client_config = build_h3wt_client_config(&args.host, args.sha256.as_deref()).await?;
+    let (client_config, url_host) = build_h3wt_client_config(&args).await?;
     let endpoint = Endpoint::client(client_config)?;
     let url = format!(
         "https://{}{}{}",
-        authority(&args.host, args.port),
+        authority(&url_host, args.port),
         args.path,
         ""
     );
     let connection = timeout(Duration::from_secs(5), endpoint.connect(&url))
         .await
         .context("timed out while connecting WebTransport session")??;
+    verify_h3wt_pin(&connection, args.sha256.as_deref())?;
     let mut stdin = BufReader::new(tokio::io::stdin());
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let mut tasks = Vec::new();
@@ -934,15 +945,112 @@ async fn handle_h3wt_bi_stream(
     Ok(())
 }
 
-async fn build_h3wt_client_config(_host: &str, sha256: Option<&str>) -> Result<ClientConfig> {
-    let builder = ClientConfig::builder().with_bind_default();
+#[derive(Debug)]
+struct H3wtOverrideResolver {
+    connect_host: String,
+}
 
-    if let Some(hash_text) = sha256 {
-        let digest: Sha256Digest = hash_text.parse().context("invalid --sha256 hash")?;
-        return Ok(builder.with_server_certificate_hashes([digest]).build());
+impl wtransport::config::DnsResolver for H3wtOverrideResolver {
+    fn resolve(&self, host: &str) -> Pin<Box<dyn wtransport::config::DnsLookupFuture>> {
+        let connect_host = self.connect_host.clone();
+        let port = extract_lookup_port(host);
+
+        Box::pin(async move {
+            let Some(port) = port else {
+                return Ok(None);
+            };
+            Ok(tokio::net::lookup_host((connect_host.as_str(), port))
+                .await?
+                .next())
+        })
+    }
+}
+
+fn extract_lookup_port(host: &str) -> Option<u16> {
+    if let Some(stripped) = host.strip_prefix('[') {
+        let close = stripped.find(']')?;
+        let remainder = stripped.get(close + 1..)?;
+        let port_text = remainder.strip_prefix(':')?;
+        return port_text.parse().ok();
     }
 
-    Ok(builder.with_native_certs().build())
+    let (_, port_text) = host.rsplit_once(':')?;
+    port_text.parse().ok()
+}
+
+async fn build_h3wt_client_config(args: &H3wtClientArgs) -> Result<(ClientConfig, String)> {
+    let builder = ClientConfig::builder().with_bind_default();
+    let mut client_config = if args.sha256.is_some() && args.tls_ca_file.is_none() {
+        builder
+            .with_server_certificate_hashes([args
+                .sha256
+                .as_deref()
+                .unwrap()
+                .parse()
+                .context("invalid --sha256 hash")?])
+            .build()
+    } else {
+        let mut roots = RootCertStore::empty();
+        let native = rustls_native_certs::load_native_certs();
+        for cert in native.certs {
+            roots
+                .add(cert)
+                .context("unable to load native trust anchor")?;
+        }
+        for err in native.errors {
+            trace(&format!("native cert load warning: {err}"));
+        }
+
+        if let Some(path) = &args.tls_ca_file {
+            for cert in CertificateDer::pem_file_iter(path)
+                .with_context(|| format!("unable to open CA file {path}"))?
+            {
+                let cert = cert.with_context(|| format!("unable to parse CA file {path}"))?;
+                roots
+                    .add(cert)
+                    .with_context(|| format!("unable to add CA certificate from {path}"))?;
+            }
+        }
+
+        let tls_config = RustlsClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        builder.with_custom_tls(tls_config).build()
+    };
+
+    let url_host = args
+        .tls_server_name
+        .as_deref()
+        .unwrap_or(args.host.as_str())
+        .to_string();
+    if args.tls_server_name.is_some() && args.tls_server_name.as_deref() != Some(args.host.as_str())
+    {
+        client_config.set_dns_resolver(H3wtOverrideResolver {
+            connect_host: args.host.clone(),
+        });
+    }
+
+    Ok((client_config, url_host))
+}
+
+fn verify_h3wt_pin(connection: &wtransport::Connection, expected_pin: Option<&str>) -> Result<()> {
+    let expected_pin = match expected_pin {
+        Some(value) => value,
+        None => return Ok(()),
+    };
+
+    let identity = connection
+        .peer_identity()
+        .ok_or_else(|| anyhow!("WebTransport peer certificate chain unavailable"))?;
+    let end_entity = identity
+        .as_slice()
+        .first()
+        .ok_or_else(|| anyhow!("WebTransport peer certificate chain empty"))?;
+    let actual_pin = end_entity.hash().to_string();
+    if actual_pin != expected_pin {
+        bail!("WebTransport certificate pin mismatch");
+    }
+    Ok(())
 }
 
 async fn load_or_create_identity(listen_host: &str) -> Result<Identity> {
@@ -1483,6 +1591,41 @@ mod tests {
                 assert_eq!(args.tls_sha256.as_deref(), Some("deadbeef"));
             }
             other => panic!("expected H2Client, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_h3wt_client_accepts_trust_flags() {
+        let command = parse_args_from(
+            vec![
+                "h3wt-client".to_string(),
+                "--host".to_string(),
+                "mux.example.com".to_string(),
+                "--port".to_string(),
+                "9443".to_string(),
+                "--path".to_string(),
+                "/mux".to_string(),
+                "--sha256".to_string(),
+                "deadbeef".to_string(),
+                "--tls-ca-file".to_string(),
+                "/tmp/root.crt".to_string(),
+                "--tls-server-name".to_string(),
+                "rpc.example.com".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("bridge args should parse");
+
+        match command {
+            Command::H3wtClient(args) => {
+                assert_eq!(args.host, "mux.example.com");
+                assert_eq!(args.port, 9443);
+                assert_eq!(args.path, "/mux");
+                assert_eq!(args.sha256.as_deref(), Some("deadbeef"));
+                assert_eq!(args.tls_ca_file.as_deref(), Some("/tmp/root.crt"));
+                assert_eq!(args.tls_server_name.as_deref(), Some("rpc.example.com"));
+            }
+            other => panic!("expected H3wtClient, got {other:?}"),
         }
     }
 }

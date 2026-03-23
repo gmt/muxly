@@ -65,6 +65,24 @@ test "async validation matrix over h3wt transport" {
     try runRpcValidationMatrix(std.testing.allocator, .h3wt, "h3wt://127.0.0.1:0/mux");
 }
 
+test "async validation resolves trds wt descriptors onto direct h3wt daemons" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var daemon = try startDaemon(std.testing.allocator, "h3wt://127.0.0.1:0/rpc");
+    defer daemon.deinit();
+
+    const descriptor = try trdsDescriptorFromActualSpec(std.testing.allocator, daemon.actual_spec);
+    defer std.testing.allocator.free(descriptor);
+
+    var client = try muxly.client.Client.init(std.testing.allocator, descriptor);
+    defer client.deinit();
+
+    const response = try client.request("ping", "{}");
+    defer std.testing.allocator.free(response);
+
+    try expectPong(std.testing.allocator, response);
+}
+
 test "async validation keeps h3wt tty streams isolated and reattachable" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     try ensureTmuxAvailable(std.testing.allocator);
@@ -879,4 +897,24 @@ fn normalizedDaemonTransportSpec(allocator: std.mem.Allocator, requested_transpo
         "tcp://127.0.0.1:{d}",
         .{probe.listen_address.getPort()},
     );
+}
+
+fn trdsDescriptorFromActualSpec(allocator: std.mem.Allocator, actual_spec: []const u8) ![]u8 {
+    var address = try muxly.transport.Address.parse(allocator, actual_spec);
+    defer address.deinit(allocator);
+
+    return switch (address.target) {
+        .h3wt => |h3wt| blk: {
+            var rendered = std.array_list.Managed(u8).init(allocator);
+            defer rendered.deinit();
+            try rendered.appendSlice("trds://wt|");
+            try rendered.writer().print("{s}:{d}{s}", .{ h3wt.host, h3wt.port, h3wt.path });
+            if (h3wt.certificate_hash) |hash| {
+                try rendered.appendSlice("?sha256=");
+                try rendered.appendSlice(hash);
+            }
+            break :blk try rendered.toOwnedSlice();
+        },
+        else => error.InvalidTransportAddress,
+    };
 }

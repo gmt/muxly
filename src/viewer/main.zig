@@ -115,11 +115,22 @@ pub fn main() !void {
         },
         else => return err,
     };
-    const transport_spec = if (config.allow_insecure_tcp)
+    if (config.allow_insecure_tcp and muxly.trds.isDescriptor(config.transport_spec)) {
+        try std.fs.File.stderr().writeAll(viewer_app.usage);
+        return;
+    }
+    const transport_input = if (config.allow_insecure_tcp)
         try muxly.transport.withUnsafeTcpPrefix(allocator, config.transport_spec)
     else
         try allocator.dupe(u8, config.transport_spec);
-    defer allocator.free(transport_spec);
+    defer allocator.free(transport_input);
+    var resolved_transport = try muxly.client.resolveTransportInput(allocator, transport_input, .{
+        .tls_ca_file = config.tls_ca_file,
+        .tls_pin_sha256 = config.tls_pin_sha256,
+        .tls_server_name = config.tls_server_name,
+    });
+    defer resolved_transport.deinit(allocator);
+    const transport_spec = resolved_transport.transport_spec;
 
     const stdout_file = std.fs.File.stdout();
     const run_mode = viewer_app.selectRunMode(

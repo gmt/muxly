@@ -22,12 +22,18 @@ explicit, testable, and debuggable.
 - stdio embedding/testing transport is planned but **not** yet implemented
 - `capabilities.get` reports only transports that actually exist on the current
   runtime target
-- `trds://...` secure descriptors now resolve to secure TCP transports:
-  - `trds://ht|...` => prefer secure H2, allow secure H1 fallback
-  - `trds://ht1|...` => strict secure H1
-  - `trds://ht2|...` => strict secure H2
-- secure TCP client trust defaults to the OS trust store, with explicit local
+- `trds://...` secure descriptors now split muxly-native and HTTP-family secure
+  attach:
+  - plain `trds://...` => prefer `trds://wt|...`, then `trds://ht|...`
+  - `trds://wt|...` => strict `h3wt://`
+  - `trds://ht|...` => secure HTTP family (`https://`)
+  - `trds://h2|...` => strict secure H2
+  - `trds://h1|...` => strict secure H1
+  - `trds://h3|...` is reserved; generic secure HTTP/3 is not yet implemented
+- secure client trust defaults to the OS trust store, with explicit local
   overrides for CA bundle, pin, and SNI
+- H3/WebTransport clients now use that same trust vocabulary: explicit CA
+  bundle, pin, and SNI override
 - direct secure `muxlyd` listeners are still deferred; secure deployment is
   still Caddy HTTPS -> loopback muxly upstream
 
@@ -185,6 +191,7 @@ explicit, testable, and debuggable.
   - `viewStateScope: "shared-document-transitional"`
   - `bufferPolicy: "runtime-configurable"`
   - `paneCaptureStreaming: "h2-and-h3wt"`
+  - `secureClientModes: "trds-wt-ht-h2-h1"`
   - `maxMessageBytes: <effective runtime cap>`
   - `maxDocumentContentBytes: <effective runtime cap>`
   - `tmuxBackendMode: "hybrid-control-invalidation"`

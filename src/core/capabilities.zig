@@ -19,7 +19,7 @@ pub const Capabilities = struct {
     viewer_composition_location: []const u8 = "client",
     buffer_policy: []const u8 = "runtime-configurable",
     pane_capture_streaming: []const u8 = "h2-and-h3wt",
-    secure_tcp_modes: []const u8 = "trds-ht-ht1-ht2",
+    secure_client_modes: []const u8 = "trds-wt-ht-h2-h1",
     max_message_bytes: usize = limits.default_max_message_bytes,
     max_document_content_bytes: usize = limits.default_max_document_content_bytes,
     tmux_backend_mode: []const u8 = "hybrid-control-invalidation",
@@ -52,7 +52,7 @@ pub const Capabilities = struct {
         try writer.print("\"viewerCompositionLocation\":\"{s}\",", .{self.viewer_composition_location});
         try writer.print("\"bufferPolicy\":\"{s}\",", .{self.buffer_policy});
         try writer.print("\"paneCaptureStreaming\":\"{s}\",", .{self.pane_capture_streaming});
-        try writer.print("\"secureTcpModes\":\"{s}\",", .{self.secure_tcp_modes});
+        try writer.print("\"secureClientModes\":\"{s}\",", .{self.secure_client_modes});
         try writer.print("\"maxMessageBytes\":{d},", .{self.max_message_bytes});
         try writer.print("\"maxDocumentContentBytes\":{d},", .{self.max_document_content_bytes});
         try writer.print("\"tmuxBackendMode\":\"{s}\",", .{self.tmux_backend_mode});

@@ -2,7 +2,7 @@ const std = @import("std");
 const muxly = @import("muxly");
 const viewer_app = muxly.viewer_app;
 
-test "viewer argument parser accepts snapshot and socket flags" {
+test "viewer argument parser accepts snapshot, socket, and secure transport flags" {
     const args = [_][]const u8{
         "muxview",
         "--snapshot",
@@ -10,6 +10,12 @@ test "viewer argument parser accepts snapshot and socket flags" {
         "tcp://169.254.1.20:4488",
         "--socket",
         "/tmp/muxly-viewer.sock",
+        "--tls-ca-file",
+        "/tmp/root.crt",
+        "--tls-pin-sha256",
+        "deadbeef",
+        "--tls-server-name",
+        "rpc.example.com",
         "--i-know-this-is-unencrypted-and-unauthenticated",
     };
 
@@ -17,6 +23,9 @@ test "viewer argument parser accepts snapshot and socket flags" {
     try std.testing.expect(config.snapshot_requested);
     try std.testing.expect(config.allow_insecure_tcp);
     try std.testing.expectEqualStrings("/tmp/muxly-viewer.sock", config.transport_spec);
+    try std.testing.expectEqualStrings("/tmp/root.crt", config.tls_ca_file.?);
+    try std.testing.expectEqualStrings("deadbeef", config.tls_pin_sha256.?);
+    try std.testing.expectEqualStrings("rpc.example.com", config.tls_server_name.?);
 }
 
 test "viewer argument parser keeps default socket when none is provided" {

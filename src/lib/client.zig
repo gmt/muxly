@@ -27,7 +27,7 @@ pub const Client = struct {
 
     /// Initializes a client that will talk to the daemon at `transport_spec`.
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !Client {
-        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        var resolved = try resolveTransportInput(allocator, transport_spec, .{});
         defer resolved.deinit(allocator);
         return try initForDocument(
             allocator,
@@ -56,7 +56,12 @@ pub const Client = struct {
         document_path: []const u8,
         resolved_runtime_limits: runtime_config.RuntimeLimits,
     ) !Client {
-        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        var resolved = try resolveTransportInputWithRuntimeLimits(
+            allocator,
+            transport_spec,
+            .{},
+            resolved_runtime_limits,
+        );
         defer resolved.deinit(allocator);
 
         var address = try transport.Address.parse(allocator, resolved.transport_spec);
@@ -187,33 +192,135 @@ pub const CompatibilityTransportMode = enum {
     pooled_connections,
 };
 
-const ResolvedTransportInput = struct {
+pub const SecureTransportOverrides = struct {
+    tls_ca_file: ?[]const u8 = null,
+    tls_pin_sha256: ?[]const u8 = null,
+    tls_server_name: ?[]const u8 = null,
+};
+
+pub const ResolvedTransportInput = struct {
     transport_spec: []u8,
     default_document_path: ?[]u8 = null,
 
-    fn deinit(self: *ResolvedTransportInput, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *ResolvedTransportInput, allocator: std.mem.Allocator) void {
         allocator.free(self.transport_spec);
         if (self.default_document_path) |value| allocator.free(value);
     }
 };
 
-fn resolveBaseTransportInput(
+pub fn resolveTransportInput(
     allocator: std.mem.Allocator,
     transport_spec: []const u8,
+    overrides: SecureTransportOverrides,
+) !ResolvedTransportInput {
+    return try resolveTransportInputWithRuntimeLimits(
+        allocator,
+        transport_spec,
+        overrides,
+        try runtime_config.loadClientLimits(allocator),
+    );
+}
+
+fn resolveTransportInputWithRuntimeLimits(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+    overrides: SecureTransportOverrides,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
 ) !ResolvedTransportInput {
     if (!trds.isDescriptor(transport_spec)) {
+        const final_transport_spec = try applySecureTransportOverrides(
+            allocator,
+            transport_spec,
+            overrides,
+        );
         return .{
-            .transport_spec = try allocator.dupe(u8, transport_spec),
+            .transport_spec = final_transport_spec,
         };
     }
 
-    var resolved = try trds.resolve(allocator, transport_spec);
-    errdefer resolved.deinit(allocator);
-    if (resolved.selector != null) return error.InvalidResourceDescriptor;
+    var parsed = try trds.parse(allocator, transport_spec);
+    defer parsed.deinit(allocator);
+    if (parsed.selector != null) return error.InvalidResourceDescriptor;
+
+    const final_transport_spec = try resolveTrdsParsedTransportSpecWithRuntimeLimits(
+        allocator,
+        parsed,
+        overrides,
+        resolved_runtime_limits,
+    );
     return .{
-        .transport_spec = resolved.transport_spec,
-        .default_document_path = resolved.document_path,
+        .transport_spec = final_transport_spec,
+        .default_document_path = try allocator.dupe(u8, parsed.document_path),
     };
+}
+
+pub fn resolveTrdsParsedTransportSpec(
+    allocator: std.mem.Allocator,
+    parsed: trds.Parsed,
+    overrides: SecureTransportOverrides,
+) ![]u8 {
+    return try resolveTrdsParsedTransportSpecWithRuntimeLimits(
+        allocator,
+        parsed,
+        overrides,
+        try runtime_config.loadClientLimits(allocator),
+    );
+}
+
+fn resolveTrdsParsedTransportSpecWithRuntimeLimits(
+    allocator: std.mem.Allocator,
+    parsed: trds.Parsed,
+    overrides: SecureTransportOverrides,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
+) ![]u8 {
+    switch (parsed.transport_code) {
+        .h1, .h2 => {
+            var secure = try buildSecureHttpAddressFromTrds(allocator, parsed);
+            defer secureAddressDeinit(allocator, &secure);
+            try applyOverridesToSecureHttpAddress(allocator, &secure, overrides);
+            return try buildSecureTransportSpecOwned(
+                allocator,
+                switch (parsed.transport_code) {
+                    .h1 => .https1,
+                    .h2 => .https2,
+                    else => unreachable,
+                },
+                secure,
+            );
+        },
+        .ht => {
+            var secure = try buildSecureHttpAddressFromTrds(allocator, parsed);
+            defer secureAddressDeinit(allocator, &secure);
+            try applyOverridesToSecureHttpAddress(allocator, &secure, overrides);
+            return try buildSecureTransportSpecOwned(allocator, .https, secure);
+        },
+        .wt => {
+            var h3wt = try buildH3wtAddressFromTrds(allocator, parsed);
+            defer h3wtAddressDeinit(allocator, &h3wt);
+            try applyOverridesToH3wtAddress(allocator, &h3wt, overrides);
+            return try buildH3wtTransportSpecOwned(allocator, h3wt);
+        },
+        .auto => {
+            var h3wt = try buildH3wtAddressFromTrds(allocator, parsed);
+            defer h3wtAddressDeinit(allocator, &h3wt);
+            try applyOverridesToH3wtAddress(allocator, &h3wt, overrides);
+            const h3wt_spec = try buildH3wtTransportSpecOwned(allocator, h3wt);
+            return probeTransportSpec(
+                allocator,
+                h3wt_spec,
+                parsed.document_path,
+                resolved_runtime_limits,
+            ) catch {
+                allocator.free(h3wt_spec);
+
+                var fallback_secure = try buildSecureHttpAddressFromTrds(allocator, parsed);
+                defer secureAddressDeinit(allocator, &fallback_secure);
+                try applyOverridesToSecureHttpAddress(allocator, &fallback_secure, overrides);
+                return try buildSecureTransportSpecOwned(allocator, .https, fallback_secure);
+            };
+        },
+        .h3 => return error.UnsupportedResourceTransport,
+    }
 }
 
 fn cloneSecureHttpAddress(
@@ -230,6 +337,42 @@ fn cloneSecureHttpAddress(
     };
 }
 
+fn secureAddressDeinit(
+    allocator: std.mem.Allocator,
+    secure: *transport.Address.SecureHttpAddress,
+) void {
+    allocator.free(secure.host);
+    allocator.free(secure.path);
+    if (secure.certificate_hash) |value| allocator.free(value);
+    if (secure.server_name) |value| allocator.free(value);
+    if (secure.ca_file) |value| allocator.free(value);
+}
+
+fn cloneH3wtAddress(
+    allocator: std.mem.Allocator,
+    h3wt: transport.Address.H3wtAddress,
+) !transport.Address.H3wtAddress {
+    return .{
+        .host = try allocator.dupe(u8, h3wt.host),
+        .port = h3wt.port,
+        .path = try allocator.dupe(u8, h3wt.path),
+        .certificate_hash = if (h3wt.certificate_hash) |value| try allocator.dupe(u8, value) else null,
+        .server_name = if (h3wt.server_name) |value| try allocator.dupe(u8, value) else null,
+        .ca_file = if (h3wt.ca_file) |value| try allocator.dupe(u8, value) else null,
+    };
+}
+
+fn h3wtAddressDeinit(
+    allocator: std.mem.Allocator,
+    h3wt: *transport.Address.H3wtAddress,
+) void {
+    allocator.free(h3wt.host);
+    allocator.free(h3wt.path);
+    if (h3wt.certificate_hash) |value| allocator.free(value);
+    if (h3wt.server_name) |value| allocator.free(value);
+    if (h3wt.ca_file) |value| allocator.free(value);
+}
+
 fn buildSecureTransportSpecOwned(
     allocator: std.mem.Allocator,
     tag: enum { https, https1, https2 },
@@ -244,6 +387,128 @@ fn buildSecureTransportSpecOwned(
     };
     try address.write(rendered.writer());
     return try rendered.toOwnedSlice();
+}
+
+fn buildH3wtTransportSpecOwned(
+    allocator: std.mem.Allocator,
+    h3wt: transport.Address.H3wtAddress,
+) ![]u8 {
+    var rendered = std.array_list.Managed(u8).init(allocator);
+    defer rendered.deinit();
+    const address = transport.Address{ .target = .{ .h3wt = h3wt } };
+    try address.write(rendered.writer());
+    return try rendered.toOwnedSlice();
+}
+
+fn buildSecureHttpAddressFromTrds(
+    allocator: std.mem.Allocator,
+    parsed: trds.Parsed,
+) !transport.Address.SecureHttpAddress {
+    return .{
+        .host = try allocator.dupe(u8, parsed.host),
+        .port = parsed.port,
+        .path = try allocator.dupe(u8, parsed.https_path),
+        .certificate_hash = if (parsed.certificate_hash) |value| try allocator.dupe(u8, value) else null,
+        .server_name = if (parsed.server_name) |value| try allocator.dupe(u8, value) else null,
+        .ca_file = null,
+    };
+}
+
+fn buildH3wtAddressFromTrds(
+    allocator: std.mem.Allocator,
+    parsed: trds.Parsed,
+) !transport.Address.H3wtAddress {
+    return .{
+        .host = try allocator.dupe(u8, parsed.host),
+        .port = parsed.port,
+        .path = try allocator.dupe(u8, parsed.https_path),
+        .certificate_hash = if (parsed.certificate_hash) |value| try allocator.dupe(u8, value) else null,
+        .server_name = if (parsed.server_name) |value| try allocator.dupe(u8, value) else null,
+        .ca_file = null,
+    };
+}
+
+fn applyOverridesToSecureHttpAddress(
+    allocator: std.mem.Allocator,
+    https: *transport.Address.SecureHttpAddress,
+    overrides: SecureTransportOverrides,
+) !void {
+    if (overrides.tls_ca_file) |value| {
+        if (https.ca_file) |existing| allocator.free(existing);
+        https.ca_file = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_pin_sha256) |value| {
+        if (https.certificate_hash) |existing| allocator.free(existing);
+        https.certificate_hash = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_server_name) |value| {
+        if (https.server_name) |existing| allocator.free(existing);
+        https.server_name = try allocator.dupe(u8, value);
+    }
+}
+
+fn applyOverridesToH3wtAddress(
+    allocator: std.mem.Allocator,
+    h3wt: *transport.Address.H3wtAddress,
+    overrides: SecureTransportOverrides,
+) !void {
+    if (overrides.tls_ca_file) |value| {
+        if (h3wt.ca_file) |existing| allocator.free(existing);
+        h3wt.ca_file = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_pin_sha256) |value| {
+        if (h3wt.certificate_hash) |existing| allocator.free(existing);
+        h3wt.certificate_hash = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_server_name) |value| {
+        if (h3wt.server_name) |existing| allocator.free(existing);
+        h3wt.server_name = try allocator.dupe(u8, value);
+    }
+}
+
+fn applySecureTransportOverrides(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+    overrides: SecureTransportOverrides,
+) ![]u8 {
+    if (overrides.tls_ca_file == null and overrides.tls_pin_sha256 == null and overrides.tls_server_name == null) {
+        return try allocator.dupe(u8, transport_spec);
+    }
+
+    var address = try transport.Address.parse(allocator, transport_spec);
+    defer address.deinit(allocator);
+
+    switch (address.target) {
+        .https => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
+        .https1 => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
+        .https2 => |*https| try applyOverridesToSecureHttpAddress(allocator, https, overrides),
+        .h3wt => |*h3wt| try applyOverridesToH3wtAddress(allocator, h3wt, overrides),
+        else => return try allocator.dupe(u8, transport_spec),
+    }
+
+    var rendered = std.array_list.Managed(u8).init(allocator);
+    defer rendered.deinit();
+    try address.write(rendered.writer());
+    return try rendered.toOwnedSlice();
+}
+
+fn probeTransportSpec(
+    allocator: std.mem.Allocator,
+    transport_spec: []u8,
+    document_path: []const u8,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
+) anyerror![]u8 {
+    var probe = try Client.initForDocumentWithRuntimeLimits(
+        allocator,
+        transport_spec,
+        document_path,
+        resolved_runtime_limits,
+    );
+    defer probe.deinit();
+
+    const response = try probe.request("ping", "{}");
+    allocator.free(response);
+    return transport_spec;
 }
 
 fn selectPreferredSecureClientAddress(
@@ -1190,10 +1455,15 @@ const ConversationClientState = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !*ConversationClientState {
-        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        const resolved_runtime_limits = try runtime_config.loadClientLimits(allocator);
+        var resolved = try resolveTransportInputWithRuntimeLimits(
+            allocator,
+            transport_spec,
+            .{},
+            resolved_runtime_limits,
+        );
         defer resolved.deinit(allocator);
         const effective_document_path = resolved.default_document_path orelse document_path;
-        const resolved_runtime_limits = try runtime_config.loadClientLimits(allocator);
         const state = try allocator.create(ConversationClientState);
         errdefer allocator.destroy(state);
 

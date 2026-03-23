@@ -216,26 +216,29 @@ id-only paths still require numeric node ids and say so in their command help.
 ### `trds://` secure descriptors
 
 `trds://...` is the preferred secure user-facing descriptor family. It still
-describes a Caddy-fronted HTTPS edge plus the same document/selector targeting
-shape used by TRDs, and it is now also connectable for secure TCP clients:
+describes a secure edge plus the same document/selector targeting shape used by
+TRDs, and it now prefers muxly-native WebTransport before falling back to the
+secure HTTP family:
 
+- `trds://wt|mux.example.com//docs/demo`
 - `trds://ht|127.0.0.1:9443/rpc//docs/demo#left`
-- `trds://ht1|mux.example.com//`
-- `trds://ht2|mux.example.com:9443/rpc//docs/demo`
-- `trds://mux.example.com//` defaults to `ht`
+- `trds://h1|mux.example.com//`
+- `trds://h2|mux.example.com:9443/rpc//docs/demo`
+- `trds://mux.example.com//` defaults to `wt`, then `ht`
 
 Defaults:
 
 - missing port defaults to `443`
 - missing HTTPS path defaults to `/rpc`
 - missing document defaults to `/`
-- missing secure transport code defaults to `ht`
+- missing secure transport code defaults to `wt`, then `ht`
 
 Secure transport codes:
 
-- `ht` means secure TCP with HTTP/2 preferred and HTTP/1.1 fallback allowed
-- `ht1` means secure TCP with strict HTTP/1.1
-- `ht2` means secure TCP with strict HTTP/2
+- `wt` means muxly-native WebTransport/QUIC
+- `ht` means the secure HTTP family, equivalent to lower-level `https://`
+- `h2` means strict secure HTTP/2
+- `h1` means strict secure HTTP/1.1
 
 Trust metadata:
 
@@ -248,24 +251,27 @@ Use the admin generators to render Caddy and systemd artifacts from a secure
 descriptor:
 
 ```sh
-./zig-out/bin/muxly admin generate-caddy --descriptor trds://ht|127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
-./zig-out/bin/muxly admin generate-systemd --descriptor trds://ht|127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-caddy --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-systemd --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
 ```
 
 Connect natively through that HTTPS edge with the same descriptor family:
 
 ```sh
-./zig-out/bin/muxly --transport trds://ht|127.0.0.1:9443/rpc --tls-ca-file /tmp/muxly-secure/caddy-data/caddy/pki/authorities/local/root.crt ping
+./zig-out/bin/muxly --transport trds://127.0.0.1:9443/rpc --tls-ca-file /tmp/muxly-secure/caddy-data/caddy/pki/authorities/local/root.crt ping
 ```
 
 Current boundaries:
 
-- `trds://` is the preferred secure client-facing descriptor, but it still
-  resolves to lower-level secure TCP transport specs under the hood
+- plain `trds://...` now means: prefer `trds://wt|...`, then `trds://ht|...`
+- `trds://wt|...` maps to the existing `h3wt://` WebTransport-over-HTTP/3
+  transport
 - generated secure deployments use Caddy as the HTTPS fixer in front of loopback
   `h2://...` muxlyd upstreams
 - direct `muxlyd --transport https://...` listeners are still deferred
-- UDP/QUIC/H3 secure client work is still deferred
+- `trds://h3|...` is reserved for future generic secure HTTP/3 support
+- the current generators still provision the secure HTTP fallback endpoint for
+  plain `trds://...` and `trds://wt|...` deployments in this slice
 
 There is also an opt-in user-mode smoke test for the generated artifacts:
 

@@ -29,6 +29,7 @@ fn applySecureTransportOverrides(
         .https => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
         .https1 => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
         .https2 => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
+        .h3wt => |*h3wt| try applySecureOverridesToH3wtAddress(allocator, h3wt, overrides),
         else => return try allocator.dupe(u8, transport_spec),
     }
 
@@ -54,6 +55,25 @@ fn applySecureOverridesToAddress(
     if (overrides.tls_server_name) |value| {
         if (https.server_name) |existing| allocator.free(existing);
         https.server_name = try allocator.dupe(u8, value);
+    }
+}
+
+fn applySecureOverridesToH3wtAddress(
+    allocator: std.mem.Allocator,
+    h3wt: *muxly.transport.Address.H3wtAddress,
+    overrides: target_arg.SecureTransportOverrides,
+) !void {
+    if (overrides.tls_ca_file) |value| {
+        if (h3wt.ca_file) |existing| allocator.free(existing);
+        h3wt.ca_file = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_pin_sha256) |value| {
+        if (h3wt.certificate_hash) |existing| allocator.free(existing);
+        h3wt.certificate_hash = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_server_name) |value| {
+        if (h3wt.server_name) |existing| allocator.free(existing);
+        h3wt.server_name = try allocator.dupe(u8, value);
     }
 }
 
@@ -88,14 +108,15 @@ pub fn main() !void {
     defer allocator.free(default_document_path);
 
     if (muxly.trds.isDescriptor(transport_input)) {
-        var resolved = try muxly.trds.resolve(allocator, transport_input);
-        defer resolved.deinit(allocator);
-        if (resolved.selector != null) return error.InvalidArguments;
-
         allocator.free(transport_spec);
-        transport_spec = try applySecureTransportOverrides(allocator, resolved.transport_spec, tls_overrides);
+        var resolved = try muxly.client.resolveTransportInput(allocator, transport_input, tls_overrides);
+        defer resolved.deinit(allocator);
+        transport_spec = try allocator.dupe(u8, resolved.transport_spec);
         allocator.free(default_document_path);
-        default_document_path = try allocator.dupe(u8, resolved.document_path);
+        default_document_path = try allocator.dupe(
+            u8,
+            resolved.default_document_path orelse muxly.protocol.default_document_path,
+        );
     } else {
         allocator.free(transport_spec);
         transport_spec = try applySecureTransportOverrides(allocator, transport_input, tls_overrides);
@@ -362,15 +383,17 @@ fn printUsage() !void {
         \\  muxly admin generate-systemd --descriptor TRDS --mode <user|system> --output-dir PATH [--upstream-port PORT] [--upstream-host HOST] [--upstream-path PATH] [--service-user USER] [--service-group GROUP] [--caddy-bin PATH] [--muxlyd-bin PATH]
         \\
         \\transport notes:
-        \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, https://, https1://, https2://, h3wt://, or connectable trds://ht|...
+        \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, https://, https1://, https2://, h3wt://, or connectable trds://...
         \\  bare/default sockets use ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
         \\  document-or-node targets (trd://doc, trd://doc#node, trd:#node) are accepted by:
         \\    node get, node append, session create-under, projection get [focused target], view set-root
         \\  explicit-node targets (#selector or numeric id) are required by:
         \\    node update/freeze/remove, leaf source-get, file capture/follow-tail, view elide/expand
-        \\  TRDS is a secure descriptor like trds://ht|host:8443/rpc//docs/demo#left
-        \\  trds://ht|... prefers secure H2 and falls back to secure H1.1 when needed
-        \\  trds://ht1|... forces secure H1.1; trds://ht2|... forces secure H2
+        \\  TRDS is a secure descriptor like trds://wt|host:8443/rpc//docs/demo#left
+        \\  plain trds://host... now prefers WebTransport, then falls back to secure HTTP
+        \\  trds://wt|... forces WebTransport; trds://ht|... uses the secure HTTP family
+        \\  trds://h2|... forces secure H2; trds://h1|... forces secure H1.1
+        \\  trds://h3|... is reserved for future generic secure HTTP/3 support
         \\  --tls-ca-file is local-machine state and is intentionally not embedded in trds://
         \\
     );
