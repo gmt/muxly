@@ -19,6 +19,7 @@ pub const Capabilities = struct {
     viewer_composition_location: []const u8 = "client",
     buffer_policy: []const u8 = "runtime-configurable",
     pane_capture_streaming: []const u8 = "h2-and-h3wt",
+    secure_tcp_modes: []const u8 = "trds-ht-ht1-ht2",
     max_message_bytes: usize = limits.default_max_message_bytes,
     max_document_content_bytes: usize = limits.default_max_document_content_bytes,
     tmux_backend_mode: []const u8 = "hybrid-control-invalidation",
@@ -51,6 +52,7 @@ pub const Capabilities = struct {
         try writer.print("\"viewerCompositionLocation\":\"{s}\",", .{self.viewer_composition_location});
         try writer.print("\"bufferPolicy\":\"{s}\",", .{self.buffer_policy});
         try writer.print("\"paneCaptureStreaming\":\"{s}\",", .{self.pane_capture_streaming});
+        try writer.print("\"secureTcpModes\":\"{s}\",", .{self.secure_tcp_modes});
         try writer.print("\"maxMessageBytes\":{d},", .{self.max_message_bytes});
         try writer.print("\"maxDocumentContentBytes\":{d},", .{self.max_document_content_bytes});
         try writer.print("\"tmuxBackendMode\":\"{s}\",", .{self.tmux_backend_mode});
@@ -71,7 +73,7 @@ pub const Capabilities = struct {
         if (self.supports_tcp_socket) {
             if (self.supports_unix_socket) try writer.writeAll(",");
             try writer.writeAll("\"tcp\"");
-            try writer.writeAll(",\"http\",\"h2\",\"h3wt\"");
+            try writer.writeAll(",\"http\",\"h2\",\"https\",\"h3wt\"");
         }
         if (self.supports_named_pipes) {
             if (self.supports_unix_socket or self.supports_tcp_socket) try writer.writeAll(",");

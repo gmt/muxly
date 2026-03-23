@@ -5,6 +5,7 @@ test "trds parser applies defaults and keeps root document" {
     var parsed = try muxly.trds.parse(std.testing.allocator, "trds://host.lan");
     defer parsed.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(muxly.trds.SecureTransportCode.ht, parsed.transport_code);
     try std.testing.expectEqualStrings("host.lan", parsed.host);
     try std.testing.expectEqual(@as(u16, 443), parsed.port);
     try std.testing.expectEqualStrings("/rpc", parsed.https_path);
@@ -12,24 +13,35 @@ test "trds parser applies defaults and keeps root document" {
     try std.testing.expect(parsed.selector == null);
 }
 
-test "trds parser handles explicit port path document and selector" {
+test "trds parser handles explicit secure transport port path document selector and trust" {
     var parsed = try muxly.trds.parse(
         std.testing.allocator,
-        "trds://example.com:9443/api//docs/demo#left/pane",
+        "trds://ht2|example.com:9443/api?sha256=deadbeef&sni=rpc.example.com//docs/demo#left/pane",
     );
     defer parsed.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(muxly.trds.SecureTransportCode.ht2, parsed.transport_code);
     try std.testing.expectEqualStrings("example.com", parsed.host);
     try std.testing.expectEqual(@as(u16, 9443), parsed.port);
     try std.testing.expectEqualStrings("/api", parsed.https_path);
     try std.testing.expectEqualStrings("/docs/demo", parsed.document_path);
     try std.testing.expectEqualStrings("left/pane", parsed.selector.?);
+    try std.testing.expectEqualStrings("deadbeef", parsed.certificate_hash.?);
+    try std.testing.expectEqualStrings("rpc.example.com", parsed.server_name.?);
+    try std.testing.expect(parsed.ca_file == null);
 }
 
 test "trds parser rejects malformed relative-style values" {
     try std.testing.expectError(
         error.InvalidResourceDescriptor,
         muxly.trds.parse(std.testing.allocator, "trds:#welcome"),
+    );
+}
+
+test "trds parser rejects local ca file overrides in shareable descriptors" {
+    try std.testing.expectError(
+        error.InvalidResourceDescriptor,
+        muxly.trds.parse(std.testing.allocator, "trds://ht|host.lan:9443/rpc?ca=/tmp/root.crt//docs/demo"),
     );
 }
 
@@ -109,4 +121,19 @@ test "trds generators write mode-appropriate artifacts" {
     _ = try std.fs.cwd().access(caddy_paths.caddy_unit_or_snippet, .{});
     _ = try std.fs.cwd().access(systemd_paths.muxlyd_unit, .{});
     _ = try std.fs.cwd().access(systemd_paths.caddy_unit_or_snippet, .{});
+}
+
+test "trds resolve renders secure transport specs and document defaults" {
+    var resolved = try muxly.trds.resolve(
+        std.testing.allocator,
+        "trds://ht1|host.lan:9443/custom?sha256=deadbeef//docs/demo#left",
+    );
+    defer resolved.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(
+        "https1://host.lan:9443/custom?sha256=deadbeef",
+        resolved.transport_spec,
+    );
+    try std.testing.expectEqualStrings("/docs/demo", resolved.document_path);
+    try std.testing.expectEqualStrings("left", resolved.selector.?);
 }

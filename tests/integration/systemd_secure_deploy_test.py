@@ -15,7 +15,7 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TMP_ROOT = pathlib.Path("/tmp/muxlyd-service-sandbox")
-DESCRIPTOR = "trds://127.0.0.1:9443/rpc"
+DESCRIPTOR = "trds://ht|127.0.0.1:9443/rpc"
 UPSTREAM_PORT = "29443"
 
 
@@ -84,6 +84,28 @@ def wait_for_https(root_cert: pathlib.Path) -> dict:
     raise RuntimeError(f"timed out waiting for HTTPS ping: {last_error}")
 
 
+def wait_for_muxly_secure_ping(muxly_bin: pathlib.Path, root_cert: pathlib.Path) -> dict:
+    deadline = time.time() + 15.0
+    last_error: str | None = None
+    while time.time() < deadline:
+        result = run(
+            [
+                str(muxly_bin),
+                "--transport",
+                DESCRIPTOR,
+                "--tls-ca-file",
+                str(root_cert),
+                "ping",
+            ],
+            check=False,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        last_error = result.stderr.strip() or result.stdout.strip()
+        time.sleep(0.2)
+    raise RuntimeError(f"timed out waiting for secure muxly ping: {last_error}")
+
+
 def main() -> int:
     if os.environ.get("MUXLY_ENABLE_SYSTEMD_USER_TESTS") != "1":
         print("skipping: set MUXLY_ENABLE_SYSTEMD_USER_TESTS=1 to run", file=sys.stderr)
@@ -133,6 +155,8 @@ def main() -> int:
             wait_for_file(root_cert)
             response = wait_for_https(root_cert)
             assert response["result"]["pong"] is True, response
+            native_response = wait_for_muxly_secure_ping(muxly_bin, root_cert)
+            assert native_response["result"]["pong"] is True, native_response
         finally:
             for unit in reversed(unit_names):
                 run(["systemctl", "--user", "stop", unit], check=False)

@@ -115,19 +115,26 @@ CLI docs should distinguish between:
 The CLI may be temporarily more restrictive than the underlying target model,
 but the docs should say so plainly instead of hand-waving it.
 
-### `trds://` is deployment-first, not transport-first
+### `trds://` is the secure descriptor family
 
-- `trds://...` is the secure deployment/share descriptor family
+- `trds://...` is the secure deployment/share/client descriptor family
 - it reuses the same document-first grammar after the HTTPS authority/path:
-  - `trds://host:port/path//doc#selector`
+  - `trds://ht|host:port/path//doc#selector`
 - it is absolute-only in this slice
-- it does **not** imply a first-class native muxly client transport yet
-- its current job is to feed config generation for:
-  - Caddy as the HTTPS fixer
-  - loopback H2C upstream to `muxlyd`
-  - user-level or system-level systemd deployment artifacts
-- bare `trd://host/...` should remain conservative until a later explicit
-  promotion decision is made
+- omitted secure code defaults to `ht`
+- secure codes mean:
+  - `ht`: secure TCP, prefer HTTP/2, allow HTTP/1.1 fallback
+  - `ht1`: secure TCP, strict HTTP/1.1
+  - `ht2`: secure TCP, strict HTTP/2
+- its current jobs are:
+  - feed config generation for Caddy-fronted secure deployments
+  - resolve native secure clients onto lower-level secure TCP transport specs
+- Caddy remains the HTTPS fixer in front of loopback muxly upstreams in this
+  slice
+- direct secure `muxlyd` listeners and UDP/QUIC secure descriptors are still
+  deferred
+- shareable descriptors may carry `sha256=` pin and `sni=` metadata, but local
+  CA bundle paths stay outside the descriptor
 
 ### Projection over mutation
 

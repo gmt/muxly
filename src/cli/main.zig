@@ -5,6 +5,58 @@ const admin_generate = @import("admin_generate.zig");
 const cli_format = @import("format.zig");
 const target_arg = @import("target_arg.zig");
 
+fn tlsOverridesFromParsed(parsed: cli_args.Parsed) target_arg.SecureTransportOverrides {
+    return .{
+        .tls_ca_file = parsed.tls_ca_file,
+        .tls_pin_sha256 = parsed.tls_pin_sha256,
+        .tls_server_name = parsed.tls_server_name,
+    };
+}
+
+fn applySecureTransportOverrides(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+    overrides: target_arg.SecureTransportOverrides,
+) ![]u8 {
+    if (overrides.tls_ca_file == null and overrides.tls_pin_sha256 == null and overrides.tls_server_name == null) {
+        return try allocator.dupe(u8, transport_spec);
+    }
+
+    var address = try muxly.transport.Address.parse(allocator, transport_spec);
+    defer address.deinit(allocator);
+
+    switch (address.target) {
+        .https => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
+        .https1 => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
+        .https2 => |*https| try applySecureOverridesToAddress(allocator, https, overrides),
+        else => return try allocator.dupe(u8, transport_spec),
+    }
+
+    var rendered = std.array_list.Managed(u8).init(allocator);
+    defer rendered.deinit();
+    try address.write(rendered.writer());
+    return try rendered.toOwnedSlice();
+}
+
+fn applySecureOverridesToAddress(
+    allocator: std.mem.Allocator,
+    https: *muxly.transport.Address.SecureHttpAddress,
+    overrides: target_arg.SecureTransportOverrides,
+) !void {
+    if (overrides.tls_ca_file) |value| {
+        if (https.ca_file) |existing| allocator.free(existing);
+        https.ca_file = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_pin_sha256) |value| {
+        if (https.certificate_hash) |existing| allocator.free(existing);
+        https.certificate_hash = try allocator.dupe(u8, value);
+    }
+    if (overrides.tls_server_name) |value| {
+        if (https.server_name) |existing| allocator.free(existing);
+        https.server_name = try allocator.dupe(u8, value);
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -20,11 +72,34 @@ pub fn main() !void {
         error.ShowUsage => return printUsage(),
         else => return err,
     };
-    const transport_spec = if (parsed.allow_insecure_tcp)
+    const tls_overrides = tlsOverridesFromParsed(parsed);
+    if (parsed.allow_insecure_tcp and muxly.trds.isDescriptor(parsed.transport_spec)) {
+        return error.InvalidArguments;
+    }
+    const transport_input = if (parsed.allow_insecure_tcp)
         try muxly.transport.withUnsafeTcpPrefix(allocator, parsed.transport_spec)
     else
         try allocator.dupe(u8, parsed.transport_spec);
+    defer allocator.free(transport_input);
+
+    var transport_spec = try allocator.dupe(u8, transport_input);
     defer allocator.free(transport_spec);
+    var default_document_path = try allocator.dupe(u8, muxly.protocol.default_document_path);
+    defer allocator.free(default_document_path);
+
+    if (muxly.trds.isDescriptor(transport_input)) {
+        var resolved = try muxly.trds.resolve(allocator, transport_input);
+        defer resolved.deinit(allocator);
+        if (resolved.selector != null) return error.InvalidArguments;
+
+        allocator.free(transport_spec);
+        transport_spec = try applySecureTransportOverrides(allocator, resolved.transport_spec, tls_overrides);
+        allocator.free(default_document_path);
+        default_document_path = try allocator.dupe(u8, resolved.document_path);
+    } else {
+        allocator.free(transport_spec);
+        transport_spec = try applySecureTransportOverrides(allocator, transport_input, tls_overrides);
+    }
     const cursor = parsed.command_index;
 
     if (cursor >= args.len) return printUsage();
@@ -46,11 +121,11 @@ pub fn main() !void {
     else if (std.mem.eql(u8, args[cursor], "capabilities") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
         try muxly.api.capabilitiesGet(allocator, transport_spec)
     else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "get")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .document_or_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .document_or_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.nodeGetTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "append")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .document_or_node_concrete);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .document_or_node_concrete, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.nodeAppendInDocument(
             allocator,
@@ -61,7 +136,7 @@ pub fn main() !void {
             args[cursor + 4],
         );
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 4 < args.len and std.mem.eql(u8, args[cursor + 1], "update")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.nodeUpdateTargetInDocument(
             allocator,
@@ -72,7 +147,7 @@ pub fn main() !void {
             if (std.mem.eql(u8, args[cursor + 3], "content")) args[cursor + 4] else null,
         );
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.nodeFreezeTargetInDocument(
             allocator,
@@ -82,7 +157,7 @@ pub fn main() !void {
             args[cursor + 3],
         );
     } else if (std.mem.eql(u8, args[cursor], "node") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "remove")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.nodeRemoveTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "session") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "list"))
@@ -111,7 +186,7 @@ pub fn main() !void {
             if (cursor + 3 < args.len) args[cursor + 3] else null,
         );
     } else if (std.mem.eql(u8, args[cursor], "session") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "create-under")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .document_or_node_concrete);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .document_or_node_concrete, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.sessionCreateAtInDocument(
             allocator,
@@ -166,25 +241,25 @@ pub fn main() !void {
             std.mem.eql(u8, args[cursor + 3], "true"),
         );
     } else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
-        try muxly.api.documentGet(allocator, transport_spec)
+        try muxly.api.documentGetInDocument(allocator, transport_spec, default_document_path)
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "status"))
-        try muxly.api.documentStatus(allocator, transport_spec)
+        try muxly.api.documentStatusInDocument(allocator, transport_spec, default_document_path)
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "freeze"))
-        try muxly.api.documentFreeze(allocator, transport_spec)
+        try muxly.api.requestInDocument(allocator, transport_spec, default_document_path, "document.freeze", "{}")
     else if (std.mem.eql(u8, args[cursor], "document") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "serialize"))
-        try muxly.api.documentSerialize(allocator, transport_spec)
+        try muxly.api.requestInDocument(allocator, transport_spec, default_document_path, "document.serialize", "{}")
     else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-file")) blk: {
         break :blk try muxly.api.leafAttachFile(allocator, transport_spec, args[cursor + 2], args[cursor + 3]);
     } else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "source-get")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.leafSourceGetTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "file") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "capture")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.fileCaptureTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "file") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "follow-tail")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.fileFollowTailTargetInDocument(
             allocator,
@@ -196,19 +271,19 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, args[cursor], "leaf") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "attach-tty")) blk: {
         break :blk try muxly.api.leafAttachTty(allocator, transport_spec, args[cursor + 2]);
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "get"))
-        try muxly.api.viewGet(allocator, transport_spec)
+        try muxly.api.requestInDocument(allocator, transport_spec, default_document_path, "view.get", "{}")
     else if (std.mem.eql(u8, args[cursor], "projection") and cursor + 3 < args.len and std.mem.eql(u8, args[cursor + 1], "get")) blk: {
         const rows = try std.fmt.parseInt(u16, args[cursor + 2], 10);
         const cols = try std.fmt.parseInt(u16, args[cursor + 3], 10);
         var focused_target = if (cursor + 4 < args.len)
-            try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 4], .document_or_node_concrete)
+            try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 4], .document_or_node_concrete, tls_overrides)
         else
             null;
         defer if (focused_target) |*value| value.deinit(allocator);
         break :blk try muxly.api.projectionGetInDocument(
             allocator,
             if (focused_target) |value| value.transport_spec else transport_spec,
-            if (focused_target) |value| value.document_path else muxly.protocol.default_document_path,
+            if (focused_target) |value| value.document_path else default_document_path,
             .{
                 .rows = rows,
                 .cols = cols,
@@ -218,19 +293,19 @@ pub fn main() !void {
             },
         );
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "reset"))
-        try muxly.api.viewReset(allocator, transport_spec)
+        try muxly.api.requestInDocument(allocator, transport_spec, default_document_path, "view.reset", "{}")
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 1 < args.len and std.mem.eql(u8, args[cursor + 1], "clear-root"))
-        try muxly.api.viewClearRoot(allocator, transport_spec)
+        try muxly.api.requestInDocument(allocator, transport_spec, default_document_path, "view.clearRoot", "{}")
     else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "set-root")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .document_or_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .document_or_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.viewSetRootTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "elide")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.viewElideTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else if (std.mem.eql(u8, args[cursor], "view") and cursor + 2 < args.len and std.mem.eql(u8, args[cursor + 1], "expand")) blk: {
-        var target = try target_arg.resolve(allocator, transport_spec, muxly.protocol.default_document_path, args[cursor + 2], .explicit_node_lazy);
+        var target = try target_arg.resolve(allocator, transport_spec, default_document_path, args[cursor + 2], .explicit_node_lazy, tls_overrides);
         defer target.deinit(allocator);
         break :blk try muxly.api.viewExpandTargetInDocument(allocator, target.transport_spec, target.document_path, target.node_target);
     } else return printUsage();
@@ -242,58 +317,61 @@ pub fn main() !void {
 fn printUsage() !void {
     try std.fs.File.stdout().writeAll(
         \\muxly usage:
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] ping
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] initialize
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] capabilities get
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] node get <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] node append <parent-id> <kind> <title>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] node update <node-id> <title|content> <value>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] node freeze <node-id> <text|surface>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] node remove <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] session list
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] window list
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane list
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] list
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] split <target-pane> <direction> [command]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] capture <pane-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] session create <session-name> [command]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] session create-under <parent-id> <session-name> [command]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] window create <target-session> [window-name] [command]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane split <target-pane> <direction> [command]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane capture <pane-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane scroll <pane-id> <start-line> <end-line>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane resize <pane-id> <direction> <amount>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane focus <pane-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane send-keys <pane-id> <keys> [--enter]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane close <pane-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] pane follow-tail <pane-id> <true|false>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] document get
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] document status
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] document freeze
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] document serialize
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] file capture <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] file follow-tail <node-id> <true|false>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] leaf attach-file <static-file|monitored-file> <path>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] leaf source-get <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] leaf attach-tty <session-name>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view get
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] projection get <rows> <cols> [focused-node-id]
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view reset
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view clear-root
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view set-root <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view elide <node-id>
-        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] view expand <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] ping
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] initialize
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] capabilities get
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] node get <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] node append <parent-id> <kind> <title>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] node update <node-id> <title|content> <value>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] node freeze <node-id> <text|surface>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] node remove <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] session list
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] window list
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane list
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] list
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] split <target-pane> <direction> [command]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] capture <pane-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] session create <session-name> [command]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] session create-under <parent-id> <session-name> [command]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] window create <target-session> [window-name] [command]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane split <target-pane> <direction> [command]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane capture <pane-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane scroll <pane-id> <start-line> <end-line>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane resize <pane-id> <direction> <amount>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane focus <pane-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane send-keys <pane-id> <keys> [--enter]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane close <pane-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] pane follow-tail <pane-id> <true|false>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] document get
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] document status
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] document freeze
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] document serialize
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] file capture <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] file follow-tail <node-id> <true|false>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] leaf attach-file <static-file|monitored-file> <path>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] leaf source-get <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] leaf attach-tty <session-name>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view get
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] projection get <rows> <cols> [focused-node-id]
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view reset
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view clear-root
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view set-root <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view elide <node-id>
+        \\  muxly [--transport SPEC|--socket PATH] [--i-know-this-is-unencrypted-and-unauthenticated] [--tls-ca-file PATH] [--tls-pin-sha256 HEX] [--tls-server-name NAME] view expand <node-id>
         \\  muxly admin generate-caddy --descriptor TRDS --mode <user|system> --output-dir PATH [--upstream-port PORT] [--upstream-host HOST] [--upstream-path PATH] [--caddy-bin PATH] [--muxlyd-bin PATH]
         \\  muxly admin generate-systemd --descriptor TRDS --mode <user|system> --output-dir PATH [--upstream-port PORT] [--upstream-host HOST] [--upstream-path PATH] [--service-user USER] [--service-group GROUP] [--caddy-bin PATH] [--muxlyd-bin PATH]
         \\
         \\transport notes:
-        \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, or h3wt://
+        \\  SPEC may be unix paths, tcp://, ssh://, http://, h2://, https://, https1://, https2://, h3wt://, or connectable trds://ht|...
         \\  bare/default sockets use ${XDG_RUNTIME_DIR}/muxly.sock or /run/user/<uid>/muxly.sock
         \\  document-or-node targets (trd://doc, trd://doc#node, trd:#node) are accepted by:
         \\    node get, node append, session create-under, projection get [focused target], view set-root
         \\  explicit-node targets (#selector or numeric id) are required by:
         \\    node update/freeze/remove, leaf source-get, file capture/follow-tail, view elide/expand
-        \\  TRDS is a secure deployment descriptor like trds://host:8443/rpc//docs/demo#left
+        \\  TRDS is a secure descriptor like trds://ht|host:8443/rpc//docs/demo#left
+        \\  trds://ht|... prefers secure H2 and falls back to secure H1.1 when needed
+        \\  trds://ht1|... forces secure H1.1; trds://ht2|... forces secure H2
+        \\  --tls-ca-file is local-machine state and is intentionally not embedded in trds://
         \\
     );
 }

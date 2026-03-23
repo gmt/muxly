@@ -1,8 +1,9 @@
-//! Secure deployment descriptor parsing and config rendering helpers.
+//! Secure descriptor parsing and config rendering helpers.
 //!
-//! `trds://...` descriptors are deployment/share metadata for Caddy-fronted
-//! HTTPS muxly instances. They are intentionally not ordinary transport specs
-//! in this slice.
+//! `trds://...` descriptors remain the deployment/share vocabulary for
+//! Caddy-fronted HTTPS muxly instances, and in this slice they also become the
+//! preferred secure native client-facing descriptor family for TCP/TLS
+//! transports.
 
 const std = @import("std");
 const protocol = @import("../core/protocol.zig");
@@ -12,6 +13,35 @@ pub const default_https_path = "/rpc";
 pub const default_upstream_host = "127.0.0.1";
 pub const default_upstream_port: u16 = 4489;
 pub const default_upstream_path = "/rpc";
+
+pub const SecureTransportCode = enum {
+    ht,
+    ht1,
+    ht2,
+
+    pub fn parse(text: []const u8) !SecureTransportCode {
+        if (text.len == 0 or std.mem.eql(u8, text, "ht")) return .ht;
+        if (std.mem.eql(u8, text, "ht1")) return .ht1;
+        if (std.mem.eql(u8, text, "ht2")) return .ht2;
+        return error.UnsupportedResourceTransport;
+    }
+
+    pub fn asTransportSpecScheme(self: SecureTransportCode) []const u8 {
+        return switch (self) {
+            .ht => "https",
+            .ht1 => "https1",
+            .ht2 => "https2",
+        };
+    }
+
+    pub fn asSlugText(self: SecureTransportCode) []const u8 {
+        return switch (self) {
+            .ht => "ht",
+            .ht1 => "ht1",
+            .ht2 => "ht2",
+        };
+    }
+};
 
 pub const Mode = enum {
     user,
@@ -25,17 +55,24 @@ pub const Mode = enum {
 };
 
 pub const Parsed = struct {
+    transport_code: SecureTransportCode = .ht,
     host: []u8,
     port: u16,
     https_path: []u8,
     document_path: []u8,
     selector: ?[]u8 = null,
+    certificate_hash: ?[]u8 = null,
+    server_name: ?[]u8 = null,
+    ca_file: ?[]u8 = null,
 
     pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
         allocator.free(self.host);
         allocator.free(self.https_path);
         allocator.free(self.document_path);
         if (self.selector) |value| allocator.free(value);
+        if (self.certificate_hash) |value| allocator.free(value);
+        if (self.server_name) |value| allocator.free(value);
+        if (self.ca_file) |value| allocator.free(value);
     }
 
     pub fn siteAddress(self: Parsed, allocator: std.mem.Allocator) ![]u8 {
@@ -60,6 +97,10 @@ pub const Parsed = struct {
                 try appendSlugComponent(&value, trimmed);
             }
         }
+        if (self.transport_code != .ht) {
+            try value.appendSlice("-");
+            try appendSlugComponent(&value, self.transport_code.asSlugText());
+        }
         if (value.items.len == 0) try value.appendSlice("secure");
         return try value.toOwnedSlice();
     }
@@ -68,6 +109,18 @@ pub const Parsed = struct {
         return std.mem.eql(u8, self.host, "localhost") or
             std.mem.eql(u8, self.host, "127.0.0.1") or
             std.mem.eql(u8, self.host, "::1");
+    }
+};
+
+pub const Resolved = struct {
+    transport_spec: []u8,
+    document_path: []u8,
+    selector: ?[]u8,
+
+    pub fn deinit(self: *Resolved, allocator: std.mem.Allocator) void {
+        allocator.free(self.transport_spec);
+        allocator.free(self.document_path);
+        if (self.selector) |value| allocator.free(value);
     }
 };
 
@@ -117,15 +170,24 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Parsed {
 
     if (authority_and_path.len == 0) return error.InvalidResourceDescriptor;
 
-    const slash_index = std.mem.indexOfScalar(u8, authority_and_path, '/');
-    const authority_text = if (slash_index) |index| authority_and_path[0..index] else authority_and_path;
-    const https_path_text = if (slash_index) |index| authority_and_path[index..] else default_https_path;
+    var transport_code: SecureTransportCode = .ht;
+    var authority_path_payload = authority_and_path;
+    if (std.mem.indexOfScalar(u8, authority_and_path, '|')) |pipe_index| {
+        transport_code = try SecureTransportCode.parse(authority_and_path[0..pipe_index]);
+        authority_path_payload = authority_and_path[pipe_index + 1 ..];
+    }
+
+    const slash_index = std.mem.indexOfScalar(u8, authority_path_payload, '/');
+    const authority_text = if (slash_index) |index| authority_path_payload[0..index] else authority_path_payload;
+    const raw_https_path_text = if (slash_index) |index| authority_path_payload[index..] else default_https_path;
     if (authority_text.len == 0) return error.InvalidResourceDescriptor;
 
     const split = try splitHostPort(allocator, authority_text);
     errdefer allocator.free(split.host);
 
-    const owned_path = try normalizeHttpsPathOwned(allocator, https_path_text);
+    const parsed_path = try parseHttpsPathAndTrust(allocator, raw_https_path_text);
+    defer parsed_path.deinit(allocator);
+    const owned_path = try allocator.dupe(u8, parsed_path.https_path);
     errdefer allocator.free(owned_path);
     const owned_document_path = if (document_path_text) |value|
         try normalizeDocumentPathOwned(allocator, value)
@@ -137,18 +199,86 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Parsed {
     else
         null;
     errdefer if (owned_selector) |value| allocator.free(value);
+    const owned_certificate_hash = if (parsed_path.certificate_hash) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_certificate_hash) |value| allocator.free(value);
+    const owned_server_name = if (parsed_path.server_name) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_server_name) |value| allocator.free(value);
+    const owned_ca_file = if (parsed_path.ca_file) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (owned_ca_file) |value| allocator.free(value);
 
     return .{
+        .transport_code = transport_code,
         .host = split.host,
         .port = split.port,
         .https_path = owned_path,
         .document_path = owned_document_path,
         .selector = owned_selector,
+        .certificate_hash = owned_certificate_hash,
+        .server_name = owned_server_name,
+        .ca_file = owned_ca_file,
     };
 }
 
 pub fn isDescriptor(text: []const u8) bool {
     return std.mem.startsWith(u8, text, "trds://");
+}
+
+pub fn resolve(allocator: std.mem.Allocator, text: []const u8) !Resolved {
+    var parsed = try parse(allocator, text);
+    defer parsed.deinit(allocator);
+    return try resolveParsed(allocator, parsed);
+}
+
+pub fn resolveParsed(allocator: std.mem.Allocator, parsed: Parsed) !Resolved {
+    const transport_spec = try parsedTransportSpec(allocator, parsed);
+    errdefer allocator.free(transport_spec);
+    return .{
+        .transport_spec = transport_spec,
+        .document_path = try allocator.dupe(u8, parsed.document_path),
+        .selector = if (parsed.selector) |value| try allocator.dupe(u8, value) else null,
+    };
+}
+
+pub fn parsedTransportSpec(allocator: std.mem.Allocator, parsed: Parsed) ![]u8 {
+    var buffer = std.array_list.Managed(u8).init(allocator);
+    defer buffer.deinit();
+    try buffer.writer().print("{s}://", .{parsed.transport_code.asTransportSpecScheme()});
+    if (hostNeedsBrackets(parsed.host)) {
+        try buffer.writer().print("[{s}]:{d}", .{ parsed.host, parsed.port });
+    } else {
+        try buffer.writer().print("{s}:{d}", .{ parsed.host, parsed.port });
+    }
+    try buffer.appendSlice(parsed.https_path);
+
+    var wrote_query = false;
+    if (parsed.certificate_hash) |value| {
+        try buffer.appendSlice(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try buffer.appendSlice("sha256=");
+        try buffer.appendSlice(value);
+    }
+    if (parsed.server_name) |value| {
+        try buffer.appendSlice(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try buffer.appendSlice("sni=");
+        try buffer.appendSlice(value);
+    }
+    if (parsed.ca_file) |value| {
+        try buffer.appendSlice(if (wrote_query) "&" else "?");
+        try buffer.appendSlice("ca=");
+        try buffer.appendSlice(value);
+    }
+
+    return try buffer.toOwnedSlice();
 }
 
 pub fn caddyFileName(allocator: std.mem.Allocator, descriptor: Parsed) ![]u8 {
@@ -491,6 +621,56 @@ fn normalizeHttpsPathOwned(allocator: std.mem.Allocator, value: []const u8) ![]u
     if (std.mem.endsWith(u8, value, "/") and value.len > 1) return error.InvalidResourceDescriptor;
     if (std.mem.indexOf(u8, value, "//") != null) return error.InvalidResourceDescriptor;
     return try allocator.dupe(u8, value);
+}
+
+const ParsedHttpsPathAndTrust = struct {
+    https_path: []u8,
+    certificate_hash: ?[]u8 = null,
+    server_name: ?[]u8 = null,
+    ca_file: ?[]u8 = null,
+
+    fn deinit(self: ParsedHttpsPathAndTrust, allocator: std.mem.Allocator) void {
+        allocator.free(self.https_path);
+        if (self.certificate_hash) |value| allocator.free(value);
+        if (self.server_name) |value| allocator.free(value);
+        if (self.ca_file) |value| allocator.free(value);
+    }
+};
+
+fn parseHttpsPathAndTrust(allocator: std.mem.Allocator, value: []const u8) !ParsedHttpsPathAndTrust {
+    const question_index = std.mem.indexOfScalar(u8, value, '?');
+    const path_text = if (question_index) |index| value[0..index] else value;
+    const query_text = if (question_index) |index| value[index + 1 ..] else "";
+
+    const https_path = try normalizeHttpsPathOwned(allocator, path_text);
+
+    var parsed: ParsedHttpsPathAndTrust = .{
+        .https_path = https_path,
+    };
+    errdefer parsed.deinit(allocator);
+
+    if (query_text.len == 0) return parsed;
+
+    var it = std.mem.splitScalar(u8, query_text, '&');
+    while (it.next()) |entry| {
+        if (entry.len == 0) continue;
+        if (std.mem.startsWith(u8, entry, "sha256=")) {
+            if (parsed.certificate_hash != null) return error.InvalidResourceDescriptor;
+            parsed.certificate_hash = try allocator.dupe(u8, entry["sha256=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, entry, "sni=")) {
+            if (parsed.server_name != null) return error.InvalidResourceDescriptor;
+            parsed.server_name = try allocator.dupe(u8, entry["sni=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, entry, "ca=")) {
+            return error.InvalidResourceDescriptor;
+        }
+        return error.InvalidResourceDescriptor;
+    }
+
+    return parsed;
 }
 
 fn normalizeDocumentPathOwned(allocator: std.mem.Allocator, value: []const u8) ![]u8 {

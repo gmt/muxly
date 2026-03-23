@@ -12,6 +12,7 @@ explicit, testable, and debuggable.
 - raw TCP on Linux/macOS
 - HTTP/1.1 via explicit `http://` bridge transport
 - HTTP/2 (H2C) via explicit `h2://` bridge transport
+- secure TCP with `https://` / `https1://` / `https2://` bridge transports
 - WebTransport-over-HTTP/3 via explicit `h3wt://` bridge transport
 
 ## Transport roadmap notes
@@ -21,9 +22,14 @@ explicit, testable, and debuggable.
 - stdio embedding/testing transport is planned but **not** yet implemented
 - `capabilities.get` reports only transports that actually exist on the current
   runtime target
-- `trds://...` secure deployment descriptors now exist as config-generation
-  metadata, but they are **not** reported as implemented client transports in
-  this slice
+- `trds://...` secure descriptors now resolve to secure TCP transports:
+  - `trds://ht|...` => prefer secure H2, allow secure H1 fallback
+  - `trds://ht1|...` => strict secure H1
+  - `trds://ht2|...` => strict secure H2
+- secure TCP client trust defaults to the OS trust store, with explicit local
+  overrides for CA bundle, pin, and SNI
+- direct secure `muxlyd` listeners are still deferred; secure deployment is
+  still Caddy HTTPS -> loopback muxly upstream
 
 ## Currently implemented methods
 

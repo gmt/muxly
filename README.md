@@ -213,36 +213,59 @@ See [doc/trine.md](doc/trine.md) for the normative TRD doctrine and full
 grammar. Some CLI arguments already accept lazy selector-bearing TRDs; a few
 id-only paths still require numeric node ids and say so in their command help.
 
-### `trds://` secure deployment descriptors
+### `trds://` secure descriptors
 
-`trds://...` is a secure deployment/share descriptor, not a direct muxly
-transport in this slice. It describes a Caddy-fronted HTTPS edge plus the same
-document/selector targeting shape used by TRDs:
+`trds://...` is the preferred secure user-facing descriptor family. It still
+describes a Caddy-fronted HTTPS edge plus the same document/selector targeting
+shape used by TRDs, and it is now also connectable for secure TCP clients:
 
-- `trds://127.0.0.1:9443/rpc//docs/demo#left`
-- `trds://mux.example.com//`
+- `trds://ht|127.0.0.1:9443/rpc//docs/demo#left`
+- `trds://ht1|mux.example.com//`
+- `trds://ht2|mux.example.com:9443/rpc//docs/demo`
+- `trds://mux.example.com//` defaults to `ht`
 
 Defaults:
 
 - missing port defaults to `443`
 - missing HTTPS path defaults to `/rpc`
 - missing document defaults to `/`
+- missing secure transport code defaults to `ht`
+
+Secure transport codes:
+
+- `ht` means secure TCP with HTTP/2 preferred and HTTP/1.1 fallback allowed
+- `ht1` means secure TCP with strict HTTP/1.1
+- `ht2` means secure TCP with strict HTTP/2
+
+Trust metadata:
+
+- shareable descriptors may carry `sha256=` and `sni=` query params
+- local CA bundle override stays outside the descriptor via `--tls-ca-file`
+- native secure CLI clients also accept `--tls-pin-sha256` and
+  `--tls-server-name`
 
 Use the admin generators to render Caddy and systemd artifacts from a secure
 descriptor:
 
 ```sh
-./zig-out/bin/muxly admin generate-caddy --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
-./zig-out/bin/muxly admin generate-systemd --descriptor trds://127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-caddy --descriptor trds://ht|127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+./zig-out/bin/muxly admin generate-systemd --descriptor trds://ht|127.0.0.1:9443/rpc//docs/demo --mode user --output-dir /tmp/muxly-secure
+```
+
+Connect natively through that HTTPS edge with the same descriptor family:
+
+```sh
+./zig-out/bin/muxly --transport trds://ht|127.0.0.1:9443/rpc --tls-ca-file /tmp/muxly-secure/caddy-data/caddy/pki/authorities/local/root.crt ping
 ```
 
 Current boundaries:
 
-- `trds://` is deployment metadata, not a client transport spec
+- `trds://` is the preferred secure client-facing descriptor, but it still
+  resolves to lower-level secure TCP transport specs under the hood
 - generated secure deployments use Caddy as the HTTPS fixer in front of loopback
   `h2://...` muxlyd upstreams
-- bare `trd://host/...` keeps its normal meaning; secure shorthand promotion is
-  deferred
+- direct `muxlyd --transport https://...` listeners are still deferred
+- UDP/QUIC/H3 secure client work is still deferred
 
 There is also an opt-in user-mode smoke test for the generated artifacts:
 

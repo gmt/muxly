@@ -237,6 +237,24 @@ pub fn resolveNodeTarget(
     };
 }
 
+pub fn resolveNodeTargetFromResolved(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+    document_path: []const u8,
+    selector: ?[]const u8,
+) !NodeTarget {
+    return .{
+        .transport_spec = try allocator.dupe(u8, transport_spec),
+        .document_path = try allocator.dupe(u8, document_path),
+        .node_id = try resolveSelectorToNodeId(
+            allocator,
+            transport_spec,
+            document_path,
+            selector,
+        ),
+    };
+}
+
 pub fn isDescriptor(text: []const u8) bool {
     return std.mem.startsWith(u8, text, "trd:");
 }

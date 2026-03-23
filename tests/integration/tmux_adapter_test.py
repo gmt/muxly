@@ -183,6 +183,7 @@ def main() -> None:
             "tcp",
             "http",
             "h2",
+            "https",
             "h3wt",
         ]
 

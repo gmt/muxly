@@ -12,6 +12,9 @@ pub const unsafe_tcp_prefix = "unsafe+";
 pub const unsafe_tcp_flag = "--i-know-this-is-unencrypted-and-unauthenticated";
 pub const http_default_path = "/rpc";
 pub const h2_default_path = "/rpc";
+pub const https_default_path = "/rpc";
+pub const https1_default_path = "/rpc";
+pub const https2_default_path = "/rpc";
 pub const h3wt_default_path = "/mux";
 
 pub const MessageReader = struct {
@@ -69,6 +72,9 @@ pub const Address = struct {
         ssh: SshAddress,
         http: HttpAddress,
         h2: H2Address,
+        https: SecureHttpAddress,
+        https1: SecureHttpAddress,
+        https2: SecureHttpAddress,
         h3wt: H3wtAddress,
     };
 
@@ -103,6 +109,19 @@ pub const Address = struct {
         path: []u8,
 
         pub fn resolve(self: H2Address) !std.net.Address {
+            return try std.net.Address.resolveIp(self.host, self.port);
+        }
+    };
+
+    pub const SecureHttpAddress = struct {
+        host: []u8,
+        port: u16,
+        path: []u8,
+        certificate_hash: ?[]u8,
+        server_name: ?[]u8,
+        ca_file: ?[]u8,
+
+        pub fn resolve(self: SecureHttpAddress) !std.net.Address {
             return try std.net.Address.resolveIp(self.host, self.port);
         }
     };
@@ -158,6 +177,30 @@ pub const Address = struct {
             };
         }
 
+        if (std.mem.startsWith(u8, trimmed, "https://")) {
+            const https = try parseHttps(allocator, trimmed["https://".len..]);
+            return .{
+                .allow_insecure_tcp = allow_insecure_tcp,
+                .target = .{ .https = https },
+            };
+        }
+
+        if (std.mem.startsWith(u8, trimmed, "https1://")) {
+            const https1 = try parseHttps1(allocator, trimmed["https1://".len..]);
+            return .{
+                .allow_insecure_tcp = allow_insecure_tcp,
+                .target = .{ .https1 = https1 },
+            };
+        }
+
+        if (std.mem.startsWith(u8, trimmed, "https2://")) {
+            const https2 = try parseHttps2(allocator, trimmed["https2://".len..]);
+            return .{
+                .allow_insecure_tcp = allow_insecure_tcp,
+                .target = .{ .https2 = https2 },
+            };
+        }
+
         if (std.mem.startsWith(u8, trimmed, "h3wt://")) {
             const h3wt = try parseH3wt(allocator, trimmed["h3wt://".len..]);
             return .{
@@ -210,6 +253,13 @@ pub const Address = struct {
                 allocator.free(h2.host);
                 allocator.free(h2.path);
             },
+            .https, .https1, .https2 => |https| {
+                allocator.free(https.host);
+                allocator.free(https.path);
+                if (https.certificate_hash) |value| allocator.free(value);
+                if (https.server_name) |value| allocator.free(value);
+                if (https.ca_file) |value| allocator.free(value);
+            },
             .h3wt => |h3wt| {
                 allocator.free(h3wt.host);
                 allocator.free(h3wt.path);
@@ -238,6 +288,9 @@ pub const Address = struct {
             },
             .http => |http| try writeHttpLikeSpec(writer, "http", http.host, http.port, http.path, null),
             .h2 => |h2| try writeHttpLikeSpec(writer, "h2", h2.host, h2.port, h2.path, null),
+            .https => |https| try writeSecureHttpSpec(writer, "https", https),
+            .https1 => |https1| try writeSecureHttpSpec(writer, "https1", https1),
+            .https2 => |https2| try writeSecureHttpSpec(writer, "https2", https2),
             .h3wt => |h3wt| try writeHttpLikeSpec(writer, "h3wt", h3wt.host, h3wt.port, h3wt.path, h3wt.certificate_hash),
         }
     }
@@ -247,6 +300,7 @@ pub const Address = struct {
             .tcp => |tcp| isLocalOnlyTcpAddress(try tcp.resolve()),
             .http => |http| isLocalOnlyTcpAddress(try http.resolve()),
             .h2 => |h2| isLocalOnlyTcpAddress(try h2.resolve()),
+            .https, .https1, .https2 => false,
             else => true,
         };
     }
@@ -258,7 +312,7 @@ pub const Address = struct {
                     return error.InsecureTcpAddressRequiresExplicitOverride;
                 }
             },
-            .unix, .ssh, .h3wt => {},
+            .unix, .ssh, .h3wt, .https, .https1, .https2 => {},
         }
     }
 
@@ -270,6 +324,7 @@ pub const Address = struct {
                 }
             },
             .unix, .h3wt => {},
+            .https, .https1, .https2 => return error.UnsupportedTransportForDaemon,
             .ssh => return error.UnsupportedTransportForDaemon,
         }
     }
@@ -432,6 +487,99 @@ pub const ProcessSession = struct {
         return try spawn(allocator, argv.items);
     }
 
+    pub fn initHttps(allocator: std.mem.Allocator, https: Address.SecureHttpAddress) !ProcessSession {
+        return try initHttpsWithMaxMessageBytes(allocator, https, max_message_bytes);
+    }
+
+    pub fn initHttpsWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        https: Address.SecureHttpAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{https.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("http-client");
+        try argv.append("--host");
+        try argv.append(https.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(https.path);
+        try appendSecureHttpClientFlags(allocator, &argv, https);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        return try spawn(allocator, argv.items);
+    }
+
+    pub fn initHttps2(allocator: std.mem.Allocator, https2: Address.SecureHttpAddress) !ProcessSession {
+        return try initHttps2WithMaxMessageBytes(allocator, https2, max_message_bytes);
+    }
+
+    pub fn initHttps2WithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        https2: Address.SecureHttpAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{https2.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h2-client");
+        try argv.append("--host");
+        try argv.append(https2.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(https2.path);
+        try appendSecureHttpClientFlags(allocator, &argv, https2);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        return try spawn(allocator, argv.items);
+    }
+
+    pub fn initHttps2Conversation(allocator: std.mem.Allocator, https2: Address.SecureHttpAddress) !ProcessSession {
+        return try initHttps2ConversationWithMaxMessageBytes(allocator, https2, max_message_bytes);
+    }
+
+    pub fn initHttps2ConversationWithMaxMessageBytes(
+        allocator: std.mem.Allocator,
+        https2: Address.SecureHttpAddress,
+        max_message_bytes_value: usize,
+    ) !ProcessSession {
+        var port_buffer: [16]u8 = undefined;
+        const port_text = try std.fmt.bufPrint(&port_buffer, "{d}", .{https2.port});
+
+        var argv = std.array_list.Managed([]const u8).init(allocator);
+        defer argv.deinit();
+        const bridge = try appendBridgeCommandPrefix(allocator, &argv);
+        defer bridge.deinit(allocator);
+        try argv.append("h2-session-client");
+        try argv.append("--host");
+        try argv.append(https2.host);
+        try argv.append("--port");
+        try argv.append(port_text);
+        try argv.append("--path");
+        try argv.append(https2.path);
+        try appendSecureHttpClientFlags(allocator, &argv, https2);
+        const max_message_bytes_text = try std.fmt.allocPrint(allocator, "{d}", .{max_message_bytes_value});
+        defer allocator.free(max_message_bytes_text);
+        try argv.append("--max-message-bytes");
+        try argv.append(max_message_bytes_text);
+        return try spawn(allocator, argv.items);
+    }
+
     pub fn initH3wt(allocator: std.mem.Allocator, h3wt: Address.H3wtAddress) !ProcessSession {
         return try initH3wtWithMaxMessageBytes(allocator, h3wt, max_message_bytes);
     }
@@ -577,6 +725,7 @@ pub const Listener = struct {
                 .allow_insecure_tcp = address.allow_insecure_tcp,
                 .target = .{ .proxy = try ProxyListener.initH3wt(allocator, h3wt, max_message_bytes_value) },
             },
+            .https, .https1, .https2 => error.UnsupportedTransportForDaemon,
             .ssh => error.UnsupportedTransportForDaemon,
         };
     }
@@ -627,6 +776,8 @@ pub fn connectWithMaxMessageBytes(
         .ssh => |ssh| .{ .process = try ProcessSession.initSsh(allocator, ssh, address.allow_insecure_tcp) },
         .http => |http| .{ .process = try ProcessSession.initHttpWithMaxMessageBytes(allocator, http, max_message_bytes_value) },
         .h2 => |h2| .{ .process = try ProcessSession.initH2WithMaxMessageBytes(allocator, h2, max_message_bytes_value) },
+        .https, .https1 => |https| .{ .process = try ProcessSession.initHttpsWithMaxMessageBytes(allocator, https, max_message_bytes_value) },
+        .https2 => |https2| .{ .process = try ProcessSession.initHttps2WithMaxMessageBytes(allocator, https2, max_message_bytes_value) },
         .h3wt => |h3wt| .{ .process = try ProcessSession.initH3wtWithMaxMessageBytes(allocator, h3wt, max_message_bytes_value) },
     };
 }
@@ -682,6 +833,57 @@ fn parseH2(allocator: std.mem.Allocator, spec: []const u8) !Address.H2Address {
         .host = parsed.host,
         .port = parsed.port,
         .path = parsed.path,
+    };
+}
+
+fn parseHttps(allocator: std.mem.Allocator, spec: []const u8) !Address.SecureHttpAddress {
+    const parsed = try parseSecureHttpLike(allocator, spec, 443, https_default_path);
+    errdefer allocator.free(parsed.host);
+    errdefer allocator.free(parsed.path);
+    errdefer if (parsed.sha256) |value| allocator.free(value);
+    errdefer if (parsed.server_name) |value| allocator.free(value);
+    errdefer if (parsed.ca_file) |value| allocator.free(value);
+    return .{
+        .host = parsed.host,
+        .port = parsed.port,
+        .path = parsed.path,
+        .certificate_hash = parsed.sha256,
+        .server_name = parsed.server_name,
+        .ca_file = parsed.ca_file,
+    };
+}
+
+fn parseHttps1(allocator: std.mem.Allocator, spec: []const u8) !Address.SecureHttpAddress {
+    const parsed = try parseSecureHttpLike(allocator, spec, 443, https1_default_path);
+    errdefer allocator.free(parsed.host);
+    errdefer allocator.free(parsed.path);
+    errdefer if (parsed.sha256) |value| allocator.free(value);
+    errdefer if (parsed.server_name) |value| allocator.free(value);
+    errdefer if (parsed.ca_file) |value| allocator.free(value);
+    return .{
+        .host = parsed.host,
+        .port = parsed.port,
+        .path = parsed.path,
+        .certificate_hash = parsed.sha256,
+        .server_name = parsed.server_name,
+        .ca_file = parsed.ca_file,
+    };
+}
+
+fn parseHttps2(allocator: std.mem.Allocator, spec: []const u8) !Address.SecureHttpAddress {
+    const parsed = try parseSecureHttpLike(allocator, spec, 443, https2_default_path);
+    errdefer allocator.free(parsed.host);
+    errdefer allocator.free(parsed.path);
+    errdefer if (parsed.sha256) |value| allocator.free(value);
+    errdefer if (parsed.server_name) |value| allocator.free(value);
+    errdefer if (parsed.ca_file) |value| allocator.free(value);
+    return .{
+        .host = parsed.host,
+        .port = parsed.port,
+        .path = parsed.path,
+        .certificate_hash = parsed.sha256,
+        .server_name = parsed.server_name,
+        .ca_file = parsed.ca_file,
     };
 }
 
@@ -804,6 +1006,76 @@ fn parseHttpLike(
     };
 }
 
+fn parseSecureHttpLike(
+    allocator: std.mem.Allocator,
+    spec: []const u8,
+    default_port: u16,
+    default_path: []const u8,
+) !struct { host: []u8, port: u16, path: []u8, sha256: ?[]u8, server_name: ?[]u8, ca_file: ?[]u8 } {
+    const slash_index = std.mem.indexOfScalar(u8, spec, '/');
+    const question_index = std.mem.indexOfScalar(u8, spec, '?');
+    const authority_end = blk: {
+        if (slash_index) |index| break :blk index;
+        if (question_index) |index| break :blk index;
+        break :blk spec.len;
+    };
+    const authority = spec[0..authority_end];
+    const split = try splitHostPortAllowZero(authority, default_port);
+
+    var path = default_path;
+    var query: []const u8 = "";
+    if (authority_end < spec.len and spec[authority_end] == '/') {
+        const path_start = authority_end;
+        if (question_index) |index| {
+            if (index > path_start) path = spec[path_start..index];
+            query = spec[index + 1 ..];
+        } else {
+            path = spec[path_start..];
+        }
+    } else if (authority_end < spec.len and spec[authority_end] == '?') {
+        query = spec[authority_end + 1 ..];
+    }
+
+    var sha256: ?[]u8 = null;
+    var server_name: ?[]u8 = null;
+    var ca_file: ?[]u8 = null;
+    errdefer if (sha256) |value| allocator.free(value);
+    errdefer if (server_name) |value| allocator.free(value);
+    errdefer if (ca_file) |value| allocator.free(value);
+
+    if (query.len != 0) {
+        var it = std.mem.splitScalar(u8, query, '&');
+        while (it.next()) |entry| {
+            if (entry.len == 0) continue;
+            if (std.mem.startsWith(u8, entry, "sha256=")) {
+                if (sha256 != null) return error.InvalidTransportAddress;
+                sha256 = try allocator.dupe(u8, entry["sha256=".len..]);
+                continue;
+            }
+            if (std.mem.startsWith(u8, entry, "sni=")) {
+                if (server_name != null) return error.InvalidTransportAddress;
+                server_name = try allocator.dupe(u8, entry["sni=".len..]);
+                continue;
+            }
+            if (std.mem.startsWith(u8, entry, "ca=")) {
+                if (ca_file != null) return error.InvalidTransportAddress;
+                ca_file = try allocator.dupe(u8, entry["ca=".len..]);
+                continue;
+            }
+            return error.InvalidTransportAddress;
+        }
+    }
+
+    return .{
+        .host = try allocator.dupe(u8, split.host),
+        .port = split.port,
+        .path = try allocator.dupe(u8, path),
+        .sha256 = sha256,
+        .server_name = server_name,
+        .ca_file = ca_file,
+    };
+}
+
 fn writeHttpLikeSpec(
     writer: anytype,
     scheme: []const u8,
@@ -823,6 +1095,61 @@ fn writeHttpLikeSpec(
     if (sha256) |hash| {
         try writer.writeAll("?sha256=");
         try writer.writeAll(hash);
+    }
+}
+
+fn writeSecureHttpSpec(
+    writer: anytype,
+    scheme: []const u8,
+    https: Address.SecureHttpAddress,
+) !void {
+    try writer.writeAll(scheme);
+    try writer.writeAll("://");
+    if (std.mem.indexOfScalar(u8, https.host, ':') != null) {
+        try writer.print("[{s}]:{d}", .{ https.host, https.port });
+    } else {
+        try writer.print("{s}:{d}", .{ https.host, https.port });
+    }
+    try writer.writeAll(https.path);
+
+    var wrote_query = false;
+    if (https.certificate_hash) |hash| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try writer.writeAll("sha256=");
+        try writer.writeAll(hash);
+    }
+    if (https.server_name) |server_name| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        wrote_query = true;
+        try writer.writeAll("sni=");
+        try writer.writeAll(server_name);
+    }
+    if (https.ca_file) |ca_file| {
+        try writer.writeAll(if (wrote_query) "&" else "?");
+        try writer.writeAll("ca=");
+        try writer.writeAll(ca_file);
+    }
+}
+
+fn appendSecureHttpClientFlags(
+    allocator: std.mem.Allocator,
+    argv: *std.array_list.Managed([]const u8),
+    https: Address.SecureHttpAddress,
+) !void {
+    _ = allocator;
+    try argv.append("--tls");
+    if (https.server_name) |server_name| {
+        try argv.append("--tls-server-name");
+        try argv.append(server_name);
+    }
+    if (https.certificate_hash) |hash| {
+        try argv.append("--tls-sha256");
+        try argv.append(hash);
+    }
+    if (https.ca_file) |ca_file| {
+        try argv.append("--tls-ca-file");
+        try argv.append(ca_file);
     }
 }
 
@@ -1147,14 +1474,6 @@ fn resolveBridgeCommand(allocator: std.mem.Allocator) !BridgeCommand {
         else => return err,
     }
 
-    if (try installedBridgeBackendPath(allocator)) |path| {
-        return .{
-            .program = "python3",
-            .backend_path = path,
-            .owned_backend_path = path,
-        };
-    }
-
     if (std.fs.path.isAbsolute(build_options.transport_bridge_backend_path)) {
         if (std.fs.accessAbsolute(build_options.transport_bridge_backend_path, .{})) |_| {
             return .{
@@ -1165,6 +1484,14 @@ fn resolveBridgeCommand(allocator: std.mem.Allocator) !BridgeCommand {
             error.FileNotFound => {},
             else => return err,
         }
+    }
+
+    if (try installedBridgeBackendPath(allocator)) |path| {
+        return .{
+            .program = "python3",
+            .backend_path = path,
+            .owned_backend_path = path,
+        };
     }
 
     return error.TransportBridgeBackendNotFound;

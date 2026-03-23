@@ -129,6 +129,52 @@ test "h3wt transport parses sha256 pins and round-trips" {
     );
 }
 
+test "secure https transport parses trust query parameters and round-trips" {
+    var address = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "https://mux.example.com:9443/rpc?sha256=deadbeef&sni=rpc.example.com&ca=/tmp/root.crt",
+    );
+    defer address.deinit(std.testing.allocator);
+
+    try address.validateForClient();
+
+    switch (address.target) {
+        .https => |https| {
+            try std.testing.expectEqualStrings("mux.example.com", https.host);
+            try std.testing.expectEqual(@as(u16, 9443), https.port);
+            try std.testing.expectEqualStrings("/rpc", https.path);
+            try std.testing.expectEqualStrings("deadbeef", https.certificate_hash.?);
+            try std.testing.expectEqualStrings("rpc.example.com", https.server_name.?);
+            try std.testing.expectEqualStrings("/tmp/root.crt", https.ca_file.?);
+        },
+        else => try std.testing.expect(false),
+    }
+
+    var serialized = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer serialized.deinit();
+    try address.write(serialized.writer());
+    try std.testing.expectEqualStrings(
+        "https://mux.example.com:9443/rpc?sha256=deadbeef&sni=rpc.example.com&ca=/tmp/root.crt",
+        serialized.items,
+    );
+}
+
+test "strict secure https variants parse as dedicated transport kinds" {
+    var https1 = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "https1://127.0.0.1:9443/rpc",
+    );
+    defer https1.deinit(std.testing.allocator);
+    try std.testing.expect(https1.target == .https1);
+
+    var https2 = try muxly.transport.Address.parse(
+        std.testing.allocator,
+        "https2://127.0.0.1:9443/rpc?sni=localhost",
+    );
+    defer https2.deinit(std.testing.allocator);
+    try std.testing.expect(https2.target == .https2);
+}
+
 test "ssh transport without remote spec uses the remote default transport" {
     var address = try muxly.transport.Address.parse(
         std.testing.allocator,

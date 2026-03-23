@@ -9,6 +9,7 @@ const protocol = @import("../core/protocol.zig");
 const runtime_config = @import("../core/runtime_config.zig");
 const conversation_router = @import("conversation_router.zig");
 const transport = @import("transport.zig");
+const trds = @import("trds.zig");
 
 pub const default_tty_rows: u16 = 24;
 pub const default_tty_cols: u16 = 80;
@@ -26,7 +27,13 @@ pub const Client = struct {
 
     /// Initializes a client that will talk to the daemon at `transport_spec`.
     pub fn init(allocator: std.mem.Allocator, transport_spec: []const u8) !Client {
-        return try initForDocument(allocator, transport_spec, protocol.default_document_path);
+        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        defer resolved.deinit(allocator);
+        return try initForDocument(
+            allocator,
+            resolved.transport_spec,
+            resolved.default_document_path orelse protocol.default_document_path,
+        );
     }
 
     /// Initializes a client bound to one transport and one default document.
@@ -49,9 +56,25 @@ pub const Client = struct {
         document_path: []const u8,
         resolved_runtime_limits: runtime_config.RuntimeLimits,
     ) !Client {
+        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        defer resolved.deinit(allocator);
+
+        var address = try transport.Address.parse(allocator, resolved.transport_spec);
+        errdefer address.deinit(allocator);
+        if (address.target == .https) {
+            const selected = try selectPreferredSecureClientAddress(
+                allocator,
+                address.target.https,
+                document_path,
+                resolved_runtime_limits,
+            );
+            address.deinit(allocator);
+            address = selected;
+        }
+
         return .{
             .allocator = allocator,
-            .address = try transport.Address.parse(allocator, transport_spec),
+            .address = address,
             .document_path = try allocator.dupe(u8, document_path),
             .runtime_limits = resolved_runtime_limits,
             .response_reader = transport.MessageReader.init(allocator),
@@ -163,6 +186,94 @@ pub const CompatibilityTransportMode = enum {
     shared_connection,
     pooled_connections,
 };
+
+const ResolvedTransportInput = struct {
+    transport_spec: []u8,
+    default_document_path: ?[]u8 = null,
+
+    fn deinit(self: *ResolvedTransportInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.transport_spec);
+        if (self.default_document_path) |value| allocator.free(value);
+    }
+};
+
+fn resolveBaseTransportInput(
+    allocator: std.mem.Allocator,
+    transport_spec: []const u8,
+) !ResolvedTransportInput {
+    if (!trds.isDescriptor(transport_spec)) {
+        return .{
+            .transport_spec = try allocator.dupe(u8, transport_spec),
+        };
+    }
+
+    var resolved = try trds.resolve(allocator, transport_spec);
+    errdefer resolved.deinit(allocator);
+    if (resolved.selector != null) return error.InvalidResourceDescriptor;
+    return .{
+        .transport_spec = resolved.transport_spec,
+        .default_document_path = resolved.document_path,
+    };
+}
+
+fn cloneSecureHttpAddress(
+    allocator: std.mem.Allocator,
+    secure: transport.Address.SecureHttpAddress,
+) !transport.Address.SecureHttpAddress {
+    return .{
+        .host = try allocator.dupe(u8, secure.host),
+        .port = secure.port,
+        .path = try allocator.dupe(u8, secure.path),
+        .certificate_hash = if (secure.certificate_hash) |value| try allocator.dupe(u8, value) else null,
+        .server_name = if (secure.server_name) |value| try allocator.dupe(u8, value) else null,
+        .ca_file = if (secure.ca_file) |value| try allocator.dupe(u8, value) else null,
+    };
+}
+
+fn buildSecureTransportSpecOwned(
+    allocator: std.mem.Allocator,
+    tag: enum { https, https1, https2 },
+    secure: transport.Address.SecureHttpAddress,
+) ![]u8 {
+    var rendered = std.array_list.Managed(u8).init(allocator);
+    defer rendered.deinit();
+    const address = switch (tag) {
+        .https => transport.Address{ .target = .{ .https = secure } },
+        .https1 => transport.Address{ .target = .{ .https1 = secure } },
+        .https2 => transport.Address{ .target = .{ .https2 = secure } },
+    };
+    try address.write(rendered.writer());
+    return try rendered.toOwnedSlice();
+}
+
+fn selectPreferredSecureClientAddress(
+    allocator: std.mem.Allocator,
+    secure: transport.Address.SecureHttpAddress,
+    document_path: []const u8,
+    resolved_runtime_limits: runtime_config.RuntimeLimits,
+) anyerror!transport.Address {
+    const strict_h2_spec = try buildSecureTransportSpecOwned(allocator, .https2, secure);
+    defer allocator.free(strict_h2_spec);
+
+    var probe = Client.initForDocumentWithRuntimeLimits(
+        allocator,
+        strict_h2_spec,
+        document_path,
+        resolved_runtime_limits,
+    ) catch return .{
+        .target = .{ .https1 = try cloneSecureHttpAddress(allocator, secure) },
+    };
+    defer probe.deinit();
+
+    const response = probe.request("ping", "{}") catch return .{
+        .target = .{ .https1 = try cloneSecureHttpAddress(allocator, secure) },
+    };
+    allocator.free(response);
+
+    return .{
+        .target = .{ .https2 = try cloneSecureHttpAddress(allocator, secure) },
+    };
+}
 
 pub const ClientLease = struct {
     pool: *CompatibilityClientPool,
@@ -323,8 +434,8 @@ pub const CompatibilityClientPool = struct {
 
 fn transportModeForAddress(address: transport.Address) CompatibilityTransportMode {
     return switch (address.target) {
-        .http, .ssh => .pooled_connections,
-        .unix, .tcp, .h2, .h3wt => .shared_connection,
+        .http, .ssh, .https, .https1 => .pooled_connections,
+        .unix, .tcp, .h2, .https2, .h3wt => .shared_connection,
     };
 }
 
@@ -1079,25 +1190,58 @@ const ConversationClientState = struct {
         transport_spec: []const u8,
         document_path: []const u8,
     ) !*ConversationClientState {
+        var resolved = try resolveBaseTransportInput(allocator, transport_spec);
+        defer resolved.deinit(allocator);
+        const effective_document_path = resolved.default_document_path orelse document_path;
         const resolved_runtime_limits = try runtime_config.loadClientLimits(allocator);
         const state = try allocator.create(ConversationClientState);
         errdefer allocator.destroy(state);
 
         state.* = .{
             .allocator = allocator,
-            .document_path = try allocator.dupe(u8, document_path),
+            .document_path = try allocator.dupe(u8, effective_document_path),
             .runtime_limits = resolved_runtime_limits,
             .frame_router = conversation_router.ConversationRouter.init(allocator),
         };
         errdefer allocator.free(state.document_path);
         errdefer state.frame_router.deinit();
 
-        var address = try transport.Address.parse(allocator, transport_spec);
+        var address = try transport.Address.parse(allocator, resolved.transport_spec);
         defer address.deinit(allocator);
 
         switch (address.target) {
             .h2 => |h2| {
                 state.native_session = try NativeSession.initH2(state, h2);
+            },
+            .https => |https| {
+                var selected = try selectPreferredSecureClientAddress(
+                    allocator,
+                    https,
+                    effective_document_path,
+                    resolved_runtime_limits,
+                );
+                defer selected.deinit(allocator);
+
+                switch (selected.target) {
+                    .https2 => |https2| {
+                        state.native_session = try NativeSession.initHttps2(state, https2);
+                    },
+                    .https1 => {
+                        const fallback_spec = try buildSecureTransportSpecOwned(allocator, .https1, https);
+                        defer allocator.free(fallback_spec);
+                        state.compatibility_dispatcher = try CompatibilityAsyncDispatcher.init(
+                            state,
+                            allocator,
+                            fallback_spec,
+                            effective_document_path,
+                            resolved_runtime_limits,
+                        );
+                    },
+                    else => unreachable,
+                }
+            },
+            .https2 => |https2| {
+                state.native_session = try NativeSession.initHttps2(state, https2);
             },
             .h3wt => |h3wt| {
                 state.native_session = try NativeSession.initH3wt(state, h3wt);
@@ -1106,8 +1250,8 @@ const ConversationClientState = struct {
                 state.compatibility_dispatcher = try CompatibilityAsyncDispatcher.init(
                     state,
                     allocator,
-                    transport_spec,
-                    document_path,
+                    resolved.transport_spec,
+                    effective_document_path,
                     resolved_runtime_limits,
                 );
             },
@@ -1506,6 +1650,27 @@ const NativeSession = struct {
             .process = try transport.ProcessSession.initH2ConversationWithMaxMessageBytes(
                 state_owner.allocator,
                 h2,
+                state_owner.runtime_limits.max_message_bytes,
+            ),
+        };
+        errdefer session.process.close();
+
+        session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
+        return session;
+    }
+
+    fn initHttps2(
+        state_owner: *ConversationClientState,
+        https2: transport.Address.SecureHttpAddress,
+    ) !*NativeSession {
+        const session = try state_owner.allocator.create(NativeSession);
+        errdefer state_owner.allocator.destroy(session);
+
+        session.* = .{
+            .state_owner = state_owner,
+            .process = try transport.ProcessSession.initHttps2ConversationWithMaxMessageBytes(
+                state_owner.allocator,
+                https2,
                 state_owner.runtime_limits.max_message_bytes,
             ),
         };

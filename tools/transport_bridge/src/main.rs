@@ -3,19 +3,26 @@ use bytes::Bytes;
 use h2::client::SendRequest;
 use h2::{client, server, RecvStream};
 use http::Request;
+use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
+use rustls_pki_types::{pem::PemObject, CertificateDer, ServerName};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{
-    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufStream,
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+    BufStream,
 };
 use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::time::{timeout, Duration};
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::TlsConnector;
 use wtransport::tls::Sha256Digest;
 use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig, VarInt};
+use sha2::{Digest, Sha256};
 
 const DEFAULT_MAX_BUFFERED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
 
@@ -37,6 +44,10 @@ struct HttpClientArgs {
     port: u16,
     path: String,
     max_message_bytes: usize,
+    tls: bool,
+    tls_server_name: Option<String>,
+    tls_ca_file: Option<String>,
+    tls_sha256: Option<String>,
 }
 
 #[derive(Debug)]
@@ -92,6 +103,7 @@ async fn main() {
 }
 
 async fn real_main() -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     match parse_args()? {
         Command::HttpClient(args) => run_http_client(args).await,
         Command::HttpServer(args) => run_http_server(args).await,
@@ -105,7 +117,13 @@ async fn real_main() -> Result<()> {
 }
 
 fn parse_args() -> Result<Command> {
-    let mut args = env::args().skip(1);
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from<I>(mut args: I) -> Result<Command>
+where
+    I: Iterator<Item = String>,
+{
     let subcommand = args.next().ok_or_else(|| anyhow!("missing subcommand"))?;
     let mut values: HashMap<String, String> = HashMap::new();
 
@@ -114,7 +132,7 @@ fn parse_args() -> Result<Command> {
             bail!("unexpected argument: {flag}");
         }
         let key = flag.trim_start_matches("--").to_string();
-        if key == "allow-insecure" {
+        if key == "allow-insecure" || key == "tls" {
             values.insert(key, "true".to_string());
             continue;
         }
@@ -133,6 +151,10 @@ fn parse_args() -> Result<Command> {
             path: required(&values, "path")?,
             max_message_bytes: optional_usize(&values, "max-message-bytes")?
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+            tls: values.contains_key("tls"),
+            tls_server_name: values.get("tls-server-name").cloned(),
+            tls_ca_file: values.get("tls-ca-file").cloned(),
+            tls_sha256: values.get("tls-sha256").cloned(),
         })),
         "http-server" => Ok(Command::HttpServer(HttpServerArgs {
             listen_host: required(&values, "listen-host")?,
@@ -153,6 +175,10 @@ fn parse_args() -> Result<Command> {
             path: required(&values, "path")?,
             max_message_bytes: optional_usize(&values, "max-message-bytes")?
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+            tls: values.contains_key("tls"),
+            tls_server_name: values.get("tls-server-name").cloned(),
+            tls_ca_file: values.get("tls-ca-file").cloned(),
+            tls_sha256: values.get("tls-sha256").cloned(),
         })),
         "h2-session-client" => Ok(Command::H2SessionClient(HttpClientArgs {
             host: required(&values, "host")?,
@@ -162,6 +188,10 @@ fn parse_args() -> Result<Command> {
             path: required(&values, "path")?,
             max_message_bytes: optional_usize(&values, "max-message-bytes")?
                 .unwrap_or(DEFAULT_MAX_BUFFERED_MESSAGE_BYTES),
+            tls: values.contains_key("tls"),
+            tls_server_name: values.get("tls-server-name").cloned(),
+            tls_ca_file: values.get("tls-ca-file").cloned(),
+            tls_sha256: values.get("tls-sha256").cloned(),
         })),
         "h2-server" => Ok(Command::H2Server(HttpServerArgs {
             listen_host: required(&values, "listen-host")?,
@@ -225,20 +255,140 @@ fn optional_usize(values: &HashMap<String, String>, key: &str) -> Result<Option<
     }
 }
 
+struct EstablishedTls {
+    stream: TlsStream<TcpStream>,
+}
+
+async fn connect_tls_client(args: &HttpClientArgs, alpn_protocols: &[&[u8]]) -> Result<EstablishedTls> {
+    let mut roots = RootCertStore::empty();
+
+    let native = rustls_native_certs::load_native_certs();
+    for cert in native.certs {
+        roots
+            .add(cert)
+            .context("unable to load native trust anchor")?;
+    }
+    for err in native.errors {
+        trace(&format!("native cert load warning: {err}"));
+    }
+
+    if let Some(path) = &args.tls_ca_file {
+        for cert in CertificateDer::pem_file_iter(path)
+            .with_context(|| format!("unable to open CA file {path}"))?
+        {
+            let cert = cert.with_context(|| format!("unable to parse CA file {path}"))?;
+            roots
+                .add(cert)
+                .with_context(|| format!("unable to add CA certificate from {path}"))?;
+        }
+    }
+
+    let mut config = RustlsClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = alpn_protocols.iter().map(|value| value.to_vec()).collect();
+
+    let connector = TlsConnector::from(Arc::new(config));
+    let server_name_text = args
+        .tls_server_name
+        .as_deref()
+        .unwrap_or(args.host.as_str())
+        .to_string();
+    let server_name = ServerName::try_from(server_name_text)
+        .map_err(|_| anyhow!("invalid TLS server name"))?;
+
+    let tcp = TcpStream::connect((args.host.as_str(), args.port))
+        .await
+        .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .context("unable to establish TLS client session")?;
+    verify_tls_pin(&tls, args.tls_sha256.as_deref())?;
+
+    Ok(EstablishedTls { stream: tls })
+}
+
+fn verify_tls_pin(stream: &TlsStream<TcpStream>, expected_pin: Option<&str>) -> Result<()> {
+    let expected_pin = match expected_pin {
+        Some(value) => value,
+        None => return Ok(()),
+    };
+
+    let (_, session) = stream.get_ref();
+    let certs = session
+        .peer_certificates()
+        .ok_or_else(|| anyhow!("TLS peer certificate chain unavailable"))?;
+    let end_entity = certs
+        .first()
+        .ok_or_else(|| anyhow!("TLS peer certificate chain empty"))?;
+    let actual_pin = hex_sha256(end_entity.as_ref());
+    if actual_pin != expected_pin {
+        bail!("TLS certificate pin mismatch");
+    }
+    Ok(())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        output.push(nibble_to_hex(byte >> 4));
+        output.push(nibble_to_hex(byte & 0x0f));
+    }
+    output
+}
+
+fn nibble_to_hex(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'a' + (value - 10)) as char,
+        _ => unreachable!(),
+    }
+}
+
 async fn run_http_client(args: HttpClientArgs) -> Result<()> {
     let host_header = host_header(&args.host, args.port);
+    if args.tls {
+        let tls = connect_tls_client(&args, &[b"http/1.1"]).await?;
+        return run_http_client_on_stream(
+            BufStream::new(tls.stream),
+            &host_header,
+            &args.path,
+            args.max_message_bytes,
+        )
+        .await;
+    }
+
     let stream = TcpStream::connect((args.host.as_str(), args.port))
         .await
         .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
-    let mut network = BufStream::new(stream);
+    run_http_client_on_stream(
+        BufStream::new(stream),
+        &host_header,
+        &args.path,
+        args.max_message_bytes,
+    )
+    .await
+}
+
+async fn run_http_client_on_stream<S>(
+    mut network: BufStream<S>,
+    host_header: &str,
+    path: &str,
+    max_message_bytes: usize,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
 
-    while let Some(request_body) = read_line_message(&mut stdin, args.max_message_bytes).await? {
-        write_http_request(&mut network, &args.path, &host_header, &request_body).await?;
+    while let Some(request_body) = read_line_message(&mut stdin, max_message_bytes).await? {
+        write_http_request(&mut network, path, host_header, &request_body).await?;
         network.flush().await?;
 
-        let response_body = read_http_response(&mut network, args.max_message_bytes).await?;
+        let response_body = read_http_response(&mut network, max_message_bytes).await?;
         stdout.write_all(&response_body).await?;
         stdout.write_all(b"\n").await?;
         stdout.flush().await?;
@@ -317,15 +467,26 @@ async fn handle_http_connection(
 }
 
 async fn run_h2_client(args: HttpClientArgs) -> Result<()> {
+    if args.tls {
+        let tls = connect_tls_client(&args, &[b"h2"]).await?;
+        return run_h2_client_on_stream(tls.stream, &args).await;
+    }
     let stream = TcpStream::connect((args.host.as_str(), args.port))
         .await
         .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
+    run_h2_client_on_stream(stream, &args).await
+}
+
+async fn run_h2_client_on_stream<S>(stream: S, args: &HttpClientArgs) -> Result<()>
+where
+    S: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut builder = client::Builder::new();
     configure_h2_client_windows(&mut builder, args.max_message_bytes);
     let (sender, connection) = builder
         .handshake(stream)
         .await
-        .context("unable to establish H2C client session")?;
+        .context("unable to establish H2 client session")?;
     let connection_task = tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -346,18 +507,28 @@ async fn run_h2_client(args: HttpClientArgs) -> Result<()> {
 }
 
 async fn run_h2_session_client(args: HttpClientArgs) -> Result<()> {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
+    if args.tls {
+        let tls = connect_tls_client(&args, &[b"h2"]).await?;
+        return run_h2_session_client_on_stream(tls.stream, &args).await;
+    }
     let stream = TcpStream::connect((args.host.as_str(), args.port))
         .await
         .with_context(|| format!("unable to connect to {}:{}", args.host, args.port))?;
+    run_h2_session_client_on_stream(stream, &args).await
+}
+
+async fn run_h2_session_client_on_stream<S>(stream: S, args: &HttpClientArgs) -> Result<()>
+where
+    S: tokio::io::AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    use tokio::sync::Mutex;
+
     let mut builder = client::Builder::new();
     configure_h2_client_windows(&mut builder, args.max_message_bytes);
     let (sender, connection) = builder
         .handshake(stream)
         .await
-        .context("unable to establish H2C client session")?;
+        .context("unable to establish H2 client session")?;
     let connection_task = tokio::spawn(async move {
         let _ = connection.await;
     });
@@ -1276,5 +1447,42 @@ mod tests {
             .await
             .expect("writer task should finish")
             .expect("writer should succeed");
+    }
+
+    #[test]
+    fn parse_h2_client_accepts_tls_boolean_and_trust_flags() {
+        let command = parse_args_from(
+            vec![
+                "h2-client".to_string(),
+                "--host".to_string(),
+                "mux.example.com".to_string(),
+                "--port".to_string(),
+                "9443".to_string(),
+                "--path".to_string(),
+                "/rpc".to_string(),
+                "--tls".to_string(),
+                "--tls-ca-file".to_string(),
+                "/tmp/root.crt".to_string(),
+                "--tls-server-name".to_string(),
+                "rpc.example.com".to_string(),
+                "--tls-sha256".to_string(),
+                "deadbeef".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("bridge args should parse");
+
+        match command {
+            Command::H2Client(args) => {
+                assert!(args.tls);
+                assert_eq!(args.host, "mux.example.com");
+                assert_eq!(args.port, 9443);
+                assert_eq!(args.path, "/rpc");
+                assert_eq!(args.tls_ca_file.as_deref(), Some("/tmp/root.crt"));
+                assert_eq!(args.tls_server_name.as_deref(), Some("rpc.example.com"));
+                assert_eq!(args.tls_sha256.as_deref(), Some("deadbeef"));
+            }
+            other => panic!("expected H2Client, got {other:?}"),
+        }
     }
 }
