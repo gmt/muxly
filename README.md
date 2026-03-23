@@ -108,8 +108,10 @@ interactive navigation. Press `q` to leave the attached viewer session.
 
 ### Transport specs
 
-`muxly`, `muxlyd`, and `muxview` now accept `--transport` in addition to the
-legacy `--socket` flag. Supported specs are:
+`muxly`, `muxview`, and, for direct listener transports, `muxlyd` accept
+`--transport` in addition to the legacy `--socket` flag.
+
+Direct transports include:
 
 - bare paths or `unix:///run/user/$UID/muxly.sock`
 - `tcp://169.254.10.20:4488`
@@ -118,6 +120,13 @@ legacy `--socket` flag. Supported specs are:
 - `h3wt://127.0.0.1:4433/mux?sha256=<cert-pin>`
 - `ssh://alice@example.com/tcp://169.254.10.20:4488`
 - `ssh://alice@example.com:2222/tcp://169.254.10.20:4488`
+
+Client-side secure transports also include:
+
+- `https://rpc.example.com/rpc`
+- `https1://rpc.example.com/rpc`
+- `https2://rpc.example.com/rpc`
+- `trds://rpc.example.com//docs/demo`
 
 When no transport is specified, muxly prefers
 `${XDG_RUNTIME_DIR}/muxly.sock`, then `/run/user/$UID/muxly.sock`, and finally
@@ -133,6 +142,10 @@ transport spelling.
 `h3wt://` is a WebTransport-over-HTTP/3 transport. The daemon prints a
 ready-to-use `?sha256=...` certificate pin when it starts listening, and the
 client accepts `wt://` as a shorthand alias for the same transport.
+
+`muxlyd` itself still listens on direct transports only in this slice; secure
+`https://...` and `trds://...` entrypoints remain client-side forms fronted by
+Caddy or another secure edge.
 
 If you need a custom SSH client config for transport testing or host-specific
 identity/known-host settings, set `MUXLY_SSH_CONFIG=/path/to/ssh_config`.
@@ -244,7 +257,7 @@ Trust metadata:
 
 - shareable descriptors may carry `sha256=` and `sni=` query params
 - local CA bundle override stays outside the descriptor via `--tls-ca-file`
-- native secure CLI clients also accept `--tls-pin-sha256` and
+- native secure CLI and viewer clients also accept `--tls-pin-sha256` and
   `--tls-server-name`
 
 Use the admin generators to render Caddy and systemd artifacts from a secure
