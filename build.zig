@@ -1,5 +1,11 @@
 const std = @import("std");
 
+const unit_test_timeout_seconds: u32 = 600;
+const transport_bridge_unit_timeout_seconds: u32 = 600;
+const transport_integration_timeout_seconds: u32 = 900;
+const docker_transport_timeout_seconds: u32 = 1_200;
+const transport_stress_timeout_seconds: u32 = 2_700;
+
 fn envVarEnabled(allocator: std.mem.Allocator, name: []const u8) bool {
     const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return false,
@@ -11,6 +17,32 @@ fn envVarEnabled(allocator: std.mem.Allocator, name: []const u8) bool {
         std.ascii.eqlIgnoreCase(value, "true") or
         std.ascii.eqlIgnoreCase(value, "yes") or
         std.ascii.eqlIgnoreCase(value, "on");
+}
+
+fn addTimedSystemCommand(
+    b: *std.Build,
+    timeout_seconds: u32,
+    argv: []const []const u8,
+) *std.Build.Step.Run {
+    const run = b.addSystemCommand(&.{ "python3", b.pathFromRoot("scripts/run_with_timeout.py") });
+    run.addArgs(&.{ "--timeout-seconds", b.fmt("{d}", .{timeout_seconds}), "--" });
+    run.addArgs(argv);
+    return run;
+}
+
+fn setTimedTestExec(
+    b: *std.Build,
+    compile: *std.Build.Step.Compile,
+    timeout_seconds: u32,
+) void {
+    compile.setExecCmd(&.{
+        "python3",
+        b.pathFromRoot("scripts/run_with_timeout.py"),
+        "--timeout-seconds",
+        b.fmt("{d}", .{timeout_seconds}),
+        "--",
+        null,
+    });
 }
 
 pub fn build(b: *std.Build) void {
@@ -200,12 +232,13 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    setTimedTestExec(b, unit_tests, unit_test_timeout_seconds);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
-    const run_docker_transport_tests = b.addSystemCommand(&.{
+    const run_docker_transport_tests = addTimedSystemCommand(b, docker_transport_timeout_seconds, &.{
         "python3",
         "tests/integration/docker_transport_test.py",
         "--skip-build",
@@ -220,7 +253,7 @@ pub fn build(b: *std.Build) void {
     );
     test_docker_step.dependOn(&run_docker_transport_tests.step);
 
-    const run_transport_tests = b.addSystemCommand(&.{
+    const run_transport_tests = addTimedSystemCommand(b, transport_integration_timeout_seconds, &.{
         "python3",
         "tests/integration/http_h3wt_transport_test.py",
         "--skip-build",
@@ -234,7 +267,11 @@ pub fn build(b: *std.Build) void {
         "test-transport",
         "Run transport integration tests",
     );
-    const run_transport_bridge_unit_tests = b.addSystemCommand(&.{ "cargo", "test" });
+    const run_transport_bridge_unit_tests = addTimedSystemCommand(
+        b,
+        transport_bridge_unit_timeout_seconds,
+        &.{ "cargo", "test" },
+    );
     run_transport_bridge_unit_tests.setCwd(b.path("tools/transport_bridge"));
     const async_transport_validation_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -246,6 +283,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    setTimedTestExec(b, async_transport_validation_tests, transport_integration_timeout_seconds);
     const run_async_transport_validation_tests = b.addRunArtifact(async_transport_validation_tests);
     run_async_transport_validation_tests.step.dependOn(&install_daemon.step);
     run_async_transport_validation_tests.step.dependOn(&install_transport_bridge.step);
@@ -257,7 +295,7 @@ pub fn build(b: *std.Build) void {
     test_transport_step.dependOn(&run_transport_tests.step);
     test_transport_step.dependOn(&run_async_transport_validation_tests.step);
 
-    const run_transport_stress_tests = b.addSystemCommand(&.{
+    const run_transport_stress_tests = addTimedSystemCommand(b, transport_stress_timeout_seconds, &.{
         "python3",
         "tests/integration/transport_stress_test.py",
         "--skip-build",
