@@ -79,15 +79,27 @@ pub fn writeProjectionJson(
     request: Request,
     writer: anytype,
 ) anyerror!void {
+    return try writeProjectionJsonForRoot(allocator, document, null, request, writer);
+}
+
+pub fn writeProjectionJsonForRoot(
+    allocator: std.mem.Allocator,
+    document: *const document_mod.Document,
+    root_override: ?ids.NodeId,
+    request: Request,
+    writer: anytype,
+) anyerror!void {
     const rows = clampDimension(request.rows, 8);
     const cols = clampDimension(request.cols, 24);
-    const root_node_id = document.view_root_node_id orelse document.root_node_id;
+    const root_node_id = root_override orelse document.view_root_node_id orelse document.root_node_id;
 
     try writer.writeAll("{");
     try writer.writeAll("\"title\":");
     try writer.print("{f}", .{std.json.fmt(document.title, .{})});
     try writer.print(",\"rows\":{d},\"cols\":{d},\"rootNodeId\":{d}", .{ rows, cols, root_node_id });
-    if (document.view_root_node_id) |view_root_node_id| {
+    if (root_override) |view_root_node_id| {
+        try writer.print(",\"viewRootNodeId\":{d}", .{view_root_node_id});
+    } else if (document.view_root_node_id) |view_root_node_id| {
         try writer.print(",\"viewRootNodeId\":{d}", .{view_root_node_id});
     } else {
         try writer.writeAll(",\"viewRootNodeId\":null");

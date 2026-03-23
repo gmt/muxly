@@ -188,6 +188,34 @@ pub const PaneCapturePoll = union(enum) {
     closed,
 };
 
+pub const ProjectionEvent = union(enum) {
+    invalidate: struct {
+        node_id: u64,
+        reason: []u8,
+    },
+    tty_data: struct {
+        node_id: u64,
+        chunk: []u8,
+    },
+    target_gone: struct {
+        node_id: u64,
+    },
+
+    pub fn deinit(self: *ProjectionEvent, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .invalidate => |*value| allocator.free(value.reason),
+            .tty_data => |*value| allocator.free(value.chunk),
+            .target_gone => {},
+        }
+    }
+};
+
+pub const ProjectionEventPoll = union(enum) {
+    pending,
+    data: ProjectionEvent,
+    closed,
+};
+
 pub const CompatibilityTransportMode = enum {
     shared_connection,
     pooled_connections,
@@ -986,6 +1014,12 @@ const PaneCaptureStreamStatus = enum {
     released,
 };
 
+const ProjectionEventStreamStatus = enum {
+    active,
+    closed,
+    released,
+};
+
 pub const TtyOutputStream = struct {
     state_owner: *ConversationClientState,
     conversation_id: []u8,
@@ -1221,6 +1255,149 @@ pub const PaneCaptureStream = struct {
     }
 };
 
+pub const ProjectionEventStream = struct {
+    state_owner: *ConversationClientState,
+    conversation_id: []u8,
+    target: protocol.RequestTarget,
+    mutex: std.Thread.Mutex = .{},
+    status: ProjectionEventStreamStatus = .active,
+    released: bool = false,
+
+    pub fn waitEvent(self: *ProjectionEventStream) !ProjectionEvent {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return error.EndOfStream,
+            .released => return error.InvalidProjectionEventStream,
+        }
+
+        var envelope = self.state_owner.frame_router.waitForEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.UnknownConversation, error.EndOfStream => return error.EndOfStream,
+            else => return err,
+        };
+        return try self.consumeEnvelope(&envelope);
+    }
+
+    pub fn pollEvent(self: *ProjectionEventStream) !ProjectionEventPoll {
+        switch (self.currentStatus()) {
+            .active => {},
+            .closed => return .closed,
+            .released => return error.InvalidProjectionEventStream,
+        }
+
+        var envelope = self.state_owner.frame_router.takeEnvelope(
+            self.conversation_id,
+            null,
+        ) catch |err| switch (err) {
+            error.ConversationResponseNotFound => return .pending,
+            error.UnknownConversation => return .closed,
+            else => return err,
+        };
+        return .{ .data = try self.consumeEnvelope(&envelope) };
+    }
+
+    pub fn close(self: *ProjectionEventStream) void {
+        if (!self.markClosed()) return;
+        self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+    }
+
+    pub fn deinit(self: *ProjectionEventStream) void {
+        self.close();
+
+        self.mutex.lock();
+        if (self.released) {
+            self.mutex.unlock();
+            return;
+        }
+        self.released = true;
+        self.mutex.unlock();
+
+        self.state_owner.allocator.free(self.conversation_id);
+        if (self.target.documentPath) |value| self.state_owner.allocator.free(value);
+        if (self.target.selector) |value| self.state_owner.allocator.free(value);
+    }
+
+    fn consumeEnvelope(
+        self: *ProjectionEventStream,
+        envelope: *conversation_router.OwnedEnvelope,
+    ) !ProjectionEvent {
+        defer envelope.deinit(self.state_owner.allocator);
+
+        if (envelope.conversation_error != null) {
+            _ = self.markClosed();
+            self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+            return error.RequestFailed;
+        }
+        if (envelope.kind != .projection_event) return error.InvalidResponse;
+        if (envelope.fin and std.mem.eql(u8, envelope.payload_json, "null")) {
+            _ = self.markClosed();
+            self.state_owner.frame_router.unregisterConversation(self.conversation_id);
+            return error.EndOfStream;
+        }
+
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.state_owner.allocator, envelope.payload_json, .{
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidResponse;
+
+        const event_value = parsed.value.object.get("event") orelse return error.InvalidResponse;
+        if (event_value != .string) return error.InvalidResponse;
+
+        if (std.mem.eql(u8, event_value.string, "invalidate")) {
+            const node_value = parsed.value.object.get("nodeId") orelse return error.InvalidResponse;
+            const reason_value = parsed.value.object.get("reason") orelse return error.InvalidResponse;
+            if (node_value != .integer or node_value.integer < 0 or reason_value != .string) return error.InvalidResponse;
+            return .{
+                .invalidate = .{
+                    .node_id = @intCast(node_value.integer),
+                    .reason = try self.state_owner.allocator.dupe(u8, reason_value.string),
+                },
+            };
+        }
+
+        if (std.mem.eql(u8, event_value.string, "tty_data")) {
+            const node_value = parsed.value.object.get("nodeId") orelse return error.InvalidResponse;
+            const chunk_value = parsed.value.object.get("chunk") orelse return error.InvalidResponse;
+            if (node_value != .integer or node_value.integer < 0 or chunk_value != .string) return error.InvalidResponse;
+            return .{
+                .tty_data = .{
+                    .node_id = @intCast(node_value.integer),
+                    .chunk = try self.state_owner.allocator.dupe(u8, chunk_value.string),
+                },
+            };
+        }
+
+        if (std.mem.eql(u8, event_value.string, "target_gone")) {
+            const node_value = parsed.value.object.get("nodeId") orelse return error.InvalidResponse;
+            if (node_value != .integer or node_value.integer < 0) return error.InvalidResponse;
+            return .{
+                .target_gone = .{
+                    .node_id = @intCast(node_value.integer),
+                },
+            };
+        }
+
+        return error.InvalidResponse;
+    }
+
+    fn currentStatus(self: *ProjectionEventStream) ProjectionEventStreamStatus {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return if (self.released) .released else self.status;
+    }
+
+    fn markClosed(self: *ProjectionEventStream) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.released or self.status == .closed) return false;
+        self.status = .closed;
+        return true;
+    }
+};
+
 pub const TtyConversation = struct {
     state_owner: *ConversationClientState,
     info: TtySessionInfo,
@@ -1378,6 +1555,13 @@ pub const ConversationClient = struct {
         options: TtyOpenOptions,
     ) !TtyConversation {
         return try self.state.openTty(target, options);
+    }
+
+    pub fn openProjectionStream(
+        self: *ConversationClient,
+        target: protocol.RequestTarget,
+    ) !ProjectionEventStream {
+        return try self.state.openProjectionStream(target);
     }
 
     pub fn openPaneCaptureStream(
@@ -1574,6 +1758,9 @@ const ConversationClientState = struct {
         switch (address.target) {
             .h2 => |h2| {
                 state.native_session = try NativeSession.initH2(state, h2);
+            },
+            .unix, .tcp => {
+                state.native_session = try NativeSession.initDirect(state, resolved.transport_spec);
             },
             .https => |https| {
                 var selected = try selectPreferredSecureClientAddress(
@@ -1797,6 +1984,64 @@ const ConversationClientState = struct {
         };
     }
 
+    fn openProjectionStream(
+        self: *ConversationClientState,
+        target: protocol.RequestTarget,
+    ) !ProjectionEventStream {
+        if (self.native_session == null) return error.UnsupportedProjectionStreamTransport;
+
+        const normalized_target = protocol.RequestTarget{
+            .documentPath = target.documentPath orelse self.document_path,
+            .nodeId = target.nodeId,
+            .selector = target.selector,
+        };
+
+        const conversation_id = try self.nextConversationId();
+        errdefer self.allocator.free(conversation_id);
+        try self.frame_router.registerConversation(conversation_id);
+        errdefer self.frame_router.unregisterConversation(conversation_id);
+
+        const request_id = self.nextRpcRequestId();
+        var request_json = std.array_list.Managed(u8).init(self.allocator);
+        defer request_json.deinit();
+        try protocol.writeClientRequestTarget(
+            request_json.writer(),
+            request_id,
+            normalized_target,
+            "projection.stream.open",
+            "{}",
+        );
+
+        const envelope_json = try protocol.allocConversationEnvelope(
+            self.allocator,
+            conversation_id,
+            request_id,
+            normalized_target,
+            .rpc,
+            request_json.items,
+            false,
+            null,
+        );
+        try self.submitEnvelopeOwned(envelope_json);
+
+        var ack = try self.frame_router.waitForEnvelope(conversation_id, request_id);
+        defer ack.deinit(self.allocator);
+        if (ack.conversation_error != null) {
+            self.frame_router.unregisterConversation(conversation_id);
+            return error.RequestFailed;
+        }
+
+        return .{
+            .state_owner = self,
+            .conversation_id = conversation_id,
+            .target = .{
+                .documentPath = try self.allocator.dupe(u8, normalized_target.documentPath.?),
+                .nodeId = normalized_target.nodeId,
+                .selector = if (normalized_target.selector) |value| try self.allocator.dupe(u8, value) else null,
+            },
+        };
+    }
+
     fn openTtyOutputStream(
         self: *ConversationClientState,
         document_path: []const u8,
@@ -1874,6 +2119,32 @@ const ConversationClientState = struct {
                 .nodeId = node_id,
             },
             "tty.stream.close",
+            params_json,
+        );
+        defer pending.deinit();
+
+        const response = pending.wait() catch return;
+        defer self.allocator.free(response);
+    }
+
+    fn closeProjectionEventStream(
+        self: *ConversationClientState,
+        stream_conversation_id: []const u8,
+    ) !void {
+        const stream_conversation_json = try std.json.Stringify.valueAlloc(self.allocator, stream_conversation_id, .{});
+        defer self.allocator.free(stream_conversation_json);
+        const params_json = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"streamConversationId\":{s}}}",
+            .{stream_conversation_json},
+        );
+        defer self.allocator.free(params_json);
+
+        var pending = try self.startRpcRequest(
+            .{
+                .documentPath = self.document_path,
+            },
+            "projection.stream.close",
             params_json,
         );
         defer pending.deinit();
@@ -1975,9 +2246,33 @@ const ConversationClientState = struct {
 
 const NativeSession = struct {
     state_owner: *ConversationClientState,
-    process: transport.ProcessSession,
+    connection: transport.Connection,
     write_mutex: std.Thread.Mutex = .{},
     reader_thread: ?std.Thread = null,
+
+    fn initDirect(
+        state_owner: *ConversationClientState,
+        transport_spec: []const u8,
+    ) !*NativeSession {
+        var address = try transport.Address.parse(state_owner.allocator, transport_spec);
+        defer address.deinit(state_owner.allocator);
+
+        const session = try state_owner.allocator.create(NativeSession);
+        errdefer state_owner.allocator.destroy(session);
+
+        session.* = .{
+            .state_owner = state_owner,
+            .connection = try transport.connectWithMaxMessageBytes(
+                state_owner.allocator,
+                &address,
+                state_owner.runtime_limits.max_message_bytes,
+            ),
+        };
+        errdefer session.connection.close();
+
+        session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
+        return session;
+    }
 
     fn initH3wt(
         state_owner: *ConversationClientState,
@@ -1988,13 +2283,13 @@ const NativeSession = struct {
 
         session.* = .{
             .state_owner = state_owner,
-            .process = try transport.ProcessSession.initH3wtConversationWithMaxMessageBytes(
+            .connection = .{ .process = try transport.ProcessSession.initH3wtConversationWithMaxMessageBytes(
                 state_owner.allocator,
                 h3wt,
                 state_owner.runtime_limits.max_message_bytes,
-            ),
+            ) },
         };
-        errdefer session.process.close();
+        errdefer session.connection.close();
 
         session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
         return session;
@@ -2009,13 +2304,13 @@ const NativeSession = struct {
 
         session.* = .{
             .state_owner = state_owner,
-            .process = try transport.ProcessSession.initH2ConversationWithMaxMessageBytes(
+            .connection = .{ .process = try transport.ProcessSession.initH2ConversationWithMaxMessageBytes(
                 state_owner.allocator,
                 h2,
                 state_owner.runtime_limits.max_message_bytes,
-            ),
+            ) },
         };
-        errdefer session.process.close();
+        errdefer session.connection.close();
 
         session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
         return session;
@@ -2030,13 +2325,13 @@ const NativeSession = struct {
 
         session.* = .{
             .state_owner = state_owner,
-            .process = try transport.ProcessSession.initHttps2ConversationWithMaxMessageBytes(
+            .connection = .{ .process = try transport.ProcessSession.initHttps2ConversationWithMaxMessageBytes(
                 state_owner.allocator,
                 https2,
                 state_owner.runtime_limits.max_message_bytes,
-            ),
+            ) },
         };
-        errdefer session.process.close();
+        errdefer session.connection.close();
 
         session.reader_thread = try std.Thread.spawn(.{}, readerMain, .{session});
         return session;
@@ -2045,20 +2340,17 @@ const NativeSession = struct {
     fn deinit(self: *NativeSession) void {
         self.state_owner.frame_router.close();
         self.write_mutex.lock();
-        self.process.stdin_file.close();
+        self.connection.close();
         self.write_mutex.unlock();
-        _ = self.process.child.kill() catch {};
         if (self.reader_thread) |thread| thread.join();
-        self.process.stdout_file.close();
-        _ = self.process.child.wait() catch {};
         self.state_owner.allocator.destroy(self);
     }
 
     fn sendEnvelope(self: *NativeSession, envelope_json: []const u8) !void {
         self.write_mutex.lock();
         defer self.write_mutex.unlock();
-        try self.process.writeAll(envelope_json);
-        try self.process.writeAll("\n");
+        try self.connection.writeAll(envelope_json);
+        try self.connection.writeAll("\n");
     }
 
     fn readerMain(self: *NativeSession) void {
@@ -2071,7 +2363,7 @@ const NativeSession = struct {
         defer reader.deinit();
 
         while (true) {
-            const line = try reader.readMessageLine(&self.process, self.state_owner.runtime_limits.max_message_bytes) orelse break;
+            const line = try reader.readMessageLine(&self.connection, self.state_owner.runtime_limits.max_message_bytes) orelse break;
             defer self.state_owner.allocator.free(line);
             if (line.len == 0) continue;
             self.state_owner.frame_router.pushEnvelopeBytes(line) catch |err| switch (err) {
@@ -2275,6 +2567,121 @@ test "pane capture stream consumes chunk and close envelopes" {
 
     try std.testing.expect((try stream.waitChunk()) == .closed);
     try std.testing.expect((try stream.pollChunk()) == .closed);
+}
+
+test "projection event stream consumes invalidate tty data target gone and close envelopes" {
+    var state = ConversationClientState{
+        .allocator = std.testing.allocator,
+        .document_path = try std.testing.allocator.dupe(u8, "/"),
+        .runtime_limits = .{},
+        .frame_router = conversation_router.ConversationRouter.init(std.testing.allocator),
+    };
+    defer {
+        state.frame_router.deinit();
+        std.testing.allocator.free(state.document_path);
+    }
+
+    const conversation_id = try std.testing.allocator.dupe(u8, "c-projection-stream");
+    try state.frame_router.registerConversation(conversation_id);
+
+    var stream = ProjectionEventStream{
+        .state_owner = &state,
+        .conversation_id = conversation_id,
+        .target = .{
+            .documentPath = try std.testing.allocator.dupe(u8, "/"),
+        },
+    };
+    defer stream.deinit();
+
+    const invalidate_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .projection_event,
+        "{\"event\":\"invalidate\",\"nodeId\":7,\"reason\":\"content\"}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(invalidate_frame);
+    try state.frame_router.pushEnvelopeBytes(invalidate_frame);
+
+    const first = try stream.pollEvent();
+    switch (first) {
+        .data => |event| {
+            var owned = event;
+            defer owned.deinit(std.testing.allocator);
+            switch (owned) {
+                .invalidate => |value| {
+                    try std.testing.expectEqual(@as(u64, 7), value.node_id);
+                    try std.testing.expectEqualStrings("content", value.reason);
+                },
+                else => return error.UnexpectedTestResult,
+            }
+        },
+        else => return error.UnexpectedTestResult,
+    }
+
+    const tty_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .projection_event,
+        "{\"event\":\"tty_data\",\"nodeId\":7,\"chunk\":\"hello\"}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(tty_frame);
+    try state.frame_router.pushEnvelopeBytes(tty_frame);
+
+    const second = try stream.waitEvent();
+    var second_owned = second;
+    defer second_owned.deinit(std.testing.allocator);
+    switch (second_owned) {
+        .tty_data => |value| {
+            try std.testing.expectEqual(@as(u64, 7), value.node_id);
+            try std.testing.expectEqualStrings("hello", value.chunk);
+        },
+        else => return error.UnexpectedTestResult,
+    }
+
+    const gone_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .projection_event,
+        "{\"event\":\"target_gone\",\"nodeId\":7}",
+        false,
+        null,
+    );
+    defer std.testing.allocator.free(gone_frame);
+    try state.frame_router.pushEnvelopeBytes(gone_frame);
+
+    const third = try stream.waitEvent();
+    var third_owned = third;
+    defer third_owned.deinit(std.testing.allocator);
+    switch (third_owned) {
+        .target_gone => |value| try std.testing.expectEqual(@as(u64, 7), value.node_id),
+        else => return error.UnexpectedTestResult,
+    }
+
+    const closed_frame = try protocol.allocConversationEnvelope(
+        std.testing.allocator,
+        conversation_id,
+        null,
+        .{ .documentPath = "/" },
+        .projection_event,
+        "null",
+        true,
+        null,
+    );
+    defer std.testing.allocator.free(closed_frame);
+    try state.frame_router.pushEnvelopeBytes(closed_frame);
+
+    try std.testing.expectError(error.EndOfStream, stream.waitEvent());
+    try std.testing.expect((try stream.pollEvent()) == .closed);
 }
 
 test "openTty surfaces node.get rpc failure as RequestFailed" {

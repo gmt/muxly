@@ -325,6 +325,7 @@ fn requestJsonForEnvelope(
             envelope,
         ),
         .capture_data => error.UnsupportedConversationKind,
+        .projection_event => error.UnsupportedConversationKind,
     };
 }
 
@@ -415,5 +416,7 @@ fn extractConversationKind(value: std.json.Value) ?protocol.ConversationKind {
     if (std.mem.eql(u8, kind.string, "rpc")) return .rpc;
     if (std.mem.eql(u8, kind.string, "tty_control")) return .tty_control;
     if (std.mem.eql(u8, kind.string, "tty_data")) return .tty_data;
+    if (std.mem.eql(u8, kind.string, "capture_data")) return .capture_data;
+    if (std.mem.eql(u8, kind.string, "projection_event")) return .projection_event;
     return null;
 }

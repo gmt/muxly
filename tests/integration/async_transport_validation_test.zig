@@ -46,6 +46,29 @@ const DaemonInstance = struct {
     }
 };
 
+const ProjectionViewer = struct {
+    client: muxly.client.ConversationClient,
+    stream: muxly.client.ProjectionEventStream,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        transport_spec: []const u8,
+        target: muxly.protocol.RequestTarget,
+    ) !ProjectionViewer {
+        var client = try muxly.client.ConversationClient.init(allocator, transport_spec);
+        errdefer client.deinit();
+        return .{
+            .client = client,
+            .stream = try client.openProjectionStream(target),
+        };
+    }
+
+    fn deinit(self: *ProjectionViewer) void {
+        self.stream.deinit();
+        self.client.deinit();
+    }
+};
+
 test "async validation matrix over tcp transport" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     try support.runTransportValidation(std.testing.allocator, .tcp);
@@ -218,6 +241,219 @@ test "async validation surfaces node.get rpc failure instead of InvalidResponse"
             .nodeId = 999_999,
         }, .{}),
     );
+}
+
+test "projection streams fan out text and structure changes only to interested viewers" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var daemon = try startDaemon(std.testing.allocator, "tcp://127.0.0.1:0");
+    defer daemon.deinit();
+
+    var admin = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    defer admin.deinit();
+    try createDocument(&admin, "/a");
+    try createDocument(&admin, "/b");
+
+    const focus_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        1,
+        .container,
+        "Focus Branch",
+    );
+    const middle_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        focus_node_id,
+        .container,
+        "Middle Layer",
+    );
+    const target_leaf_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        middle_node_id,
+        .text_leaf,
+        "Target Leaf",
+    );
+    const sibling_leaf_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        middle_node_id,
+        .text_leaf,
+        "Sibling Leaf",
+    );
+    const cousin_branch_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        1,
+        .container,
+        "Cousin Branch",
+    );
+    const cousin_child_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        cousin_branch_node_id,
+        .container,
+        "Cousin Child",
+    );
+    const cousin_leaf_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        cousin_child_node_id,
+        .text_leaf,
+        "Cousin Leaf",
+    );
+    const aunt_branch_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        1,
+        .container,
+        "Aunt Branch",
+    );
+    const niece_parent_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        aunt_branch_node_id,
+        .container,
+        "Niece Parent",
+    );
+    const niece_leaf_node_id = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/a",
+        niece_parent_node_id,
+        .text_leaf,
+        "Niece Leaf",
+    );
+    _ = try appendNode(
+        std.testing.allocator,
+        &admin,
+        "/b",
+        1,
+        .container,
+        "Other Branch",
+    );
+
+    var doc_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+    });
+    defer doc_viewer.deinit();
+    var focus_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = focus_node_id,
+    });
+    defer focus_viewer.deinit();
+    var middle_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = middle_node_id,
+    });
+    defer middle_viewer.deinit();
+    var leaf_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = target_leaf_node_id,
+    });
+    defer leaf_viewer.deinit();
+    var sibling_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = sibling_leaf_node_id,
+    });
+    defer sibling_viewer.deinit();
+    var cousin_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = cousin_leaf_node_id,
+    });
+    defer cousin_viewer.deinit();
+    var niece_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/a",
+        .nodeId = niece_leaf_node_id,
+    });
+    defer niece_viewer.deinit();
+    var wrong_document_viewer = try ProjectionViewer.init(std.testing.allocator, daemon.actual_spec, .{
+        .documentPath = "/b",
+    });
+    defer wrong_document_viewer.deinit();
+
+    var mutator_a = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    defer mutator_a.deinit();
+    var mutator_b = try muxly.client.ConversationClient.init(std.testing.allocator, daemon.actual_spec);
+    defer mutator_b.deinit();
+
+    try updateNodeContentById(
+        std.testing.allocator,
+        &mutator_a,
+        "/a",
+        target_leaf_node_id,
+        "text-update-by-node-id",
+    );
+
+    try waitForProjectionInvalidate(&doc_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&focus_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&middle_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&leaf_viewer, target_leaf_node_id, "content", 2_000);
+    try expectNoProjectionEvent(&sibling_viewer, 250);
+    try expectNoProjectionEvent(&cousin_viewer, 250);
+    try expectNoProjectionEvent(&niece_viewer, 250);
+    try expectNoProjectionEvent(&wrong_document_viewer, 250);
+
+    try updateNodeContentBySelector(
+        std.testing.allocator,
+        &mutator_a,
+        "/a",
+        "focus-branch/middle-layer/target-leaf",
+        "text-update-by-selector",
+    );
+
+    try waitForProjectionInvalidate(&doc_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&focus_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&middle_viewer, target_leaf_node_id, "content", 2_000);
+    try waitForProjectionInvalidate(&leaf_viewer, target_leaf_node_id, "content", 2_000);
+    try expectNoProjectionEvent(&sibling_viewer, 250);
+    try expectNoProjectionEvent(&cousin_viewer, 250);
+    try expectNoProjectionEvent(&niece_viewer, 250);
+    try expectNoProjectionEvent(&wrong_document_viewer, 250);
+
+    const new_a_structure_node_id = try appendNode(
+        std.testing.allocator,
+        &mutator_a,
+        "/a",
+        middle_node_id,
+        .container,
+        "Inserted Child",
+    );
+    try waitForProjectionInvalidate(&doc_viewer, new_a_structure_node_id, "structure", 2_000);
+    try waitForProjectionInvalidate(&focus_viewer, new_a_structure_node_id, "structure", 2_000);
+    try waitForProjectionInvalidate(&middle_viewer, new_a_structure_node_id, "structure", 2_000);
+    try expectNoProjectionEvent(&leaf_viewer, 250);
+    try expectNoProjectionEvent(&sibling_viewer, 250);
+    try expectNoProjectionEvent(&cousin_viewer, 250);
+    try expectNoProjectionEvent(&niece_viewer, 250);
+    try expectNoProjectionEvent(&wrong_document_viewer, 250);
+
+    const new_b_structure_node_id = try appendNode(
+        std.testing.allocator,
+        &mutator_b,
+        "/b",
+        1,
+        .container,
+        "Document B Child",
+    );
+    try waitForProjectionInvalidate(&wrong_document_viewer, new_b_structure_node_id, "structure", 2_000);
+    try expectNoProjectionEvent(&doc_viewer, 250);
+    try expectNoProjectionEvent(&focus_viewer, 250);
+    try expectNoProjectionEvent(&middle_viewer, 250);
+    try expectNoProjectionEvent(&leaf_viewer, 250);
+    try expectNoProjectionEvent(&sibling_viewer, 250);
+    try expectNoProjectionEvent(&cousin_viewer, 250);
+    try expectNoProjectionEvent(&niece_viewer, 250);
 }
 
 fn runPaneCaptureStreamValidation(
@@ -516,6 +752,152 @@ fn createDocument(client: *muxly.client.ConversationClient, path: []const u8) !v
     parsed.deinit();
 }
 
+fn appendNode(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    parent_id: u64,
+    kind: muxly.types.NodeKind,
+    title: []const u8,
+) !u64 {
+    const title_json = try std.json.Stringify.valueAlloc(allocator, title, .{});
+    defer allocator.free(title_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"parentId\":{d},\"kind\":\"{s}\",\"title\":{s}}}",
+        .{ parent_id, @tagName(kind), title_json },
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+    }, "node.append", params_json);
+    defer allocator.free(response);
+    return try extractNodeId(allocator, response);
+}
+
+fn updateNodeContentById(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    node_id: u64,
+    content: []const u8,
+) !void {
+    const content_json = try std.json.Stringify.valueAlloc(allocator, content, .{});
+    defer allocator.free(content_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"content\":{s}}}",
+        .{content_json},
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+        .nodeId = node_id,
+    }, "node.update", params_json);
+    defer allocator.free(response);
+    var parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+}
+
+fn updateNodeContentBySelector(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    selector: []const u8,
+    content: []const u8,
+) !void {
+    const content_json = try std.json.Stringify.valueAlloc(allocator, content, .{});
+    defer allocator.free(content_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"content\":{s}}}",
+        .{content_json},
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+        .selector = selector,
+    }, "node.update", params_json);
+    defer allocator.free(response);
+    var parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+}
+
+fn createTmuxSessionUnder(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    parent_id: u64,
+    session_name: []const u8,
+    command: []const u8,
+) !u64 {
+    const session_name_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
+    defer allocator.free(session_name_json);
+    const command_json = try std.json.Stringify.valueAlloc(allocator, command, .{});
+    defer allocator.free(command_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"parentId\":{d},\"sessionName\":{s},\"command\":{s}}}",
+        .{ parent_id, session_name_json, command_json },
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/",
+    }, "session.create", params_json);
+    defer allocator.free(response);
+    return try extractNodeId(allocator, response);
+}
+
+fn resolveNodeParentId(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    node_id: u64,
+) !u64 {
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+        .nodeId = node_id,
+    }, "node.get", "{}");
+    defer allocator.free(response);
+
+    const parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .object) return error.InvalidResponse;
+    const parent_id_value = result.object.get("parentId") orelse return error.InvalidResponse;
+    if (parent_id_value != .integer or parent_id_value.integer < 0) return error.InvalidResponse;
+    return @intCast(parent_id_value.integer);
+}
+
+fn sendKeysToPane(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    pane_id: []const u8,
+    keys: []const u8,
+    press_enter: bool,
+) !void {
+    const pane_id_json = try std.json.Stringify.valueAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const keys_json = try std.json.Stringify.valueAlloc(allocator, keys, .{});
+    defer allocator.free(keys_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s},\"keys\":{s},\"enter\":{s}}}",
+        .{ pane_id_json, keys_json, if (press_enter) "true" else "false" },
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/",
+    }, "pane.sendKeys", params_json);
+    defer allocator.free(response);
+    var parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+}
+
 fn createTmuxSessionNode(
     allocator: std.mem.Allocator,
     actual_spec: []const u8,
@@ -568,6 +950,33 @@ fn resolveTtyPaneId(
     const pane_id_value = source_value.object.get("paneId") orelse return error.InvalidTtyTarget;
     if (pane_id_value != .string) return error.InvalidResponse;
     return try allocator.dupe(u8, pane_id_value.string);
+}
+
+fn resolveNodeIdForPaneId(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    pane_id: []const u8,
+) !u64 {
+    const response = try client.requestTarget(.{
+        .documentPath = "/",
+    }, "pane.list", "{}");
+    defer allocator.free(response);
+
+    const parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .array) return error.InvalidResponse;
+
+    for (result.array.items) |item| {
+        if (item != .object) continue;
+        const pane_id_value = item.object.get("paneId") orelse continue;
+        const node_id_value = item.object.get("nodeId") orelse continue;
+        if (pane_id_value != .string or node_id_value != .integer or node_id_value.integer < 0) continue;
+        if (std.mem.eql(u8, pane_id_value.string, pane_id)) {
+            return @intCast(node_id_value.integer);
+        }
+    }
+    return error.UnknownPane;
 }
 
 fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !DaemonInstance {
@@ -736,6 +1145,176 @@ fn waitForAnyStreamData(
         std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
     }
     return error.TestTimeout;
+}
+
+fn waitForProjectionInvalidate(
+    viewer: *ProjectionViewer,
+    expected_node_id: u64,
+    expected_reason: []const u8,
+    timeout_ms: u64,
+) !void {
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        switch (try viewer.stream.pollEvent()) {
+            .pending => {},
+            .closed => return error.EndOfStream,
+            .data => |event| {
+                var owned = event;
+                defer owned.deinit(std.testing.allocator);
+                switch (owned) {
+                    .invalidate => |value| {
+                        try std.testing.expectEqual(expected_node_id, value.node_id);
+                        try std.testing.expectEqualStrings(expected_reason, value.reason);
+                        return;
+                    },
+                    else => return error.UnexpectedProjectionEvent,
+                }
+            },
+        }
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn waitForNodeContentContains(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    node_id: u64,
+    needle: []const u8,
+    timeout_ms: u64,
+) !void {
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        const response = try client.requestTarget(.{
+            .documentPath = document_path,
+            .nodeId = node_id,
+        }, "node.get", "{}");
+        defer allocator.free(response);
+
+        const parsed = try parseSuccessResponse(allocator, response);
+        defer parsed.deinit();
+        const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+        if (result != .object) return error.InvalidResponse;
+        const content_value = result.object.get("content") orelse return error.InvalidResponse;
+        if (content_value != .string) return error.InvalidResponse;
+        if (std.mem.indexOf(u8, content_value.string, needle) != null) return;
+
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn waitForNodeContentContainsViaRefresh(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    node_id: u64,
+    needle: []const u8,
+    timeout_ms: u64,
+) !void {
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        const refresh = try client.requestTarget(.{
+            .documentPath = document_path,
+        }, "document.get", "{}");
+        defer allocator.free(refresh);
+        var parsed = try parseSuccessResponse(allocator, refresh);
+        parsed.deinit();
+
+        waitForNodeContentContains(
+            allocator,
+            client,
+            document_path,
+            node_id,
+            needle,
+            poll_interval_ms * 2,
+        ) catch |err| switch (err) {
+            error.TestTimeout => {},
+            else => return err,
+        };
+
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn waitForPaneCaptureContains(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    pane_id: []const u8,
+    needle: []const u8,
+    timeout_ms: u64,
+) !void {
+    const pane_id_json = try std.json.Stringify.valueAlloc(allocator, pane_id, .{});
+    defer allocator.free(pane_id_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"paneId\":{s}}}",
+        .{pane_id_json},
+    );
+    defer allocator.free(params_json);
+
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        const response = try client.requestTarget(.{
+            .documentPath = "/",
+        }, "pane.capture", params_json);
+        defer allocator.free(response);
+        const parsed = try parseSuccessResponse(allocator, response);
+        defer parsed.deinit();
+        const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+        if (result != .object) return error.InvalidResponse;
+        const content_value = result.object.get("content") orelse return error.InvalidResponse;
+        if (content_value != .string) return error.InvalidResponse;
+        if (std.mem.indexOf(u8, content_value.string, needle) != null) return;
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn waitForProjectionTtyData(
+    viewer: *ProjectionViewer,
+    expected_node_id: u64,
+    needle: []const u8,
+    timeout_ms: u64,
+) !void {
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        switch (try viewer.stream.pollEvent()) {
+            .pending => {},
+            .closed => return error.EndOfStream,
+            .data => |event| {
+                var owned = event;
+                defer owned.deinit(std.testing.allocator);
+                switch (owned) {
+                    .tty_data => |value| {
+                        if (value.node_id != expected_node_id) return error.UnexpectedProjectionEvent;
+                        if (std.mem.indexOf(u8, value.chunk, needle) != null) return;
+                    },
+                    else => return error.UnexpectedProjectionEvent,
+                }
+            },
+        }
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
+    return error.TestTimeout;
+}
+
+fn expectNoProjectionEvent(viewer: *ProjectionViewer, timeout_ms: u64) !void {
+    const started = try std.time.Instant.now();
+    while ((try elapsedMsSince(started)) < timeout_ms) {
+        switch (try viewer.stream.pollEvent()) {
+            .pending => {},
+            .closed => return error.UnexpectedProjectionStreamClose,
+            .data => |event| {
+                var owned = event;
+                defer owned.deinit(std.testing.allocator);
+                return error.UnexpectedProjectionEvent;
+            },
+        }
+        std.Thread.sleep(poll_interval_ms * std.time.ns_per_ms);
+    }
 }
 
 fn collectPaneCaptureStream(

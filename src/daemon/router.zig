@@ -155,9 +155,18 @@ pub fn handleRequest(
         };
         defer if (request_value.local_state.scroll_offsets.len != 0) allocator.free(request_value.local_state.scroll_offsets);
 
+        const projection_root_node_id = resolveProjectionRootNodeId(document, parsed.value) catch |err|
+            return try buildNodeTargetError(allocator, parsed.value.id, err);
+
         var result = std.array_list.Managed(u8).init(allocator);
         defer result.deinit();
-        try muxly.projection.writeProjectionJson(allocator, document, request_value, result.writer());
+        try muxly.projection.writeProjectionJsonForRoot(
+            allocator,
+            document,
+            projection_root_node_id,
+            request_value,
+            result.writer(),
+        );
         return try buildResult(allocator, parsed.value.id, result.items);
     }
 
@@ -231,7 +240,7 @@ pub fn handleRequest(
             return try buildError(allocator, parsed.value.id, .invalid_params, "title is required");
         const kind = parseNodeKind(kind_name) orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported node kind");
-        const node_id = store.appendNode(document, @intCast(parent_id), kind, title) catch |err| {
+        const node_id = store.appendNode(document_path, document, @intCast(parent_id), kind, title) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to append node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -244,7 +253,7 @@ pub fn handleRequest(
             return try buildNodeTargetError(allocator, parsed.value.id, err);
         const title = protocol.getString(parsed.value.params, "title");
         const content = protocol.getString(parsed.value.params, "content");
-        store.updateNode(document, @intCast(node_id), title, content) catch |err| {
+        store.updateNode(document_path, document, @intCast(node_id), title, content) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to update node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -292,7 +301,7 @@ pub fn handleRequest(
     if (std.mem.eql(u8, parsed.value.method, "node.remove")) {
         const node_id = requestNodeIdOrError(document, parsed.value) catch |err|
             return try buildNodeTargetError(allocator, parsed.value.id, err);
-        store.removeNode(document, @intCast(node_id)) catch |err| {
+        store.removeNode(document_path, document, @intCast(node_id)) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to remove node: {s}", .{@errorName(err)});
             defer allocator.free(message);
             return try buildError(allocator, parsed.value.id, .invalid_params, message);
@@ -493,7 +502,7 @@ pub fn handleRequest(
         if (std.mem.eql(u8, kind, "static-file") or std.mem.eql(u8, kind, "monitored-file")) {
             const path = protocol.getString(parsed.value.params, "path") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "path is required");
-            const node_id = store.attachFile(document, path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch |err| {
+            const node_id = store.attachFile(document_path, document, path, if (std.mem.eql(u8, kind, "static-file")) .static else .monitored) catch |err| {
                 const message = try std.fmt.allocPrint(allocator, "unable to attach file source: {s}", .{@errorName(err)});
                 defer allocator.free(message);
                 return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -504,7 +513,7 @@ pub fn handleRequest(
         if (std.mem.eql(u8, kind, "tty")) {
             const session_name = protocol.getString(parsed.value.params, "sessionName") orelse
                 return try buildError(allocator, parsed.value.id, .invalid_params, "sessionName is required");
-            const node_id = store.attachTty(document, session_name) catch |err| {
+            const node_id = store.attachTty(document_path, document, session_name) catch |err| {
                 const message = try std.fmt.allocPrint(allocator, "unable to attach tty source: {s}", .{@errorName(err)});
                 defer allocator.free(message);
                 return try buildError(allocator, parsed.value.id, .source_error, message);
@@ -882,6 +891,20 @@ fn requestNodeIdOrError(document: *const muxly.document.Document, request: proto
     }
 
     return protocol.getInteger(request.params, "nodeId") orelse error.MissingNodeTarget;
+}
+
+fn resolveProjectionRootNodeId(
+    document: *const muxly.document.Document,
+    request: protocol.RequestEnvelope,
+) !?u64 {
+    if (request.target) |target| {
+        if (target.nodeId != null or target.selector != null) {
+            const resolved = try requestNodeIdOrError(document, request);
+            if (resolved < 0) return error.InvalidNodeTarget;
+            return @intCast(resolved);
+        }
+    }
+    return null;
 }
 
 fn buildNodeTargetError(

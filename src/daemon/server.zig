@@ -11,6 +11,7 @@ const max_pending_requests_per_connection: usize = 32;
 const max_tty_output_chunk_bytes: usize = 16 * 1024;
 const max_tty_output_queue_bytes: usize = 4 * 1024 * 1024;
 const max_capture_stream_chunk_bytes: usize = 32 * 1024;
+const projection_pump_interval_ms: u64 = 40;
 
 pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     var thread_safe_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = allocator };
@@ -22,6 +23,13 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     const executor = try ServerExecutor.init(shared_allocator, &store);
     const tty_stream_registry = try TtyStreamRegistry.init(shared_allocator);
     defer tty_stream_registry.deinit();
+    const projection_stream_registry = try ProjectionStreamRegistry.init(shared_allocator);
+    defer projection_stream_registry.deinit();
+    store.setProjectionNotifier(.{
+        .context = projection_stream_registry,
+        .on_invalidate = projectionStreamStoreInvalidate,
+        .on_tty_data = projectionStreamStoreTtyData,
+    });
 
     var listener = try muxly.transport.Listener.initWithMaxMessageBytes(
         allocator,
@@ -39,6 +47,9 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
     try listener.writeDescription(stderr);
     try stderr.writeByte('\n');
 
+    const pump_thread = try std.Thread.spawn(.{}, tmuxPumpMain, .{executor});
+    pump_thread.detach();
+
     while (true) {
         const connection = try listener.accept();
         const thread = try std.Thread.spawn(.{}, serveConnection, .{ConnectionContext{
@@ -46,6 +57,7 @@ pub fn serve(allocator: std.mem.Allocator, config: config_mod.Config) !void {
             .store = &store,
             .executor = executor,
             .tty_stream_registry = tty_stream_registry,
+            .projection_stream_registry = projection_stream_registry,
             .connection = connection,
             .single_request_per_connection = single_request_per_connection,
             .max_message_bytes = config.runtime_limits.max_message_bytes,
@@ -59,6 +71,7 @@ const ConnectionContext = struct {
     store: *store_mod.Store,
     executor: *ServerExecutor,
     tty_stream_registry: *TtyStreamRegistry,
+    projection_stream_registry: *ProjectionStreamRegistry,
     connection: std.net.Server.Connection,
     single_request_per_connection: bool,
     max_message_bytes: usize,
@@ -358,16 +371,323 @@ const TtyStreamRegistry = struct {
     }
 };
 
-const QueuedRequest = struct {
-    request: muxly.conversation_broker.DispatchRequest,
+const ProjectionStreamHandle = struct {
+    allocator: std.mem.Allocator,
     session: *ConnectionSession,
+    conversation_id: []u8,
+    target: ?protocol.RequestTarget,
+    document_path: []u8,
+    root_node_id: u64,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        session: *ConnectionSession,
+        conversation_id: []const u8,
+        target: ?protocol.RequestTarget,
+        document_path: []const u8,
+        root_node_id: u64,
+    ) !*ProjectionStreamHandle {
+        const handle = try allocator.create(ProjectionStreamHandle);
+        errdefer allocator.destroy(handle);
+        session.retain();
+        handle.* = .{
+            .allocator = allocator,
+            .session = session,
+            .conversation_id = try allocator.dupe(u8, conversation_id),
+            .target = if (target) |value| try duplicateTarget(allocator, value) else null,
+            .document_path = try allocator.dupe(u8, document_path),
+            .root_node_id = root_node_id,
+        };
+        return handle;
+    }
+
+    fn deinit(self: *ProjectionStreamHandle) void {
+        self.session.release();
+        self.allocator.free(self.conversation_id);
+        if (self.target) |target| {
+            if (target.documentPath) |value| self.allocator.free(value);
+            if (target.selector) |value| self.allocator.free(value);
+        }
+        self.allocator.free(self.document_path);
+        self.allocator.destroy(self);
+    }
+};
+
+const ProjectionStreamRegistry = struct {
+    allocator: std.mem.Allocator,
+    streams: std.array_list.Managed(*ProjectionStreamHandle),
+    mutex: std.Thread.Mutex = .{},
+
+    fn init(allocator: std.mem.Allocator) !*ProjectionStreamRegistry {
+        const registry = try allocator.create(ProjectionStreamRegistry);
+        errdefer allocator.destroy(registry);
+        registry.* = .{
+            .allocator = allocator,
+            .streams = std.array_list.Managed(*ProjectionStreamHandle).init(allocator),
+        };
+        return registry;
+    }
+
+    fn deinit(self: *ProjectionStreamRegistry) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.streams.items) |handle| handle.deinit();
+        self.streams.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn register(self: *ProjectionStreamRegistry, handle: *ProjectionStreamHandle) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.streams.append(handle);
+    }
+
+    fn unregister(self: *ProjectionStreamRegistry, conversation_id: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.streams.items, 0..) |handle, index| {
+            if (std.mem.eql(u8, handle.conversation_id, conversation_id)) {
+                const removed = self.streams.orderedRemove(index);
+                removed.deinit();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn closeSession(self: *ProjectionStreamRegistry, session: *ConnectionSession) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var index: usize = 0;
+        while (index < self.streams.items.len) {
+            const handle = self.streams.items[index];
+            if (handle.session == session) {
+                const removed = self.streams.orderedRemove(index);
+                removed.deinit();
+                continue;
+            }
+            index += 1;
+        }
+    }
+
+    fn notifyInvalidate(
+        self: *ProjectionStreamRegistry,
+        document_path: []const u8,
+        document: *const muxly.document.Document,
+        node_id: u64,
+        reason: store_mod.ProjectionEventReason,
+    ) void {
+        self.broadcast(document_path, document, node_id, .invalidate, reason, null);
+    }
+
+    fn notifyTtyData(
+        self: *ProjectionStreamRegistry,
+        document_path: []const u8,
+        document: *const muxly.document.Document,
+        node_id: u64,
+        chunk: []const u8,
+    ) void {
+        self.broadcast(document_path, document, node_id, .tty_data, null, chunk);
+    }
+
+    const BroadcastKind = enum {
+        invalidate,
+        tty_data,
+    };
+
+    fn broadcast(
+        self: *ProjectionStreamRegistry,
+        document_path: []const u8,
+        document: *const muxly.document.Document,
+        node_id: u64,
+        kind: BroadcastKind,
+        reason: ?store_mod.ProjectionEventReason,
+        chunk: ?[]const u8,
+    ) void {
+        var stale = std.array_list.Managed([]u8).init(self.allocator);
+        defer {
+            for (stale.items) |conversation_id| self.allocator.free(conversation_id);
+            stale.deinit();
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.streams.items) |handle| {
+            if (!std.mem.eql(u8, handle.document_path, document_path)) continue;
+
+            const target_gone = document.findNodeConst(handle.root_node_id) == null;
+            if (target_gone) {
+                if (!sendProjectionTargetGone(self.allocator, handle, node_id)) {
+                    const owned = self.allocator.dupe(u8, handle.conversation_id) catch null;
+                    if (owned) |value| stale.append(value) catch self.allocator.free(value);
+                }
+                continue;
+            }
+
+            if (!document.nodeWithinSubtree(handle.root_node_id, node_id)) continue;
+            const sent = switch (kind) {
+                .invalidate => sendProjectionInvalidate(self.allocator, handle, node_id, reason.?),
+                .tty_data => sendProjectionTtyData(self.allocator, handle, node_id, chunk.?),
+            };
+            if (!sent) {
+                const owned = self.allocator.dupe(u8, handle.conversation_id) catch null;
+                if (owned) |value| stale.append(value) catch self.allocator.free(value);
+            }
+        }
+
+        for (stale.items) |conversation_id| {
+            var index: usize = 0;
+            while (index < self.streams.items.len) : (index += 1) {
+                if (std.mem.eql(u8, self.streams.items[index].conversation_id, conversation_id)) {
+                    const removed = self.streams.orderedRemove(index);
+                    removed.deinit();
+                    break;
+                }
+            }
+        }
+    }
+};
+
+fn projectionStreamStoreInvalidate(
+    context: *anyopaque,
+    document_path: []const u8,
+    document: *const muxly.document.Document,
+    node_id: u64,
+    reason: store_mod.ProjectionEventReason,
+) void {
+    const registry: *ProjectionStreamRegistry = @ptrCast(@alignCast(context));
+    registry.notifyInvalidate(document_path, document, node_id, reason);
+}
+
+fn projectionStreamStoreTtyData(
+    context: *anyopaque,
+    document_path: []const u8,
+    document: *const muxly.document.Document,
+    node_id: u64,
+    chunk: []const u8,
+) void {
+    const registry: *ProjectionStreamRegistry = @ptrCast(@alignCast(context));
+    registry.notifyTtyData(document_path, document, node_id, chunk);
+}
+
+fn sendProjectionInvalidate(
+    allocator: std.mem.Allocator,
+    handle: *ProjectionStreamHandle,
+    node_id: u64,
+    reason: store_mod.ProjectionEventReason,
+) bool {
+    const payload = std.fmt.allocPrint(
+        allocator,
+        "{{\"event\":\"invalidate\",\"nodeId\":{d},\"reason\":\"{s}\"}}",
+        .{ node_id, @tagName(reason) },
+    ) catch return false;
+    defer allocator.free(payload);
+
+    const frame = protocol.allocConversationEnvelope(
+        allocator,
+        handle.conversation_id,
+        null,
+        handle.target,
+        .projection_event,
+        payload,
+        false,
+        null,
+    ) catch return false;
+    defer allocator.free(frame);
+
+    handle.session.writeFrame(frame) catch return false;
+    return true;
+}
+
+fn sendProjectionTtyData(
+    allocator: std.mem.Allocator,
+    handle: *ProjectionStreamHandle,
+    node_id: u64,
+    chunk: []const u8,
+) bool {
+    const chunk_json = std.json.Stringify.valueAlloc(allocator, chunk, .{}) catch return false;
+    defer allocator.free(chunk_json);
+    const payload = std.fmt.allocPrint(
+        allocator,
+        "{{\"event\":\"tty_data\",\"nodeId\":{d},\"chunk\":{s}}}",
+        .{ node_id, chunk_json },
+    ) catch return false;
+    defer allocator.free(payload);
+
+    const frame = protocol.allocConversationEnvelope(
+        allocator,
+        handle.conversation_id,
+        null,
+        handle.target,
+        .projection_event,
+        payload,
+        false,
+        null,
+    ) catch return false;
+    defer allocator.free(frame);
+
+    handle.session.writeFrame(frame) catch return false;
+    return true;
+}
+
+fn sendProjectionTargetGone(
+    allocator: std.mem.Allocator,
+    handle: *ProjectionStreamHandle,
+    node_id: u64,
+) bool {
+    const payload = std.fmt.allocPrint(
+        allocator,
+        "{{\"event\":\"target_gone\",\"nodeId\":{d}}}",
+        .{node_id},
+    ) catch return false;
+    defer allocator.free(payload);
+
+    const frame = protocol.allocConversationEnvelope(
+        allocator,
+        handle.conversation_id,
+        null,
+        handle.target,
+        .projection_event,
+        payload,
+        false,
+        null,
+    ) catch return false;
+    defer allocator.free(frame);
+
+    handle.session.writeFrame(frame) catch return false;
+    return true;
+}
+
+fn duplicateTarget(
+    allocator: std.mem.Allocator,
+    target: protocol.RequestTarget,
+) !protocol.RequestTarget {
+    return .{
+        .documentPath = if (target.documentPath) |value| try allocator.dupe(u8, value) else null,
+        .nodeId = target.nodeId,
+        .selector = if (target.selector) |value| try allocator.dupe(u8, value) else null,
+    };
+}
+
+const MaintenanceKind = enum {
+    pump_tmux,
+};
+
+const QueuedWork = union(enum) {
+    request: struct {
+        request: muxly.conversation_broker.DispatchRequest,
+        session: *ConnectionSession,
+    },
+    maintenance: MaintenanceKind,
 };
 
 const Lane = struct {
     allocator: std.mem.Allocator,
     executor: *ServerExecutor,
     document_path: ?[]u8,
-    queue: std.array_list.Managed(QueuedRequest),
+    queue: std.array_list.Managed(QueuedWork),
     mutex: std.Thread.Mutex = .{},
     condition: std.Thread.Condition = .{},
 
@@ -378,7 +698,7 @@ const Lane = struct {
             .allocator = allocator,
             .executor = executor,
             .document_path = null,
-            .queue = std.array_list.Managed(QueuedRequest).init(allocator),
+            .queue = std.array_list.Managed(QueuedWork).init(allocator),
         };
         const thread = try std.Thread.spawn(.{}, workerMain, .{lane});
         thread.detach();
@@ -396,14 +716,14 @@ const Lane = struct {
             .allocator = allocator,
             .executor = executor,
             .document_path = document_path,
-            .queue = std.array_list.Managed(QueuedRequest).init(allocator),
+            .queue = std.array_list.Managed(QueuedWork).init(allocator),
         };
         const thread = try std.Thread.spawn(.{}, workerMain, .{lane});
         thread.detach();
         return lane;
     }
 
-    fn enqueue(self: *Lane, queued: QueuedRequest) !void {
+    fn enqueue(self: *Lane, queued: QueuedWork) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.queue.append(queued);
@@ -425,7 +745,7 @@ const Lane = struct {
             const queued = self.queue.orderedRemove(0);
             self.mutex.unlock();
 
-            self.executor.executeQueuedRequest(queued);
+            self.executor.executeQueuedWork(queued);
         }
     }
 };
@@ -460,9 +780,15 @@ const ServerExecutor = struct {
     ) !void {
         const lane = try self.resolveLane(lane_key);
         try lane.enqueue(.{
-            .request = request,
-            .session = session,
+            .request = .{
+                .request = request,
+                .session = session,
+            },
         });
+    }
+
+    fn enqueueRootMaintenance(self: *ServerExecutor, kind: MaintenanceKind) !void {
+        try self.root_lane.enqueue(.{ .maintenance = kind });
     }
 
     fn resolveLane(self: *ServerExecutor, lane_key: router.ExecutionLane) !*Lane {
@@ -486,18 +812,29 @@ const ServerExecutor = struct {
         };
     }
 
-    fn executeQueuedRequest(self: *ServerExecutor, queued: QueuedRequest) void {
-        var request = queued.request;
-        defer request.deinit();
-        defer queued.session.finishPendingRequest();
-        defer queued.session.release();
+    fn executeQueuedWork(self: *ServerExecutor, queued: QueuedWork) void {
+        switch (queued) {
+            .request => |request_item| self.executeQueuedRequest(request_item.request, request_item.session),
+            .maintenance => |kind| self.executeMaintenance(kind),
+        }
+    }
 
-        if (queued.session.isClosed()) return;
+    fn executeQueuedRequest(
+        self: *ServerExecutor,
+        request: muxly.conversation_broker.DispatchRequest,
+        session: *ConnectionSession,
+    ) void {
+        var owned_request = request;
+        defer owned_request.deinit();
+        defer session.finishPendingRequest();
+        defer session.release();
+
+        if (session.isClosed()) return;
 
         const response_json = router.handleRequest(
             self.allocator,
             self.store,
-            request.request_json,
+            owned_request.request_json,
         ) catch |err| {
             const message = std.fmt.allocPrint(
                 self.allocator,
@@ -506,15 +843,15 @@ const ServerExecutor = struct {
             ) catch return;
             defer self.allocator.free(message);
 
-            const frame = request.buildFailureFrame(self.allocator, message) catch return;
+            const frame = owned_request.buildFailureFrame(self.allocator, message) catch return;
             defer self.allocator.free(frame.bytes);
-            queued.session.writeFrame(frame.bytes) catch {
-                queued.session.markClosed();
+            session.writeFrame(frame.bytes) catch {
+                session.markClosed();
             };
             return;
         };
 
-        const frame = request.buildSuccessFrameOwned(self.allocator, response_json) catch |err| {
+        const frame = owned_request.buildSuccessFrameOwned(self.allocator, response_json) catch |err| {
             self.allocator.free(response_json);
             const message = std.fmt.allocPrint(
                 self.allocator,
@@ -523,20 +860,44 @@ const ServerExecutor = struct {
             ) catch return;
             defer self.allocator.free(message);
 
-            const failure = request.buildFailureFrame(self.allocator, message) catch return;
+            const failure = owned_request.buildFailureFrame(self.allocator, message) catch return;
             defer self.allocator.free(failure.bytes);
-            queued.session.writeFrame(failure.bytes) catch {
-                queued.session.markClosed();
+            session.writeFrame(failure.bytes) catch {
+                session.markClosed();
             };
             return;
         };
         defer self.allocator.free(frame.bytes);
 
-        queued.session.writeFrame(frame.bytes) catch {
-            queued.session.markClosed();
+        session.writeFrame(frame.bytes) catch {
+            session.markClosed();
         };
     }
+
+    fn executeMaintenance(self: *ServerExecutor, kind: MaintenanceKind) void {
+        switch (kind) {
+            .pump_tmux => {
+                self.store.pumpTmuxBackend() catch |err| switch (err) {
+                    error.FileNotFound,
+                    error.TmuxCommandFailed,
+                    error.ControlModeUnavailable,
+                    error.ControlModeExited,
+                    => {},
+                    else => {
+                        std.fs.File.stderr().deprecatedWriter().print("muxlyd tmux pump error: {}\n", .{err}) catch {};
+                    },
+                };
+            },
+        }
+    }
 };
+
+fn tmuxPumpMain(executor: *ServerExecutor) void {
+    while (true) {
+        executor.enqueueRootMaintenance(.pump_tmux) catch {};
+        std.Thread.sleep(projection_pump_interval_ms * std.time.ns_per_ms);
+    }
+}
 
 const SpecialRequestKind = enum {
     none,
@@ -544,6 +905,8 @@ const SpecialRequestKind = enum {
     tty_stream_close,
     pane_capture_stream_open,
     pane_scroll_stream_open,
+    projection_stream_open,
+    projection_stream_close,
 };
 
 const ResolvedTtyStreamTarget = struct {
@@ -570,6 +933,8 @@ fn specialRequestKind(allocator: std.mem.Allocator, request_json: []const u8) !S
     if (std.mem.eql(u8, parsed.value.method, "tty.stream.close")) return .tty_stream_close;
     if (std.mem.eql(u8, parsed.value.method, "pane.capture.stream.open")) return .pane_capture_stream_open;
     if (std.mem.eql(u8, parsed.value.method, "pane.scroll.stream.open")) return .pane_scroll_stream_open;
+    if (std.mem.eql(u8, parsed.value.method, "projection.stream.open")) return .projection_stream_open;
+    if (std.mem.eql(u8, parsed.value.method, "projection.stream.close")) return .projection_stream_close;
     return .none;
 }
 
@@ -942,6 +1307,155 @@ fn handlePaneCaptureStreamOpen(
     session.writeFrame(closed_frame) catch {};
 }
 
+const ResolvedProjectionStreamTarget = struct {
+    conversation_id: []const u8,
+    request_id: ?u64,
+    target: ?protocol.RequestTarget,
+    document_path: []u8,
+    root_node_id: u64,
+
+    fn deinit(self: *ResolvedProjectionStreamTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.document_path);
+    }
+};
+
+fn handleProjectionStreamOpen(
+    context: ConnectionContext,
+    session: *ConnectionSession,
+    request: *muxly.conversation_broker.DispatchRequest,
+) !void {
+    const response = switch (request.response_mode) {
+        .envelope => |value| value,
+        .json_rpc => {
+            const failure = try request.buildFailureFrame(
+                context.allocator,
+                "projection.stream.open requires a conversation transport",
+            );
+            defer context.allocator.free(failure.bytes);
+            try session.writeFrame(failure.bytes);
+            return;
+        },
+    };
+
+    var resolved = resolveProjectionStreamTarget(context.allocator, context.store, response, request.request_json) catch |err| {
+        const message = try std.fmt.allocPrint(
+            context.allocator,
+            "unable to open projection stream: {s}",
+            .{@errorName(err)},
+        );
+        defer context.allocator.free(message);
+
+        const failure = try request.buildFailureFrame(context.allocator, message);
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+    defer resolved.deinit(context.allocator);
+
+    const handle = try ProjectionStreamHandle.init(
+        context.allocator,
+        session,
+        response.conversation_id,
+        response.target,
+        resolved.document_path,
+        resolved.root_node_id,
+    );
+    errdefer handle.deinit();
+    try context.projection_stream_registry.register(handle);
+
+    var ack_json = std.array_list.Managed(u8).init(context.allocator);
+    defer ack_json.deinit();
+    try protocol.writeSuccess(
+        ack_json.writer(),
+        if (response.request_id) |value| .{ .integer = @intCast(value) } else null,
+        "{\"attached\":true,\"mode\":\"push\"}",
+    );
+    const ack = try protocol.allocConversationEnvelope(
+        context.allocator,
+        response.conversation_id,
+        response.request_id,
+        response.target,
+        .rpc,
+        ack_json.items,
+        false,
+        null,
+    );
+    defer context.allocator.free(ack);
+    try session.writeFrame(ack);
+}
+
+fn handleProjectionStreamClose(
+    context: ConnectionContext,
+    session: *ConnectionSession,
+    request: *muxly.conversation_broker.DispatchRequest,
+) !void {
+    const parsed = try protocol.parseRequest(context.allocator, request.request_json);
+    defer parsed.deinit();
+
+    const stream_conversation_id = protocol.getString(parsed.value.params, "streamConversationId") orelse {
+        const failure = try request.buildFailureFrame(
+            context.allocator,
+            "streamConversationId is required",
+        );
+        defer context.allocator.free(failure.bytes);
+        try session.writeFrame(failure.bytes);
+        return;
+    };
+
+    const closed = context.projection_stream_registry.unregister(stream_conversation_id);
+    const result_json = try std.fmt.allocPrint(
+        context.allocator,
+        "{{\"ok\":true,\"closed\":{s}}}",
+        .{if (closed) "true" else "false"},
+    );
+    defer context.allocator.free(result_json);
+
+    const success = try request.buildSuccessFrameOwned(
+        context.allocator,
+        try context.allocator.dupe(u8, result_json),
+    );
+    defer context.allocator.free(success.bytes);
+    try session.writeFrame(success.bytes);
+}
+
+fn resolveProjectionStreamTarget(
+    allocator: std.mem.Allocator,
+    store: *store_mod.Store,
+    response: muxly.conversation_broker.DispatchRequest.EnvelopeResponse,
+    request_json: []const u8,
+) !ResolvedProjectionStreamTarget {
+    const parsed = try protocol.parseRequest(allocator, request_json);
+    defer parsed.deinit();
+
+    const document_path_text = try protocol.requestDocumentPath(parsed.value);
+    const document_entry = try store.documentEntryForPath(document_path_text);
+    document_entry.mutex.lock();
+    defer document_entry.mutex.unlock();
+
+    const document = &document_entry.document;
+    const root_node_id: u64 = if (parsed.value.target) |target| blk: {
+        if (target.nodeId) |node_id| {
+            _ = document.findNodeConst(@intCast(node_id)) orelse return error.UnknownNode;
+            break :blk node_id;
+        }
+        if (target.selector) |selector| {
+            break :blk try document.resolveSelector(selector);
+        }
+        if (document.view_root_node_id) |view_root_node_id| {
+            break :blk view_root_node_id;
+        }
+        break :blk document.root_node_id;
+    } else document.view_root_node_id orelse document.root_node_id;
+
+    return .{
+        .conversation_id = response.conversation_id,
+        .request_id = response.request_id,
+        .target = response.target,
+        .document_path = try allocator.dupe(u8, document_path_text),
+        .root_node_id = root_node_id,
+    };
+}
+
 fn resolveTtyStreamTarget(
     allocator: std.mem.Allocator,
     store: *store_mod.Store,
@@ -1026,6 +1540,7 @@ fn serveConnection(context: ConnectionContext) void {
 fn serveConnectionImpl(context: ConnectionContext) !void {
     var session = try ConnectionSession.init(context.allocator, context.connection);
     defer session.release();
+    defer context.projection_stream_registry.closeSession(session);
 
     var request_reader = muxly.transport.MessageReader.init(context.allocator);
     defer request_reader.deinit();
@@ -1081,6 +1596,18 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
                         },
                         .pane_scroll_stream_open => {
                             try handlePaneCaptureStreamOpen(context, session, &owned_dispatch, .scroll);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .projection_stream_open => {
+                            try handleProjectionStreamOpen(context, session, &owned_dispatch);
+                            owned_dispatch.deinit();
+                            if (context.single_request_per_connection) break;
+                            continue;
+                        },
+                        .projection_stream_close => {
+                            try handleProjectionStreamClose(context, session, &owned_dispatch);
                             owned_dispatch.deinit();
                             if (context.single_request_per_connection) break;
                             continue;

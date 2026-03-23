@@ -17,6 +17,7 @@ pub const ConversationKind = enum {
     tty_control,
     tty_data,
     capture_data,
+    projection_event,
 };
 
 pub const ConversationError = struct {

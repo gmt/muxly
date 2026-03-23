@@ -347,7 +347,10 @@ pub const Connection = union(enum) {
 
     pub fn close(self: *Connection) void {
         switch (self.*) {
-            .socket => |stream| stream.close(),
+            .socket => |stream| {
+                std.posix.shutdown(stream.handle, .both) catch {};
+                stream.close();
+            },
             .process => |*process| process.close(),
         }
     }

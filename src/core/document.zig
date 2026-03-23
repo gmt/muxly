@@ -131,6 +131,16 @@ pub const Document = struct {
         return &self.nodes.items[index];
     }
 
+    /// Returns whether `candidate_id` is `root_id` or a descendant of it.
+    pub fn nodeWithinSubtree(self: *const Document, root_id: ids.NodeId, candidate_id: ids.NodeId) bool {
+        var current_id = candidate_id;
+        while (true) {
+            if (current_id == root_id) return true;
+            const node = self.findNodeConst(current_id) orelse return false;
+            current_id = node.parent_id orelse return false;
+        }
+    }
+
     /// Removes a leaf node from the document.
     ///
     /// Callers must remove descendants before removing a parent node.

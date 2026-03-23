@@ -23,6 +23,32 @@ const TmuxProjectionState = enum {
 };
 
 const root_document_path = "/";
+const tmux_control_poll_timeout_ms: i32 = 10;
+
+pub const ProjectionEventReason = enum {
+    content,
+    metadata,
+    structure,
+    target_gone,
+};
+
+pub const ProjectionNotifier = struct {
+    context: *anyopaque,
+    on_invalidate: *const fn (
+        context: *anyopaque,
+        document_path: []const u8,
+        document: *const document_mod.Document,
+        node_id: ids.NodeId,
+        reason: ProjectionEventReason,
+    ) void,
+    on_tty_data: *const fn (
+        context: *anyopaque,
+        document_path: []const u8,
+        document: *const document_mod.Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+    ) void,
+};
 
 pub const DocumentEntry = struct {
     mutex: std.Thread.Mutex = .{},
@@ -46,6 +72,7 @@ pub const Store = struct {
     tmux_pane_snapshots: std.ArrayListUnmanaged(tmux_events.PaneSnapshot) = .{},
     control_connection: ?control_mode.ControlConnection = null,
     tmux_projection_state: TmuxProjectionState = .clean,
+    projection_notifier: ?ProjectionNotifier = null,
 
     pub fn init(allocator: std.mem.Allocator) !Store {
         return try initWithRuntimeLimits(allocator, .{});
@@ -149,10 +176,14 @@ pub const Store = struct {
         self.documents.deinit(self.allocator);
     }
 
+    pub fn setProjectionNotifier(self: *Store, notifier: ?ProjectionNotifier) void {
+        self.projection_notifier = notifier;
+    }
+
     pub fn pumpTmuxBackend(self: *Store) !void {
         try self.ensureControlConnectionForKnownTmuxState();
         if (self.control_connection) |*connection| {
-            connection.drainEvents(0, self, struct {
+            connection.drainEvents(tmux_control_poll_timeout_ms, self, struct {
                 fn handle(store: *Store, event: tmux_events.Event) !void {
                     switch (event) {
                         .pane_output => |pane_output| {
@@ -208,6 +239,7 @@ pub const Store = struct {
     }
 
     pub fn refreshSourcesForDocument(self: *Store, document: *document_mod.Document) !void {
+        const document_path = self.documentPathFor(document);
         for (document.nodes.items) |*node| {
             const node_id = node.id;
             switch (node.source) {
@@ -221,16 +253,16 @@ pub const Store = struct {
                                 pane_id,
                                 tty.session_name,
                             });
-                            try document.setNodeContent(node_id, fallback.items);
+                            try self.setNodeContentFromSource(document_path, document, node_id, fallback.items);
                             continue;
                         };
                         defer self.allocator.free(capture);
-                        try document.setNodeContent(node_id, capture);
+                        try self.setNodeContentFromSource(document_path, document, node_id, capture);
                     } else {
                         var buffer = std.array_list.Managed(u8).init(self.allocator);
                         defer buffer.deinit();
                         try buffer.writer().print("live tty source attached to session {s}", .{tty.session_name});
-                        try document.setNodeContent(node_id, buffer.items);
+                        try self.setNodeContentFromSource(document_path, document, node_id, buffer.items);
                     }
                 },
                 .terminal_artifact => {},
@@ -242,11 +274,11 @@ pub const Store = struct {
                             file.path,
                             @errorName(err),
                         });
-                        try document.setNodeContent(node_id, fallback.items);
+                        try self.setNodeContentFromSource(document_path, document, node_id, fallback.items);
                         continue;
                     };
                     defer self.allocator.free(content);
-                    try document.setNodeContent(node_id, content);
+                    try self.setNodeContentFromSource(document_path, document, node_id, content);
                 },
             }
         }
@@ -265,6 +297,7 @@ pub const Store = struct {
 
     pub fn attachFile(
         self: *Store,
+        document_path: []const u8,
         document: *document_mod.Document,
         path: []const u8,
         mode: source_mod.FileMode,
@@ -280,11 +313,12 @@ pub const Store = struct {
             .{ .file = .{ .path = @constCast(path), .mode = mode } },
         );
         try self.refreshSourcesForDocument(document);
+        self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
 
-    pub fn attachTty(self: *Store, document: *document_mod.Document, session_name: []const u8) !ids.NodeId {
-        return try self.attachPaneRef(document, document.root_node_id, .{
+    pub fn attachTty(self: *Store, document_path: []const u8, document: *document_mod.Document, session_name: []const u8) !ids.NodeId {
+        return try self.attachPaneRef(document_path, document, document.root_node_id, .{
             .pane_id = try self.allocator.dupe(u8, ""),
             .window_id = try self.allocator.dupe(u8, ""),
             .session_name = try self.allocator.dupe(u8, session_name),
@@ -301,6 +335,7 @@ pub const Store = struct {
         defer pane_ref.deinit(self.allocator);
         const node_id = try self.rebuildTmuxSessionProjectionForPane(parent_id, pane_ref.pane_id);
         try self.ensureControlConnection(session_name);
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .structure);
         return node_id;
     }
 
@@ -312,6 +347,7 @@ pub const Store = struct {
         const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(self.rootDocument(), parent_id, snapshots);
         self.tmux_projection_state = .clean;
         try self.refreshSources();
+        self.notifyInvalidate(root_document_path, self.rootDocument(), session_node_id, .structure);
         return session_node_id;
     }
 
@@ -346,21 +382,32 @@ pub const Store = struct {
     ) !ids.NodeId {
         var pane_ref = try tmux.createWindow(self.allocator, target, window_name, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.rebuildTmuxSessionProjectionForPane(self.rootDocument().root_node_id, pane_ref.pane_id);
+        const node_id = try self.rebuildTmuxSessionProjectionForPane(self.rootDocument().root_node_id, pane_ref.pane_id);
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .structure);
+        return node_id;
     }
 
     pub fn splitTmuxPane(self: *Store, target: []const u8, direction: []const u8, command: ?[]const u8) !ids.NodeId {
         var pane_ref = try tmux.splitPane(self.allocator, target, direction, command);
         defer pane_ref.deinit(self.allocator);
-        return try self.rebuildTmuxSessionProjectionForPane(self.rootDocument().root_node_id, pane_ref.pane_id);
+        const node_id = try self.rebuildTmuxSessionProjectionForPane(self.rootDocument().root_node_id, pane_ref.pane_id);
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .structure);
+        return node_id;
     }
 
     pub fn captureTmuxPane(self: *Store, pane_id: []const u8) ![]u8 {
-        return try tmux.capturePaneWithLimit(
+        const capture = try tmux.capturePaneWithLimit(
             self.allocator,
             pane_id,
             self.runtime_limits.max_document_content_bytes,
         );
+        if (self.findNodeIdByPaneId(pane_id)) |node_id| {
+            const document = self.rootDocument();
+            if (document.findNodeConst(node_id) != null) {
+                try self.setNodeContentFromSource(root_document_path, document, node_id, capture);
+            }
+        }
+        return capture;
     }
 
     pub fn scrollTmuxPane(self: *Store, pane_id: []const u8, start_line: i64, end_line: i64) ![]u8 {
@@ -424,6 +471,7 @@ pub const Store = struct {
     pub fn setPaneFollowTail(self: *Store, pane_id: []const u8, enabled: bool) !void {
         const node_id = self.findNodeIdByPaneId(pane_id) orelse return error.UnknownNode;
         try self.rootDocument().setFollowTail(node_id, enabled);
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .metadata);
     }
 
     pub fn captureFileNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) ![]u8 {
@@ -437,13 +485,13 @@ pub const Store = struct {
     }
 
     pub fn setFileFollowTail(self: *Store, document: *document_mod.Document, node_id: ids.NodeId, enabled: bool) !void {
-        _ = self;
         const node = document.findNode(node_id) orelse return error.UnknownNode;
         switch (node.source) {
             .file => {},
             else => return error.InvalidSourceKind,
         }
         node.follow_tail = enabled;
+        self.notifyInvalidate(self.documentPathFor(document), document, node_id, .metadata);
     }
 
     pub fn resetView(self: *Store, document: *document_mod.Document) void {
@@ -451,16 +499,21 @@ pub const Store = struct {
         document.resetView();
     }
 
-    pub fn appendNode(self: *Store, document: *document_mod.Document, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
-        _ = self;
+    pub fn appendNode(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
         const node_id = try document.appendNode(parent_id, kind, title, .{ .none = {} });
+        self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
 
-    pub fn updateNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
-        _ = self;
+    pub fn updateNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
         if (title) |value| try document.setNodeTitle(node_id, value);
         if (content) |value| try document.setNodeContent(node_id, value);
+        self.notifyInvalidate(
+            document_path,
+            document,
+            node_id,
+            if (content != null) .content else .metadata,
+        );
     }
 
     pub fn freezeTerminalNode(
@@ -471,11 +524,12 @@ pub const Store = struct {
     ) !void {
         const sections = try self.captureTerminalArtifact(document, node_id, artifact_kind);
         try document.freezeTtyNodeAsArtifact(node_id, artifact_kind, sections);
+        self.notifyInvalidate(self.documentPathFor(document), document, node_id, .structure);
     }
 
-    pub fn removeNode(self: *Store, document: *document_mod.Document, node_id: ids.NodeId) !void {
-        _ = self;
+    pub fn removeNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId) !void {
         try document.removeNode(node_id);
+        self.notifyInvalidate(document_path, document, node_id, .structure);
     }
 
     pub fn clearViewRoot(self: *Store, document: *document_mod.Document) void {
@@ -488,7 +542,7 @@ pub const Store = struct {
         try document.setElided(node_id, false);
     }
 
-    fn attachPaneRef(self: *Store, document: *document_mod.Document, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
+    fn attachPaneRef(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
         const node_id = try document.appendNode(
             parent_id,
             .tty_leaf,
@@ -500,6 +554,7 @@ pub const Store = struct {
             } },
         );
         try self.refreshSourcesForDocument(document);
+        self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
 
@@ -603,6 +658,7 @@ pub const Store = struct {
 
         const node = self.rootDocument().findNodeByBackendId(bid) orelse return false;
         node.setTitle(self.allocator, parsed.name) catch return false;
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node.id, .metadata);
         return true;
     }
 
@@ -619,6 +675,7 @@ pub const Store = struct {
             self.rootDocument().removeNode(child_id) catch {};
         }
         self.rootDocument().removeNode(node_id) catch {};
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .structure);
     }
 
     const WindowNotification = struct {
@@ -661,6 +718,8 @@ pub const Store = struct {
         const normalized = try normalizeTmuxOutputChunk(self.allocator, payload);
         defer self.allocator.free(normalized);
         try self.rootDocument().appendTextToNode(node_id, normalized);
+        self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .content);
+        self.notifyTtyData(root_document_path, self.rootDocument(), node_id, normalized);
     }
 
     fn captureTerminalArtifact(
@@ -690,6 +749,53 @@ pub const Store = struct {
 
     pub fn rootDocument(self: *Store) *document_mod.Document {
         return self.documentForPath(root_document_path) catch unreachable;
+    }
+
+    fn documentPathFor(self: *Store, document: *const document_mod.Document) []const u8 {
+        self.documents_mutex.lock();
+        defer self.documents_mutex.unlock();
+        for (self.documents.items) |entry| {
+            if (&entry.document == document) return entry.path;
+        }
+        return root_document_path;
+    }
+
+    fn notifyInvalidate(
+        self: *Store,
+        document_path: []const u8,
+        document: *const document_mod.Document,
+        node_id: ids.NodeId,
+        reason: ProjectionEventReason,
+    ) void {
+        if (self.projection_notifier) |notifier| {
+            notifier.on_invalidate(notifier.context, document_path, document, node_id, reason);
+        }
+    }
+
+    fn notifyTtyData(
+        self: *Store,
+        document_path: []const u8,
+        document: *const document_mod.Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+    ) void {
+        if (self.projection_notifier) |notifier| {
+            notifier.on_tty_data(notifier.context, document_path, document, node_id, chunk);
+        }
+    }
+
+    fn setNodeContentFromSource(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+        content: []const u8,
+    ) !void {
+        const node = document.findNodeConst(node_id) orelse return error.UnknownNode;
+        const changed = !std.mem.eql(u8, node.content, content);
+        if (!changed) return;
+        try document.setNodeContent(node_id, content);
+        self.notifyInvalidate(document_path, document, node_id, .content);
     }
 };
 
