@@ -55,27 +55,11 @@ Everything in the TOM is a node; nodes are rectangles made of text and you can s
 
 - pseudo-ttys to which programs may be multiplexed via their stdin and stdout; they have a history which contains text which has scrolled off the top of the "virtual screen" which can be accessed in the viewer.
   
-  Because programs attached to terminals need to know the dimensions of the terminal, the long-term model wants three kinds of terminal viewers:
-  
-   - detached ***virtual*** viewers simply hold the terminal at a given virtual size, while
-  
-   - ***primary*** viewers, whose physical terminal size is meant to optionally force virtual terminal resizing to change as the virtual size changes, and finally
-  
-   - ***secondary*** viewers, who may be thought of as spectators, have read-only connections and do not control virtual terminal size.
-  
-  [TODO] This detached/primary/secondary role model is part of the intended
-  design, but it is not yet implemented end-to-end in the current reference
-  viewer/library cutline.
+  Because programs attached to terminals need to know the dimensions of the terminal, there is a "virtual" terminal size known to the server. The viewer also has a physical terminal size; whether and when these two are continuously synchronized remains somewhat of an open question but the obvious simple thing called for in many scenarios would be that the single client may resize their terminal at will and this simply propagates to the server's virtual terminal, potentially re-flowing its contents. The metaphor of a magically resize-able piece of paper will be familiar to most anyone from the web or from using terminal emulator software.
 
-The branch nodes all may contain each other and consist of:
+- branch nodes all may contain each other and consist of either vertical or horizontal containers with some sizing logic to lay out elements in a box-model of some kind; each has or will have various attributes including:
 
-- horizontal containers, and
-
-- vertical containers
-
-each has or will have various attributes including:
-
-- an optional elider which will do something other than crop the contents of the box when they do not fit
+- an optional elider frob which will do something other than crop the contents of the box when they do not fit
 
 - a vtail attribute that ties the viewport to the bottom (or top) of the canvas
 
