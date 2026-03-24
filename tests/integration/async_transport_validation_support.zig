@@ -160,6 +160,10 @@ pub fn runTransportScenario(
             try runSameDocumentSerialization(allocator, kind, daemon.actual_spec);
             try runSameDocumentDifferentTargetOverlap(allocator, kind, daemon.actual_spec);
             try runSameDocumentSameTargetSerialization(allocator, kind, daemon.actual_spec);
+            try runDifferentIslandTextAppendOverlap(allocator, kind, daemon.actual_spec);
+            try runSameIslandTextAppendSerialization(allocator, kind, daemon.actual_spec);
+            try runDifferentIslandTtyPushOverlap(allocator, kind, daemon.actual_spec);
+            try runSameIslandTtyPushSerialization(allocator, kind, daemon.actual_spec);
             try runRootVsDocumentOverlap(allocator, kind, daemon.actual_spec);
             try runCancelAndFollowOn(allocator, daemon.actual_spec);
             try runDisconnectReconnect(allocator, daemon.actual_spec);
@@ -380,6 +384,242 @@ fn runSameDocumentSameTargetSerialization(
     try std.testing.expect((try elapsedMsSince(started)) > 430);
 }
 
+fn runDifferentIslandTextAppendOverlap(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const island_a = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "text-overlap-a");
+    const island_b = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "text-overlap-b");
+    const leaf_a = try appendNode(allocator, &first_client, "/a", island_a, .text_leaf, "leaf-a");
+    const leaf_b = try appendNode(allocator, &first_client, "/a", island_b, .text_leaf, "leaf-b");
+
+    const slow_params = try debugTextAppendParams(allocator, "slow-a", overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try debugTextAppendParams(allocator, "fast-b", overlap_fast_ms);
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = leaf_a,
+    }, "debug.text.append", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = leaf_b,
+    }, "debug.text.append", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedDifferentTextIslandsToOverlap;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectOk(allocator, slow_response);
+
+    const content_a = try getNodeContent(allocator, &first_client, "/a", leaf_a);
+    defer allocator.free(content_a);
+    const content_b = try getNodeContent(allocator, &first_client, "/a", leaf_b);
+    defer allocator.free(content_b);
+    try std.testing.expectEqualStrings("slow-a", content_a);
+    try std.testing.expectEqualStrings("fast-b", content_b);
+}
+
+fn runSameIslandTextAppendSerialization(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const island = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "text-serialized");
+    const first_leaf = try appendNode(allocator, &first_client, "/a", island, .text_leaf, "leaf-1");
+    const second_leaf = try appendNode(allocator, &first_client, "/a", island, .text_leaf, "leaf-2");
+    const params = try debugTextAppendParams(allocator, "same-island", same_lane_sleep_ms);
+    defer allocator.free(params);
+
+    const started = try std.time.Instant.now();
+
+    var first = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = first_leaf,
+    }, "debug.text.append", params);
+    defer first.deinit();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    var second = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = second_leaf,
+    }, "debug.text.append", params);
+    defer second.deinit();
+
+    const first_ready = try waitForEitherReady(&first, &second, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedSameTextIslandRequestsToStayFIFO;
+        },
+    }
+
+    const second_response = try waitForReady(&second, 3_000);
+    defer allocator.free(second_response);
+    try expectOk(allocator, second_response);
+    try std.testing.expect((try elapsedMsSince(started)) > 430);
+}
+
+fn runDifferentIslandTtyPushOverlap(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const island_a = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "tty-overlap-a");
+    const island_b = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "tty-overlap-b");
+    const tty_a = try attachSyntheticTty(allocator, &first_client, "/a", island_a, "tty-a", "session-a");
+    const tty_b = try attachSyntheticTty(allocator, &first_client, "/a", island_b, "tty-b", "session-b");
+
+    const slow_params = try debugTtyPushParams(allocator, "slow-tty", overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try debugTtyPushParams(allocator, "fast-tty", overlap_fast_ms);
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = tty_a,
+    }, "debug.tty.push", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = tty_b,
+    }, "debug.tty.push", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedDifferentTtyIslandsToOverlap;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectOk(allocator, slow_response);
+
+    const content_a = try getNodeContent(allocator, &first_client, "/a", tty_a);
+    defer allocator.free(content_a);
+    const content_b = try getNodeContent(allocator, &first_client, "/a", tty_b);
+    defer allocator.free(content_b);
+    try std.testing.expectEqualStrings("slow-tty", content_a);
+    try std.testing.expectEqualStrings("fast-tty", content_b);
+}
+
+fn runSameIslandTtyPushSerialization(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const island = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "tty-serialized");
+    const first_tty = try attachSyntheticTty(allocator, &first_client, "/a", island, "tty-1", "session-1");
+    const second_tty = try attachSyntheticTty(allocator, &first_client, "/a", island, "tty-2", "session-2");
+    const params = try debugTtyPushParams(allocator, "same-island-tty", same_lane_sleep_ms);
+    defer allocator.free(params);
+
+    const started = try std.time.Instant.now();
+
+    var first = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = first_tty,
+    }, "debug.tty.push", params);
+    defer first.deinit();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    var second = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = second_tty,
+    }, "debug.tty.push", params);
+    defer second.deinit();
+
+    const first_ready = try waitForEitherReady(&first, &second, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedSameTtyIslandRequestsToStayFIFO;
+        },
+    }
+
+    const second_response = try waitForReady(&second, 3_000);
+    defer allocator.free(second_response);
+    try expectOk(allocator, second_response);
+    try std.testing.expect((try elapsedMsSince(started)) > 430);
+}
+
 fn runRootVsDocumentOverlap(
     allocator: std.mem.Allocator,
     kind: TransportKind,
@@ -539,6 +779,88 @@ fn appendNode(
     const result = result_value.object.get("nodeId") orelse return error.InvalidResponse;
     if (result != .integer or result.integer < 0) return error.InvalidResponse;
     return @intCast(result.integer);
+}
+
+fn attachSyntheticTty(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    parent_id: u64,
+    title: []const u8,
+    session_name: []const u8,
+) !u64 {
+    const title_json = try std.json.Stringify.valueAlloc(allocator, title, .{});
+    defer allocator.free(title_json);
+    const session_json = try std.json.Stringify.valueAlloc(allocator, session_name, .{});
+    defer allocator.free(session_json);
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"parentId\":{d},\"title\":{s},\"sessionName\":{s}}}",
+        .{ parent_id, title_json, session_json },
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+    }, "debug.tty.attach", params_json);
+    defer allocator.free(response);
+
+    var parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+    const result_value = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result_value != .object) return error.InvalidResponse;
+    const result = result_value.object.get("nodeId") orelse return error.InvalidResponse;
+    if (result != .integer or result.integer < 0) return error.InvalidResponse;
+    return @intCast(result.integer);
+}
+
+fn getNodeContent(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    node_id: u64,
+) ![]u8 {
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+        .nodeId = node_id,
+    }, "node.get", "{}");
+    defer allocator.free(response);
+
+    const parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .object) return error.InvalidResponse;
+    const content = result.object.get("content") orelse return error.InvalidResponse;
+    if (content != .string) return error.InvalidResponse;
+    return try allocator.dupe(u8, content.string);
+}
+
+fn debugTextAppendParams(
+    allocator: std.mem.Allocator,
+    chunk: []const u8,
+    pause_ms: u32,
+) ![]u8 {
+    const chunk_json = try std.json.Stringify.valueAlloc(allocator, chunk, .{});
+    defer allocator.free(chunk_json);
+    return try std.fmt.allocPrint(
+        allocator,
+        "{{\"chunk\":{s},\"pauseMs\":{d}}}",
+        .{ chunk_json, pause_ms },
+    );
+}
+
+fn debugTtyPushParams(
+    allocator: std.mem.Allocator,
+    chunk: []const u8,
+    pause_ms: u32,
+) ![]u8 {
+    const chunk_json = try std.json.Stringify.valueAlloc(allocator, chunk, .{});
+    defer allocator.free(chunk_json);
+    return try std.fmt.allocPrint(
+        allocator,
+        "{{\"chunk\":{s},\"pauseMs\":{d}}}",
+        .{ chunk_json, pause_ms },
+    );
 }
 
 fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !DaemonInstance {
@@ -758,6 +1080,17 @@ fn expectSleptMs(allocator: std.mem.Allocator, response: []const u8, expected_ms
     const slept = result.object.get("sleptMs") orelse return error.InvalidResponse;
     if (slept != .integer) return error.InvalidResponse;
     try std.testing.expectEqual(@as(i64, expected_ms), slept.integer);
+}
+
+fn expectOk(allocator: std.mem.Allocator, response: []const u8) !void {
+    const parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+
+    const result = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result != .object) return error.InvalidResponse;
+    const ok = result.object.get("ok") orelse return error.InvalidResponse;
+    if (ok != .bool) return error.InvalidResponse;
+    try std.testing.expect(ok.bool);
 }
 
 fn expectPong(allocator: std.mem.Allocator, response: []const u8) !void {

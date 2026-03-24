@@ -858,6 +858,26 @@ const ServerExecutor = struct {
 
         if (session.isClosed()) return;
 
+        var request_guard = self.store.acquireRequestGuard(
+            self.allocator,
+            owned_request.request_json,
+        ) catch |err| {
+            const message = std.fmt.allocPrint(
+                self.allocator,
+                "daemon request guard failed: {s}",
+                .{@errorName(err)},
+            ) catch return;
+            defer self.allocator.free(message);
+
+            const frame = owned_request.buildFailureFrame(self.allocator, message) catch return;
+            defer self.allocator.free(frame.bytes);
+            session.writeFrame(frame.bytes) catch {
+                session.markClosed();
+            };
+            return;
+        };
+        defer request_guard.release();
+
         const response_json = router.handleRequest(
             self.allocator,
             self.store,
@@ -1456,8 +1476,8 @@ fn resolveProjectionStreamTarget(
 
     const document_path_text = try protocol.requestDocumentPath(parsed.value);
     const document_entry = try store.documentEntryForPath(document_path_text);
-    document_entry.mutex.lock();
-    defer document_entry.mutex.unlock();
+    var guard = try store.acquireQuiescentReadGuardForEntry(document_entry);
+    defer guard.release();
 
     const document = &document_entry.document;
     const root_node_id: u64 = if (parsed.value.target) |target| blk: {
@@ -1500,8 +1520,8 @@ fn resolveTtyStreamTarget(
     const node_id: u64 = @intCast(node_id_value);
 
     const entry = try store.documentEntryForPath(document_path);
-    entry.mutex.lock();
-    defer entry.mutex.unlock();
+    var guard = try store.acquireQuiescentReadGuardForEntry(entry);
+    defer guard.release();
 
     const node = entry.document.findNode(node_id) orelse return error.UnknownNode;
     const tty = switch (node.source) {
@@ -1657,7 +1677,11 @@ fn serveConnectionImpl(context: ConnectionContext) !void {
                         continue;
                     }
 
-                    var lane_key = try router.classifyExecutionLane(context.allocator, owned_dispatch.request_json);
+                    var lane_key = try router.classifyExecutionLane(
+                        context.allocator,
+                        context.store,
+                        owned_dispatch.request_json,
+                    );
                     errdefer lane_key.deinit(context.allocator);
 
                     session.retain();

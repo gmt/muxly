@@ -171,6 +171,20 @@ pub const Document = struct {
         }
     }
 
+    /// Returns the first-layer child beneath the document root that contains
+    /// `node_id`, or `null` when `node_id` is the root itself.
+    pub fn firstLayerAncestor(self: *const Document, node_id: ids.NodeId) !?ids.NodeId {
+        if (node_id == self.root_node_id) return null;
+
+        var current_id = node_id;
+        while (true) {
+            const node = self.findNodeConst(current_id) orelse return error.UnknownNode;
+            const parent_id = node.parent_id orelse return error.UnknownParent;
+            if (parent_id == self.root_node_id) return current_id;
+            current_id = parent_id;
+        }
+    }
+
     /// Removes a leaf node from the document.
     ///
     /// Callers must remove descendants before removing a parent node.

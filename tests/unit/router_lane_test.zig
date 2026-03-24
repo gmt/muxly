@@ -2,7 +2,15 @@ const std = @import("std");
 const router = @import("daemon_router");
 
 test "execution lane classification keeps document-local requests on document lanes" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const leaf_id = try store.appendNode("/demo", document, island_id, .text_leaf, "leaf");
+
     var doc_get = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"document.get","params":{}}
     );
     defer doc_get.deinit(std.testing.allocator);
@@ -13,6 +21,7 @@ test "execution lane classification keeps document-local requests on document la
     }
 
     var file_attach = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"leaf.source.attach","params":{"kind":"static-file","path":"README.md"}}
     );
     defer file_attach.deinit(std.testing.allocator);
@@ -23,6 +32,7 @@ test "execution lane classification keeps document-local requests on document la
     }
 
     var debug_sleep = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/demo"},"method":"debug.sleep","params":{"ms":50}}
     );
     defer debug_sleep.deinit(std.testing.allocator);
@@ -32,14 +42,22 @@ test "execution lane classification keeps document-local requests on document la
         .root => return error.ExpectedDocumentLane,
     }
 
-    var targeted_debug_sleep = try router.classifyExecutionLane(std.testing.allocator,
-        \\{"jsonrpc":"2.0","id":4,"target":{"documentPath":"/demo","nodeId":42},"method":"debug.sleep","params":{"ms":50}}
+    const targeted_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{leaf_id},
+    );
+    defer std.testing.allocator.free(targeted_request);
+    var targeted_debug_sleep = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        targeted_request,
     );
     defer targeted_debug_sleep.deinit(std.testing.allocator);
     switch (targeted_debug_sleep) {
         .document_domain => |domain| {
             try std.testing.expectEqualStrings("/demo", domain.document_path);
-            try std.testing.expectEqual(@as(u64, 42), domain.root_node_id);
+            try std.testing.expectEqual(island_id, domain.root_node_id);
         },
         .document_coordinator => return error.ExpectedDomainLane,
         .root => return error.ExpectedDocumentLane,
@@ -47,7 +65,11 @@ test "execution lane classification keeps document-local requests on document la
 }
 
 test "execution lane classification keeps tmux and root-only work on the root lane" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
     var session_create = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"session.create","params":{"sessionName":"demo"}}
     );
     defer session_create.deinit(std.testing.allocator);
@@ -57,6 +79,7 @@ test "execution lane classification keeps tmux and root-only work on the root la
     }
 
     var tty_attach = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"leaf.source.attach","params":{"kind":"tty","sessionName":"demo"}}
     );
     defer tty_attach.deinit(std.testing.allocator);
@@ -66,6 +89,7 @@ test "execution lane classification keeps tmux and root-only work on the root la
     }
 
     var root_doc = try router.classifyExecutionLane(std.testing.allocator,
+        &store,
         \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/"},"method":"document.get","params":{}}
     );
     defer root_doc.deinit(std.testing.allocator);

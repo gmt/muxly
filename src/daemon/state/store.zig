@@ -25,6 +25,155 @@ const TmuxProjectionState = enum {
 const root_document_path = "/";
 const tmux_control_poll_timeout_ms: i32 = 10;
 
+const DomainLock = struct {
+    mutex: std.Thread.Mutex = .{},
+};
+
+pub const RequestGuard = union(enum) {
+    none,
+    coordinator_exclusive: struct {
+        runtime: *DocumentRuntime,
+        domain_ids: []ids.NodeId,
+    },
+    quiescent_read: struct {
+        runtime: *DocumentRuntime,
+        domain_ids: []ids.NodeId,
+    },
+    domain_write: struct {
+        runtime: *DocumentRuntime,
+        domain_lock: *DomainLock,
+    },
+
+    pub fn release(self: *RequestGuard) void {
+        switch (self.*) {
+            .none => {},
+            .coordinator_exclusive => |value| {
+                value.runtime.unlockExistingDomainIds(value.domain_ids);
+                value.runtime.allocator.free(value.domain_ids);
+                value.runtime.coordinator_mutex.unlock();
+            },
+            .quiescent_read => |value| {
+                value.runtime.unlockExistingDomainIds(value.domain_ids);
+                value.runtime.allocator.free(value.domain_ids);
+            },
+            .domain_write => |value| {
+                _ = value.runtime;
+                value.domain_lock.mutex.unlock();
+            },
+        }
+        self.* = .none;
+    }
+};
+
+pub const DocumentRuntime = struct {
+    allocator: std.mem.Allocator,
+    coordinator_mutex: std.Thread.Mutex = .{},
+    domains_mutex: std.Thread.Mutex = .{},
+    domain_locks: std.AutoHashMapUnmanaged(ids.NodeId, *DomainLock) = .{},
+
+    pub fn init(allocator: std.mem.Allocator) DocumentRuntime {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *DocumentRuntime) void {
+        var iterator = self.domain_locks.valueIterator();
+        while (iterator.next()) |lock_ptr| {
+            self.allocator.destroy(lock_ptr.*);
+        }
+        self.domain_locks.deinit(self.allocator);
+    }
+
+    pub fn acquireCoordinatorExclusive(self: *DocumentRuntime) !RequestGuard {
+        self.coordinator_mutex.lock();
+        errdefer self.coordinator_mutex.unlock();
+
+        const domain_ids = try self.snapshotDomainIds();
+        errdefer self.allocator.free(domain_ids);
+        self.lockExistingDomainIds(domain_ids);
+
+        return .{ .coordinator_exclusive = .{
+            .runtime = self,
+            .domain_ids = domain_ids,
+        } };
+    }
+
+    pub fn acquireQuiescentRead(self: *DocumentRuntime) !RequestGuard {
+        self.coordinator_mutex.lock();
+        errdefer self.coordinator_mutex.unlock();
+
+        const domain_ids = try self.snapshotDomainIds();
+        errdefer self.allocator.free(domain_ids);
+        self.lockExistingDomainIds(domain_ids);
+        self.coordinator_mutex.unlock();
+
+        return .{ .quiescent_read = .{
+            .runtime = self,
+            .domain_ids = domain_ids,
+        } };
+    }
+
+    pub fn acquireDomainWrite(self: *DocumentRuntime, domain_id: ids.NodeId) !RequestGuard {
+        self.coordinator_mutex.lock();
+        defer self.coordinator_mutex.unlock();
+
+        const domain_lock = try self.ensureDomainLock(domain_id);
+        domain_lock.mutex.lock();
+
+        return .{ .domain_write = .{
+            .runtime = self,
+            .domain_lock = domain_lock,
+        } };
+    }
+
+    fn ensureDomainLock(self: *DocumentRuntime, domain_id: ids.NodeId) !*DomainLock {
+        self.domains_mutex.lock();
+        defer self.domains_mutex.unlock();
+
+        const entry = try self.domain_locks.getOrPut(self.allocator, domain_id);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = try self.allocator.create(DomainLock);
+            entry.value_ptr.*.* = .{};
+        }
+        return entry.value_ptr.*;
+    }
+
+    fn existingDomainLock(self: *DocumentRuntime, domain_id: ids.NodeId) ?*DomainLock {
+        self.domains_mutex.lock();
+        defer self.domains_mutex.unlock();
+        return self.domain_locks.get(domain_id);
+    }
+
+    fn snapshotDomainIds(self: *DocumentRuntime) ![]ids.NodeId {
+        self.domains_mutex.lock();
+        defer self.domains_mutex.unlock();
+
+        const result = try self.allocator.alloc(ids.NodeId, self.domain_locks.count());
+        var index: usize = 0;
+        var iterator = self.domain_locks.keyIterator();
+        while (iterator.next()) |domain_id| : (index += 1) {
+            result[index] = domain_id.*;
+        }
+        std.sort.heap(ids.NodeId, result, {}, comptime std.sort.asc(ids.NodeId));
+        return result;
+    }
+
+    fn lockExistingDomainIds(self: *DocumentRuntime, domain_ids: []const ids.NodeId) void {
+        for (domain_ids) |domain_id| {
+            const domain_lock = self.existingDomainLock(domain_id) orelse continue;
+            domain_lock.mutex.lock();
+        }
+    }
+
+    fn unlockExistingDomainIds(self: *DocumentRuntime, domain_ids: []const ids.NodeId) void {
+        var index = domain_ids.len;
+        while (index != 0) {
+            index -= 1;
+            const domain_lock = self.existingDomainLock(domain_ids[index]) orelse continue;
+            domain_lock.mutex.unlock();
+        }
+    }
+};
+
 pub const ProjectionEventReason = enum {
     content,
     metadata,
@@ -51,11 +200,12 @@ pub const ProjectionNotifier = struct {
 };
 
 pub const DocumentEntry = struct {
-    mutex: std.Thread.Mutex = .{},
     path: []u8,
     document: document_mod.Document,
+    runtime: DocumentRuntime,
 
     fn deinit(self: *DocumentEntry, allocator: std.mem.Allocator) void {
+        self.runtime.deinit();
         self.document.deinit();
         allocator.free(self.path);
         allocator.destroy(self);
@@ -105,6 +255,7 @@ pub const Store = struct {
         entry.* = .{
             .path = try allocator.dupe(u8, root_document_path),
             .document = document,
+            .runtime = DocumentRuntime.init(allocator),
         };
         try store.documents.append(allocator, entry);
         return store;
@@ -128,6 +279,93 @@ pub const Store = struct {
         self.documents_mutex.lock();
         defer self.documents_mutex.unlock();
         return try self.allocator.dupe(*DocumentEntry, self.documents.items);
+    }
+
+    pub fn acquireCoordinatorExclusiveGuardForEntry(
+        self: *Store,
+        entry: *DocumentEntry,
+    ) !RequestGuard {
+        _ = self;
+        return try entry.runtime.acquireCoordinatorExclusive();
+    }
+
+    pub fn acquireCoordinatorExclusiveGuardForPath(
+        self: *Store,
+        document_path: []const u8,
+    ) !RequestGuard {
+        const entry = try self.documentEntryForPath(document_path);
+        return try entry.runtime.acquireCoordinatorExclusive();
+    }
+
+    pub fn acquireQuiescentReadGuardForEntry(
+        self: *Store,
+        entry: *DocumentEntry,
+    ) !RequestGuard {
+        _ = self;
+        return try entry.runtime.acquireQuiescentRead();
+    }
+
+    pub fn acquireQuiescentReadGuardForPath(
+        self: *Store,
+        document_path: []const u8,
+    ) !RequestGuard {
+        const entry = try self.documentEntryForPath(document_path);
+        return try entry.runtime.acquireQuiescentRead();
+    }
+
+    pub fn resolveExecutionDomainRootForRequest(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        document_path: []const u8,
+        request: muxly.protocol.RequestEnvelope,
+    ) !?ids.NodeId {
+        const entry = self.documentEntryForPath(document_path) catch |err| switch (err) {
+            error.UnsupportedDocumentPath => return null,
+            else => return err,
+        };
+        var guard = try entry.runtime.acquireQuiescentRead();
+        defer guard.release();
+        return self.resolveRequestDomainRootWithStableTopology(allocator, entry, request);
+    }
+
+    pub fn acquireRequestGuard(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        request_json: []const u8,
+    ) !RequestGuard {
+        const parsed = muxly.protocol.parseRequest(allocator, request_json) catch return .none;
+        defer parsed.deinit();
+
+        const document_path = muxly.protocol.requestDocumentPath(parsed.value) catch return .none;
+        if (std.mem.eql(u8, document_path, root_document_path)) return .none;
+
+        const entry = self.documentEntryForPath(document_path) catch |err| switch (err) {
+            error.UnsupportedDocumentPath => return .none,
+            else => return err,
+        };
+
+        if (requestUsesDomainWriteGuard(parsed.value.method)) {
+            entry.runtime.coordinator_mutex.lock();
+            errdefer entry.runtime.coordinator_mutex.unlock();
+
+            if (try self.resolveRequestDomainRootWithStableTopology(allocator, entry, parsed.value)) |domain_id| {
+                const domain_lock = try entry.runtime.ensureDomainLock(domain_id);
+                domain_lock.mutex.lock();
+                entry.runtime.coordinator_mutex.unlock();
+                return .{ .domain_write = .{
+                    .runtime = &entry.runtime,
+                    .domain_lock = domain_lock,
+                } };
+            }
+
+            entry.runtime.coordinator_mutex.unlock();
+        }
+
+        if (requestUsesQuiescentReadGuard(parsed.value.method)) {
+            return try entry.runtime.acquireQuiescentRead();
+        }
+
+        return try entry.runtime.acquireCoordinatorExclusive();
     }
 
     pub fn createDocument(
@@ -161,6 +399,7 @@ pub const Store = struct {
         entry.* = .{
             .path = try self.allocator.dupe(u8, document_path),
             .document = document,
+            .runtime = DocumentRuntime.init(self.allocator),
         };
         try self.documents.append(self.allocator, entry);
         return &entry.document;
@@ -230,11 +469,9 @@ pub const Store = struct {
         const entries = try self.snapshotDocumentEntries();
         defer self.allocator.free(entries);
         for (entries) |entry| {
-            entry.mutex.lock();
-            {
-                defer entry.mutex.unlock();
-                try self.refreshSourcesForDocument(&entry.document);
-            }
+            var guard = try entry.runtime.acquireCoordinatorExclusive();
+            defer guard.release();
+            try self.refreshSourcesForDocument(&entry.document);
         }
     }
 
@@ -813,6 +1050,33 @@ pub const Store = struct {
         return self.documentForPath(root_document_path) catch unreachable;
     }
 
+    fn resolveRequestDomainRootWithStableTopology(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        entry: *DocumentEntry,
+        request: muxly.protocol.RequestEnvelope,
+    ) !?ids.NodeId {
+        _ = self;
+
+        const node_id = resolveRequestNodeIdWithStableTopology(allocator, &entry.document, request) catch |err| switch (err) {
+            error.MissingNodeTarget,
+            error.InvalidNodeTarget,
+            error.UnknownResourceSelectorSegment,
+            error.AmbiguousResourceSelector,
+            error.InvalidResourceSelector,
+            error.ResourceSelectorEscapesRoot,
+            => return null,
+            else => return err,
+        };
+
+        return entry.document.firstLayerAncestor(node_id) catch |err| switch (err) {
+            error.UnknownNode,
+            error.UnknownParent,
+            => null,
+            else => return err,
+        };
+    }
+
     fn documentPathFor(self: *Store, document: *const document_mod.Document) []const u8 {
         self.documents_mutex.lock();
         defer self.documents_mutex.unlock();
@@ -860,6 +1124,41 @@ pub const Store = struct {
         self.notifyInvalidate(document_path, document, node_id, .content);
     }
 };
+
+fn resolveRequestNodeIdWithStableTopology(
+    allocator: std.mem.Allocator,
+    document: *const document_mod.Document,
+    request: muxly.protocol.RequestEnvelope,
+) !ids.NodeId {
+    _ = allocator;
+    if (request.target) |target| {
+        if (target.nodeId) |node_id| return node_id;
+        if (target.selector) |selector| return try document.resolveSelector(selector);
+    }
+
+    const node_id = muxly.protocol.getInteger(request.params, "nodeId") orelse return error.MissingNodeTarget;
+    if (node_id < 0) return error.InvalidNodeTarget;
+    return @intCast(node_id);
+}
+
+fn requestUsesDomainWriteGuard(method: []const u8) bool {
+    return std.mem.eql(u8, method, "debug.sleep") or
+        std.mem.eql(u8, method, "debug.text.append") or
+        std.mem.eql(u8, method, "debug.tty.push");
+}
+
+fn requestUsesQuiescentReadGuard(method: []const u8) bool {
+    return std.mem.eql(u8, method, "document.get") or
+        std.mem.eql(u8, method, "graph.get") or
+        std.mem.eql(u8, method, "view.get") or
+        std.mem.eql(u8, method, "projection.get") or
+        std.mem.eql(u8, method, "document.status") or
+        std.mem.eql(u8, method, "document.serialize") or
+        std.mem.eql(u8, method, "debug.document.validate") or
+        std.mem.eql(u8, method, "node.get") or
+        std.mem.eql(u8, method, "leaf.source.get") or
+        std.mem.eql(u8, method, "file.capture");
+}
 
 fn defaultDocumentTitleFromPath(allocator: std.mem.Allocator, document_path: []const u8) ![]u8 {
     const base = std.fs.path.basename(document_path);

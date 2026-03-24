@@ -28,6 +28,7 @@ pub const ExecutionLane = union(enum) {
 
 pub fn classifyExecutionLane(
     allocator: std.mem.Allocator,
+    store: *Store,
     request_bytes: []const u8,
 ) !ExecutionLane {
     const parsed = protocol.parseRequest(allocator, request_bytes) catch return .root;
@@ -37,16 +38,14 @@ pub fn classifyExecutionLane(
     if (std.mem.eql(u8, document_path, "/")) return .root;
     if (!requestRunsOnDocumentLane(parsed.value.method, parsed.value.params)) return .root;
 
-    if (std.mem.eql(u8, parsed.value.method, "debug.sleep")) {
-        if (parsed.value.target) |target| {
-            if (target.nodeId) |root_node_id| {
-                return .{
-                    .document_domain = .{
-                        .document_path = try allocator.dupe(u8, document_path),
-                        .root_node_id = root_node_id,
-                    },
-                };
-            }
+    if (requestSupportsDynamicDomainLane(parsed.value.method)) {
+        if (try store.resolveExecutionDomainRootForRequest(allocator, document_path, parsed.value)) |root_node_id| {
+            return .{
+                .document_domain = .{
+                    .document_path = try allocator.dupe(u8, document_path),
+                    .root_node_id = root_node_id,
+                },
+            };
         }
     }
 
@@ -123,10 +122,6 @@ pub fn handleRequest(
             },
             else => return err,
         };
-    if (document_entry) |entry| {
-        entry.mutex.lock();
-        defer entry.mutex.unlock();
-    }
     const document = if (document_entry) |entry| &entry.document else store.rootDocument();
     const debug_rpc_enabled = debugRpcEnabled(allocator);
 
@@ -168,6 +163,12 @@ pub fn handleRequest(
             return try buildNodeTargetError(allocator, parsed.value.id, err);
         const chunk = protocol.getString(parsed.value.params, "chunk") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "chunk is required");
+        if (protocol.getInteger(parsed.value.params, "pauseMs")) |pause_ms| {
+            if (pause_ms < 0) {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "pauseMs must be non-negative");
+            }
+            std.Thread.sleep(@as(u64, @intCast(pause_ms)) * std.time.ns_per_ms);
+        }
         store.appendTextChunk(document_path, document, @intCast(node_id), chunk) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to append text: {s}", .{@errorName(err)});
             defer allocator.free(message);
@@ -203,6 +204,12 @@ pub fn handleRequest(
             return try buildNodeTargetError(allocator, parsed.value.id, err);
         const chunk = protocol.getString(parsed.value.params, "chunk") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "chunk is required");
+        if (protocol.getInteger(parsed.value.params, "pauseMs")) |pause_ms| {
+            if (pause_ms < 0) {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "pauseMs must be non-negative");
+            }
+            std.Thread.sleep(@as(u64, @intCast(pause_ms)) * std.time.ns_per_ms);
+        }
         store.pushSyntheticTtyChunk(document_path, document, @intCast(node_id), chunk) catch |err| {
             const message = try std.fmt.allocPrint(allocator, "unable to push synthetic tty chunk: {s}", .{@errorName(err)});
             defer allocator.free(message);
@@ -758,11 +765,9 @@ fn writeDocumentList(store: *store_mod.Store, writer: anytype) !void {
     try writer.writeAll("[");
     for (entries, 0..) |entry, index| {
         if (index != 0) try writer.writeAll(",");
-        entry.mutex.lock();
-        {
-            defer entry.mutex.unlock();
-            try writeDocumentSummary(entry.path, &entry.document, writer);
-        }
+        var guard = try store.acquireQuiescentReadGuardForEntry(entry);
+        defer guard.release();
+        try writeDocumentSummary(entry.path, &entry.document, writer);
     }
     try writer.writeAll("]");
 }
@@ -949,6 +954,12 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
     }
 
     return false;
+}
+
+fn requestSupportsDynamicDomainLane(method: []const u8) bool {
+    return std.mem.eql(u8, method, "debug.sleep") or
+        std.mem.eql(u8, method, "debug.text.append") or
+        std.mem.eql(u8, method, "debug.tty.push");
 }
 
 fn debugRpcEnabled(allocator: std.mem.Allocator) bool {
