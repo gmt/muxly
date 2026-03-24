@@ -10,6 +10,11 @@ const validation_interval_seconds: u64 = 3;
 const island_count: usize = 8;
 const text_leaves_per_island: usize = 4;
 const tty_leaves_per_island: usize = 3;
+const job_reassign_roll_max: u32 = 10_000;
+const job_reassign_threshold: u32 = 8_200;
+const text_mode_roll_max: u32 = 10_000;
+const text_append_threshold: u32 = 4_500;
+const text_replace_threshold: u32 = 7_500;
 
 const WorkerKind = enum {
     child_container,
@@ -25,6 +30,27 @@ const WorkerKind = enum {
             .parent_container => "parent-container",
         };
     }
+};
+
+const TextMode = enum {
+    append,
+    replace,
+    mixed,
+
+    fn name(self: TextMode) []const u8 {
+        return switch (self) {
+            .append => "append",
+            .replace => "replace",
+            .mixed => "mixed",
+        };
+    }
+};
+
+const WorkerOutcome = union(enum) {
+    child_container,
+    tty,
+    parent_container,
+    text: TextMode,
 };
 
 const Config = struct {
@@ -53,7 +79,11 @@ const Shared = struct {
     child_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tty_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    text_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    text_replace_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    text_mixed_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     parent_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    job_reassignments: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     failure: FailureState = .{},
 };
 
@@ -71,11 +101,16 @@ const FailureState = struct {
 
 const WorkerContext = struct {
     worker_id: usize,
-    kind: WorkerKind,
+    preferred_kind: WorkerKind,
     seed: u64,
     spec: []const u8,
     topology: *const Topology,
     shared: *Shared,
+};
+
+const TextMixedState = struct {
+    pending_leaf_id: ?u64 = null,
+    next_is_append: bool = true,
 };
 
 const DaemonInstance = struct {
@@ -172,8 +207,18 @@ pub fn main() !void {
         computeWorkerCount(osCpuCount());
 
     std.debug.print(
-        "unix-contention-stress seed={d} seconds={d} workers={d} transport={s}\n",
-        .{ config.seed, config.seconds, resolved_worker_count, daemon.actual_spec },
+        "unix-contention-stress seed={d} seconds={d} workers={d} transport={s} job-reassign-threshold={d}/{d} text-thresholds=append<{d} replace<{d} mixed>={d}\n",
+        .{
+            config.seed,
+            config.seconds,
+            resolved_worker_count,
+            daemon.actual_spec,
+            job_reassign_threshold,
+            job_reassign_roll_max,
+            text_append_threshold,
+            text_replace_threshold,
+            text_replace_threshold,
+        },
     );
 
     var shared = Shared{};
@@ -188,7 +233,7 @@ pub fn main() !void {
     for (worker_contexts, 0..) |*context, index| {
         context.* = .{
             .worker_id = index,
-            .kind = switch (index % 4) {
+            .preferred_kind = switch (index % 4) {
                 0 => .child_container,
                 1 => .tty,
                 2 => .text,
@@ -229,13 +274,17 @@ pub fn main() !void {
         if ((try elapsedNsSince(last_progress_check)) >= progress_stall_seconds * std.time.ns_per_s) {
             shared.failure.set(
                 allocator,
-                "stress progress stalled for {d}s with totals child={d} tty={d} text={d} parent={d}",
+                "stress progress stalled for {d}s with totals child={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} reassignments={d}",
                 .{
                     progress_stall_seconds,
                     shared.child_ops.load(.monotonic),
                     shared.tty_ops.load(.monotonic),
                     shared.text_ops.load(.monotonic),
+                    shared.text_append_ops.load(.monotonic),
+                    shared.text_replace_ops.load(.monotonic),
+                    shared.text_mixed_ops.load(.monotonic),
                     shared.parent_ops.load(.monotonic),
+                    shared.job_reassignments.load(.monotonic),
                 },
             );
             shared.stop.store(true, .release);
@@ -253,13 +302,17 @@ pub fn main() !void {
 
     try validateDocument(allocator, &admin);
     std.debug.print(
-        "unix-contention-stress complete total={d} child={d} tty={d} text={d} parent={d}\n",
+        "unix-contention-stress complete total={d} child={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} reassignments={d}\n",
         .{
             shared.total_ops.load(.monotonic),
             shared.child_ops.load(.monotonic),
             shared.tty_ops.load(.monotonic),
             shared.text_ops.load(.monotonic),
+            shared.text_append_ops.load(.monotonic),
+            shared.text_replace_ops.load(.monotonic),
+            shared.text_mixed_ops.load(.monotonic),
             shared.parent_ops.load(.monotonic),
+            shared.job_reassignments.load(.monotonic),
         },
     );
 }
@@ -315,6 +368,19 @@ fn computeWorkerCount(cpu_count: usize) usize {
     return @max(@min(logical * 3, 64), 16);
 }
 
+fn selectWorkerKind(prng: *std.Random.DefaultPrng, preferred_kind: WorkerKind) WorkerKind {
+    const random = prng.random();
+    const roll = random.uintLessThan(u32, job_reassign_roll_max);
+    if (roll < job_reassign_threshold) return preferred_kind;
+
+    return switch (random.uintLessThan(u8, 4)) {
+        0 => .child_container,
+        1 => .tty,
+        2 => .text,
+        else => .parent_container,
+    };
+}
+
 fn workerMain(context: *const WorkerContext) void {
     var client = muxly.client.ConversationClient.init(std.heap.page_allocator, context.spec) catch |err| {
         context.shared.failure.set(std.heap.page_allocator, "worker {d} failed to init client: {s}", .{ context.worker_id, @errorName(err) });
@@ -326,31 +392,43 @@ fn workerMain(context: *const WorkerContext) void {
     var prng = std.Random.DefaultPrng.init(context.seed);
     const random = prng.random();
     var local_iteration: u64 = 0;
+    var mixed_state = TextMixedState{};
 
     while (!context.shared.stop.load(.acquire)) : (local_iteration += 1) {
         const burst = 1 + random.uintLessThan(u8, 4);
         var inner: u8 = 0;
         while (inner < burst and !context.shared.stop.load(.acquire)) : (inner += 1) {
-            const result = switch (context.kind) {
+            const job_kind = selectWorkerKind(&prng, context.preferred_kind);
+            if (job_kind != context.preferred_kind) {
+                _ = context.shared.job_reassignments.fetchAdd(1, .monotonic);
+            }
+
+            const result = switch (job_kind) {
                 .child_container => runChildContainerChurn(&client, context, &prng, local_iteration),
                 .tty => runTtyChurn(&client, context, &prng, local_iteration),
-                .text => runTextChurn(&client, context, &prng, local_iteration),
+                .text => runTextChurn(&client, context, &prng, local_iteration, &mixed_state),
                 .parent_container => runParentContainerChurn(&client, context, &prng, local_iteration),
             };
-            if (result) |_| {
+            if (result) |outcome| {
                 _ = context.shared.total_ops.fetchAdd(1, .monotonic);
-                const counter = switch (context.kind) {
-                    .child_container => &context.shared.child_ops,
-                    .tty => &context.shared.tty_ops,
-                    .text => &context.shared.text_ops,
-                    .parent_container => &context.shared.parent_ops,
-                };
-                _ = counter.fetchAdd(1, .monotonic);
+                switch (outcome) {
+                    .child_container => _ = context.shared.child_ops.fetchAdd(1, .monotonic),
+                    .tty => _ = context.shared.tty_ops.fetchAdd(1, .monotonic),
+                    .parent_container => _ = context.shared.parent_ops.fetchAdd(1, .monotonic),
+                    .text => |mode| {
+                        _ = context.shared.text_ops.fetchAdd(1, .monotonic);
+                        switch (mode) {
+                            .append => _ = context.shared.text_append_ops.fetchAdd(1, .monotonic),
+                            .replace => _ = context.shared.text_replace_ops.fetchAdd(1, .monotonic),
+                            .mixed => _ = context.shared.text_mixed_ops.fetchAdd(1, .monotonic),
+                        }
+                    },
+                }
             } else |err| {
                 context.shared.failure.set(
                     std.heap.page_allocator,
                     "worker {d} ({s}) failed: {s}",
-                    .{ context.worker_id, context.kind.name(), @errorName(err) },
+                    .{ context.worker_id, job_kind.name(), @errorName(err) },
                 );
                 context.shared.stop.store(true, .release);
                 return;
@@ -367,7 +445,7 @@ fn runChildContainerChurn(
     context: *const WorkerContext,
     prng: *std.Random.DefaultPrng,
     iteration: u64,
-) !void {
+) !WorkerOutcome {
     const random = prng.random();
     const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
 
@@ -392,6 +470,7 @@ fn runChildContainerChurn(
     try appendTextChunk(client, document_path, leaf_id, chunk);
     try removeNode(client, document_path, leaf_id);
     try removeNode(client, document_path, container_id);
+    return .child_container;
 }
 
 fn runTtyChurn(
@@ -399,7 +478,7 @@ fn runTtyChurn(
     context: *const WorkerContext,
     prng: *std.Random.DefaultPrng,
     iteration: u64,
-) !void {
+) !WorkerOutcome {
     const random = prng.random();
     const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
     const tty_id = island.tty_leaf_ids[random.uintLessThan(u8, tty_leaves_per_island)];
@@ -407,6 +486,7 @@ fn runTtyChurn(
     var chunk_buffer: [96]u8 = undefined;
     const chunk = try std.fmt.bufPrint(&chunk_buffer, "tty worker={d} iter={d}\n", .{ context.worker_id, iteration });
     try pushSyntheticTtyChunk(client, document_path, tty_id, chunk);
+    return .tty;
 }
 
 fn runTextChurn(
@@ -414,25 +494,70 @@ fn runTextChurn(
     context: *const WorkerContext,
     prng: *std.Random.DefaultPrng,
     iteration: u64,
-) !void {
+    mixed_state: *TextMixedState,
+) !WorkerOutcome {
     const random = prng.random();
-    const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
-    const leaf_id = island.text_leaf_ids[random.uintLessThan(u8, text_leaves_per_island)];
+    const mode: TextMode = blk: {
+        const roll = random.uintLessThan(u32, text_mode_roll_max);
+        if (roll < text_append_threshold) break :blk .append;
+        if (roll < text_replace_threshold) break :blk .replace;
+        break :blk .mixed;
+    };
 
-    if ((iteration % 3) == 0) {
-        var replacement_buffer: [96]u8 = undefined;
-        const replacement = try std.fmt.bufPrint(
-            &replacement_buffer,
-            "text-reset worker={d} iter={d}",
-            .{ context.worker_id, iteration },
-        );
-        try updateNodeContent(client, document_path, leaf_id, replacement);
-        return;
+    switch (mode) {
+        .append => {
+            const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
+            const leaf_id = island.text_leaf_ids[random.uintLessThan(u8, text_leaves_per_island)];
+            var chunk_buffer: [96]u8 = undefined;
+            const chunk = try std.fmt.bufPrint(&chunk_buffer, "text-append worker={d} iter={d}\n", .{ context.worker_id, iteration });
+            try appendTextChunk(client, document_path, leaf_id, chunk);
+        },
+        .replace => {
+            const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
+            const leaf_id = island.text_leaf_ids[random.uintLessThan(u8, text_leaves_per_island)];
+            var replacement_buffer: [96]u8 = undefined;
+            const replacement = try std.fmt.bufPrint(
+                &replacement_buffer,
+                "text-reset worker={d} iter={d}",
+                .{ context.worker_id, iteration },
+            );
+            try updateNodeContent(client, document_path, leaf_id, replacement);
+        },
+        .mixed => {
+            const leaf_id = mixedLeafId(context.topology, prng, mixed_state);
+            if (mixed_state.next_is_append) {
+                var chunk_buffer: [96]u8 = undefined;
+                const chunk = try std.fmt.bufPrint(&chunk_buffer, "text-mixed-append worker={d} iter={d}\n", .{ context.worker_id, iteration });
+                try appendTextChunk(client, document_path, leaf_id, chunk);
+            } else {
+                var replacement_buffer: [96]u8 = undefined;
+                const replacement = try std.fmt.bufPrint(
+                    &replacement_buffer,
+                    "text-mixed-reset worker={d} iter={d}",
+                    .{ context.worker_id, iteration },
+                );
+                try updateNodeContent(client, document_path, leaf_id, replacement);
+                mixed_state.pending_leaf_id = null;
+            }
+            mixed_state.next_is_append = !mixed_state.next_is_append;
+        },
     }
 
-    var chunk_buffer: [96]u8 = undefined;
-    const chunk = try std.fmt.bufPrint(&chunk_buffer, "text-append worker={d} iter={d}\n", .{ context.worker_id, iteration });
-    try appendTextChunk(client, document_path, leaf_id, chunk);
+    return .{ .text = mode };
+}
+
+fn mixedLeafId(
+    topology: *const Topology,
+    prng: *std.Random.DefaultPrng,
+    mixed_state: *TextMixedState,
+) u64 {
+    if (mixed_state.pending_leaf_id) |leaf_id| return leaf_id;
+
+    const random = prng.random();
+    const island = &topology.islands[random.uintLessThan(u8, island_count)];
+    const leaf_id = island.text_leaf_ids[random.uintLessThan(u8, text_leaves_per_island)];
+    mixed_state.pending_leaf_id = leaf_id;
+    return leaf_id;
 }
 
 fn runParentContainerChurn(
@@ -440,7 +565,7 @@ fn runParentContainerChurn(
     context: *const WorkerContext,
     prng: *std.Random.DefaultPrng,
     iteration: u64,
-) !void {
+) !WorkerOutcome {
     const random = prng.random();
     var title_buffer: [96]u8 = undefined;
     const title = try std.fmt.bufPrint(
@@ -459,6 +584,7 @@ fn runParentContainerChurn(
     try appendTextChunk(client, document_path, leaf_id, chunk);
     try removeNode(client, document_path, leaf_id);
     try removeNode(client, document_path, container_id);
+    return .parent_container;
 }
 
 fn buildTopology(

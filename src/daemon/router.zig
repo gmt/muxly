@@ -38,7 +38,7 @@ pub fn classifyExecutionLane(
     if (std.mem.eql(u8, document_path, "/")) return .root;
     if (!requestRunsOnDocumentLane(parsed.value.method, parsed.value.params)) return .root;
 
-    if (requestSupportsDynamicDomainLane(parsed.value.method)) {
+    if (store_mod.requestSupportsDynamicDomainLane(parsed.value)) {
         if (try store.resolveExecutionDomainRootForRequest(allocator, document_path, parsed.value)) |root_node_id| {
             return .{
                 .document_domain = .{
@@ -954,12 +954,6 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
     }
 
     return false;
-}
-
-fn requestSupportsDynamicDomainLane(method: []const u8) bool {
-    return std.mem.eql(u8, method, "debug.sleep") or
-        std.mem.eql(u8, method, "debug.text.append") or
-        std.mem.eql(u8, method, "debug.tty.push");
 }
 
 fn debugRpcEnabled(allocator: std.mem.Allocator) bool {

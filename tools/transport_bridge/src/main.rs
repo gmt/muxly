@@ -893,6 +893,10 @@ impl Drop for LaneGuard {
 enum UpstreamLaneKey {
     Root,
     Document(String),
+    DocumentTarget {
+        document_path: String,
+        target_key: String,
+    },
 }
 
 async fn start_h2_stream(
@@ -1870,6 +1874,15 @@ fn classify_upstream_lane_key(bytes: &[u8]) -> UpstreamLaneKey {
         return UpstreamLaneKey::Root;
     }
 
+    if request_supports_dynamic_domain_lane(method, request_value) {
+        if let Some(target_key) = request_target_key(request_value) {
+            return UpstreamLaneKey::DocumentTarget {
+                document_path: document_path.to_string(),
+                target_key,
+            };
+        }
+    }
+
     UpstreamLaneKey::Document(document_path.to_string())
 }
 
@@ -1903,6 +1916,57 @@ fn request_runs_on_document_lane(method: &str, params: Option<&serde_json::Value
             .and_then(|entry| entry.as_str())
             .map(|kind| kind == "static-file" || kind == "monitored-file")
             .unwrap_or(false))
+}
+
+fn request_supports_dynamic_domain_lane(method: &str, request_value: &serde_json::Value) -> bool {
+    if matches!(method, "debug.sleep" | "debug.text.append" | "debug.tty.push") {
+        return true;
+    }
+
+    if method != "node.update" {
+        return false;
+    }
+
+    let params = request_value.get("params");
+    let has_content = params
+        .and_then(|value| value.get("content"))
+        .and_then(|entry| entry.as_str())
+        .is_some();
+    if !has_content {
+        return false;
+    }
+
+    !params
+        .and_then(|value| value.get("title"))
+        .and_then(|entry| entry.as_str())
+        .is_some()
+}
+
+fn request_target_key(request_value: &serde_json::Value) -> Option<String> {
+    let target = request_value.get("target");
+    if let Some(node_id) = target
+        .and_then(|value| value.get("nodeId"))
+        .and_then(|entry| entry.as_u64())
+    {
+        return Some(format!("node:{node_id}"));
+    }
+
+    if let Some(selector) = target
+        .and_then(|value| value.get("selector"))
+        .and_then(|entry| entry.as_str())
+    {
+        return Some(format!("selector:{selector}"));
+    }
+
+    if let Some(node_id) = request_value
+        .get("params")
+        .and_then(|value| value.get("nodeId"))
+        .and_then(|entry| entry.as_u64())
+    {
+        return Some(format!("node:{node_id}"));
+    }
+
+    None
 }
 
 fn summarize_transport_payload(bytes: &[u8]) -> String {
@@ -2125,7 +2189,7 @@ mod tests {
 
     #[test]
     fn classify_upstream_lane_key_uses_envelope_payload_target() {
-        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"debug.sleep","params":{"ms":50}}"#;
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":42},"method":"debug.sleep","params":{"ms":50}}"#;
         let envelope = format!(
             r#"{{"conversationId":"c-1","requestId":1,"target":{{"documentPath":"/demo"}},"kind":"rpc","payload":{}}}"#,
             std::str::from_utf8(request).expect("request should be utf8"),
@@ -2133,7 +2197,33 @@ mod tests {
 
         assert_eq!(
             classify_upstream_lane_key(envelope.as_bytes()),
+            UpstreamLaneKey::DocumentTarget {
+                document_path: "/demo".to_string(),
+                target_key: "node:42".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_keeps_title_only_node_update_on_document_lane() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":7},"method":"node.update","params":{"title":"renamed"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
             UpstreamLaneKey::Document("/demo".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_uses_target_lane_for_content_only_node_update() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":7},"method":"node.update","params":{"content":"updated"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::DocumentTarget {
+                document_path: "/demo".to_string(),
+                target_key: "node:7".to_string(),
+            }
         );
     }
 

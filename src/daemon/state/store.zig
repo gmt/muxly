@@ -68,6 +68,7 @@ pub const RequestGuard = union(enum) {
 pub const DocumentRuntime = struct {
     allocator: std.mem.Allocator,
     coordinator_mutex: std.Thread.Mutex = .{},
+    content_bytes_mutex: std.Thread.Mutex = .{},
     domains_mutex: std.Thread.Mutex = .{},
     domain_locks: std.AutoHashMapUnmanaged(ids.NodeId, *DomainLock) = .{},
 
@@ -323,8 +324,8 @@ pub const Store = struct {
             error.UnsupportedDocumentPath => return null,
             else => return err,
         };
-        var guard = try entry.runtime.acquireQuiescentRead();
-        defer guard.release();
+        entry.runtime.coordinator_mutex.lock();
+        defer entry.runtime.coordinator_mutex.unlock();
         return self.resolveRequestDomainRootWithStableTopology(allocator, entry, request);
     }
 
@@ -344,7 +345,7 @@ pub const Store = struct {
             else => return err,
         };
 
-        if (requestUsesDomainWriteGuard(parsed.value.method)) {
+        if (requestUsesDomainWriteGuard(parsed.value)) {
             entry.runtime.coordinator_mutex.lock();
             errdefer entry.runtime.coordinator_mutex.unlock();
 
@@ -744,7 +745,12 @@ pub const Store = struct {
 
     pub fn updateNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
         if (title) |value| try document.setNodeTitle(node_id, value);
-        if (content) |value| try document.setNodeContent(node_id, value);
+        if (content) |value| {
+            const entry = try self.documentEntryForPath(document_path);
+            entry.runtime.content_bytes_mutex.lock();
+            defer entry.runtime.content_bytes_mutex.unlock();
+            try document.setNodeContent(node_id, value);
+        }
         self.notifyInvalidate(
             document_path,
             document,
@@ -760,6 +766,9 @@ pub const Store = struct {
         node_id: ids.NodeId,
         chunk: []const u8,
     ) !void {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
         try document.appendTextToNode(node_id, chunk);
         self.notifyInvalidate(document_path, document, node_id, .content);
     }
@@ -801,6 +810,9 @@ pub const Store = struct {
             else => return error.InvalidSourceKind,
         }
 
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
         try document.appendTextToNode(node_id, chunk);
         self.notifyInvalidate(document_path, document, node_id, .content);
         self.notifyTtyData(document_path, document, node_id, chunk);
@@ -1141,10 +1153,31 @@ fn resolveRequestNodeIdWithStableTopology(
     return @intCast(node_id);
 }
 
-fn requestUsesDomainWriteGuard(method: []const u8) bool {
-    return std.mem.eql(u8, method, "debug.sleep") or
-        std.mem.eql(u8, method, "debug.text.append") or
-        std.mem.eql(u8, method, "debug.tty.push");
+pub fn requestSupportsDynamicDomainLane(request: muxly.protocol.RequestEnvelope) bool {
+    return requestUsesDomainWriteGuard(request);
+}
+
+fn requestUsesDomainWriteGuard(request: muxly.protocol.RequestEnvelope) bool {
+    if (std.mem.eql(u8, request.method, "debug.sleep") or
+        std.mem.eql(u8, request.method, "debug.text.append") or
+        std.mem.eql(u8, request.method, "debug.tty.push"))
+    {
+        return true;
+    }
+
+    return requestIsContentOnlyNodeUpdate(request);
+}
+
+fn requestIsContentOnlyNodeUpdate(request: muxly.protocol.RequestEnvelope) bool {
+    if (!std.mem.eql(u8, request.method, "node.update")) return false;
+
+    const content = muxly.protocol.getString(request.params, "content");
+    if (content == null) return false;
+
+    const title = muxly.protocol.getString(request.params, "title");
+    if (title != null) return false;
+
+    return true;
 }
 
 fn requestUsesQuiescentReadGuard(method: []const u8) bool {
