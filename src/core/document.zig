@@ -185,6 +185,28 @@ pub const Document = struct {
         }
     }
 
+    /// Returns the nearest enabled concurrent domain root for `node_id` when
+    /// horizontal split children are allowed to run independently.
+    ///
+    /// Today that means:
+    /// - the direct child beneath an `h_container`, when one exists on the path
+    /// - otherwise the first-layer child beneath the document root
+    /// - `null` when `node_id` is the document root
+    pub fn horizontalConcurrentDomainRoot(self: *const Document, node_id: ids.NodeId) !?ids.NodeId {
+        if (node_id == self.root_node_id) return null;
+
+        var current_id = node_id;
+        while (true) {
+            const node = self.findNodeConst(current_id) orelse return error.UnknownNode;
+            const parent_id = node.parent_id orelse return error.UnknownParent;
+            if (parent_id == self.root_node_id) return current_id;
+
+            const parent = self.findNodeConst(parent_id) orelse return error.UnknownParent;
+            if (parent.kind == .h_container) return current_id;
+            current_id = parent_id;
+        }
+    }
+
     /// Removes a leaf node from the document.
     ///
     /// Callers must remove descendants before removing a parent node.

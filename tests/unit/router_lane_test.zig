@@ -198,6 +198,88 @@ test "execution lane classification keeps document-local requests on document la
     }
 }
 
+test "horizontal split descendants classify below the first-layer island while vertical descendants stay on the island domain" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const h_id = try store.appendNode("/demo", document, island_id, .h_container, "h");
+    const left_id = try store.appendNode("/demo", document, h_id, .scroll_region, "left");
+    const right_id = try store.appendNode("/demo", document, h_id, .scroll_region, "right");
+    const left_leaf = try store.appendNode("/demo", document, left_id, .text_leaf, "left-leaf");
+    _ = try store.appendNode("/demo", document, right_id, .text_leaf, "right-leaf");
+
+    const v_id = try store.appendNode("/demo", document, island_id, .v_container, "v");
+    const top_id = try store.appendNode("/demo", document, v_id, .scroll_region, "top");
+    const top_leaf = try store.appendNode("/demo", document, top_id, .text_leaf, "top-leaf");
+
+    const left_update_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{left_leaf},
+    );
+    defer std.testing.allocator.free(left_update_request);
+    var left_update = try router.classifyExecutionLane(std.testing.allocator, &store, left_update_request);
+    defer left_update.deinit(std.testing.allocator);
+    switch (left_update) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(left_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const right_append_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"child\"}}}}",
+        .{right_id},
+    );
+    defer std.testing.allocator.free(right_append_request);
+    var right_append = try router.classifyExecutionLane(std.testing.allocator, &store, right_append_request);
+    defer right_append.deinit(std.testing.allocator);
+    switch (right_append) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(right_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const top_update_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{top_leaf},
+    );
+    defer std.testing.allocator.free(top_update_request);
+    var top_update = try router.classifyExecutionLane(std.testing.allocator, &store, top_update_request);
+    defer top_update.deinit(std.testing.allocator);
+    switch (top_update) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(island_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const direct_h_append_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"child\"}}}}",
+        .{h_id},
+    );
+    defer std.testing.allocator.free(direct_h_append_request);
+    var direct_h_append = try router.classifyExecutionLane(std.testing.allocator, &store, direct_h_append_request);
+    defer direct_h_append.deinit(std.testing.allocator);
+    switch (direct_h_append) {
+        .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
+        .document_domain => return error.ExpectedCoordinatorLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+}
+
 test "request guards keep same-island content-only node.update behind an active domain writer" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
@@ -479,6 +561,148 @@ test "request guards keep root parent churn on the coordinator path" {
     worker.join();
     if (failure) |err| return err;
     try std.testing.expect(acquired.load(.acquire));
+}
+
+test "request guards let horizontal split siblings acquire separate domains while vertical siblings still share the island domain" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const h_id = try store.appendNode("/demo", document, island_id, .h_container, "h");
+    const left_id = try store.appendNode("/demo", document, h_id, .scroll_region, "left");
+    const right_id = try store.appendNode("/demo", document, h_id, .scroll_region, "right");
+    const left_leaf = try store.appendNode("/demo", document, left_id, .text_leaf, "left-leaf");
+    const right_leaf = try store.appendNode("/demo", document, right_id, .text_leaf, "right-leaf");
+
+    const v_id = try store.appendNode("/demo", document, island_id, .v_container, "v");
+    const top_id = try store.appendNode("/demo", document, v_id, .scroll_region, "top");
+    const bottom_id = try store.appendNode("/demo", document, v_id, .scroll_region, "bottom");
+    const top_leaf = try store.appendNode("/demo", document, top_id, .text_leaf, "top-leaf");
+    const bottom_leaf = try store.appendNode("/demo", document, bottom_id, .text_leaf, "bottom-leaf");
+
+    const slow_horizontal_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{left_leaf},
+    );
+    defer std.testing.allocator.free(slow_horizontal_request);
+    const fast_horizontal_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{right_leaf},
+    );
+    defer std.testing.allocator.free(fast_horizontal_request);
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_horizontal_request);
+    errdefer slow_guard.release();
+
+    var horizontal_acquired = std.atomic.Value(bool).init(false);
+    var horizontal_failure: ?anyerror = null;
+    var horizontal_failure_mutex = std.Thread.Mutex{};
+    var horizontal_context = ThreadContext{
+        .store = &store,
+        .request = fast_horizontal_request,
+        .acquired = &horizontal_acquired,
+        .mutex = &horizontal_failure_mutex,
+        .failure = &horizontal_failure,
+    };
+
+    const horizontal_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&horizontal_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(horizontal_acquired.load(.acquire));
+    slow_guard.release();
+    horizontal_worker.join();
+    if (horizontal_failure) |err| return err;
+
+    const slow_same_horizontal_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":5,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{left_leaf},
+    );
+    defer std.testing.allocator.free(slow_same_horizontal_request);
+    const fast_same_horizontal_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":6,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{left_leaf},
+    );
+    defer std.testing.allocator.free(fast_same_horizontal_request);
+
+    slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_same_horizontal_request);
+    errdefer slow_guard.release();
+
+    var same_horizontal_acquired = std.atomic.Value(bool).init(false);
+    var same_horizontal_failure: ?anyerror = null;
+    var same_horizontal_failure_mutex = std.Thread.Mutex{};
+    var same_horizontal_context = ThreadContext{
+        .store = &store,
+        .request = fast_same_horizontal_request,
+        .acquired = &same_horizontal_acquired,
+        .mutex = &same_horizontal_failure_mutex,
+        .failure = &same_horizontal_failure,
+    };
+
+    const same_horizontal_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&same_horizontal_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!same_horizontal_acquired.load(.acquire));
+    slow_guard.release();
+    same_horizontal_worker.join();
+    if (same_horizontal_failure) |err| return err;
+    try std.testing.expect(same_horizontal_acquired.load(.acquire));
+
+    const slow_vertical_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{top_leaf},
+    );
+    defer std.testing.allocator.free(slow_vertical_request);
+    const fast_vertical_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":4,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{bottom_leaf},
+    );
+    defer std.testing.allocator.free(fast_vertical_request);
+
+    slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_vertical_request);
+    errdefer slow_guard.release();
+
+    var vertical_acquired = std.atomic.Value(bool).init(false);
+    var vertical_failure: ?anyerror = null;
+    var vertical_failure_mutex = std.Thread.Mutex{};
+    var vertical_context = ThreadContext{
+        .store = &store,
+        .request = fast_vertical_request,
+        .acquired = &vertical_acquired,
+        .mutex = &vertical_failure_mutex,
+        .failure = &vertical_failure,
+    };
+
+    const vertical_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&vertical_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!vertical_acquired.load(.acquire));
+    slow_guard.release();
+    vertical_worker.join();
+    if (vertical_failure) |err| return err;
+    try std.testing.expect(vertical_acquired.load(.acquire));
 }
 
 test "execution lane classification keeps tmux and root-only work on the root lane" {
