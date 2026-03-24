@@ -208,7 +208,8 @@ pub const DocumentRuntime = struct {
     allocator: std.mem.Allocator,
     coordinator_mutex: std.Thread.Mutex = .{},
     content_bytes_mutex: std.Thread.Mutex = .{},
-    structure_registry_mutex: std.Thread.Mutex = .{},
+    node_registry_mutex: std.Thread.Mutex = .{},
+    global_structure_fallback_mutex: std.Thread.Mutex = .{},
     topology_revision: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     domains_mutex: std.Thread.Mutex = .{},
     domain_locks: std.AutoHashMapUnmanaged(ids.NodeId, *DomainLock) = .{},
@@ -514,6 +515,8 @@ pub const Store = struct {
         };
         entry.runtime.coordinator_mutex.lock();
         defer entry.runtime.coordinator_mutex.unlock();
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
         if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, request)) |plan| {
             return switch (plan) {
                 .content => |domain_id| domain_id,
@@ -577,6 +580,8 @@ pub const Store = struct {
     ) !DynamicGuardPlan {
         entry.runtime.coordinator_mutex.lock();
         errdefer entry.runtime.coordinator_mutex.unlock();
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
 
         if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, request)) |plan| {
             const revision = entry.runtime.currentTopologyRevision();
@@ -797,7 +802,9 @@ pub const Store = struct {
             .monitored => .monitored_file_leaf,
             .static => .static_file_leaf,
         };
-        const node_id = try document.appendNode(
+        const node_id = try self.appendNodeWithRuntime(
+            document_path,
+            document,
             document.root_node_id,
             node_kind,
             path,
@@ -835,7 +842,19 @@ pub const Store = struct {
         parent_id: ids.NodeId,
         snapshots: []const tmux_events.PaneSnapshot,
     ) !ids.NodeId {
-        const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(self.rootDocument(), parent_id, snapshots);
+        const session_node_id = blk: {
+            const entry = try self.documentEntryForPath(root_document_path);
+            entry.runtime.global_structure_fallback_mutex.lock();
+            defer entry.runtime.global_structure_fallback_mutex.unlock();
+            entry.runtime.node_registry_mutex.lock();
+            defer entry.runtime.node_registry_mutex.unlock();
+            entry.runtime.content_bytes_mutex.lock();
+            defer entry.runtime.content_bytes_mutex.unlock();
+
+            const session_node_id = try tmux_reconcile.reconcileSessionSnapshots(self.rootDocument(), parent_id, snapshots);
+            entry.runtime.markTopologyChanged();
+            break :blk session_node_id;
+        };
         self.tmux_projection_state = .clean;
         try self.refreshSources();
         self.notifyInvalidate(root_document_path, self.rootDocument(), session_node_id, .structure);
@@ -935,7 +954,16 @@ pub const Store = struct {
 
         try tmux.closePane(self.allocator, pane_id);
         if (node_id) |known_node_id| {
+            const entry = try self.documentEntryForPath(root_document_path);
+            entry.runtime.global_structure_fallback_mutex.lock();
+            defer entry.runtime.global_structure_fallback_mutex.unlock();
+            entry.runtime.node_registry_mutex.lock();
+            defer entry.runtime.node_registry_mutex.unlock();
+            entry.runtime.content_bytes_mutex.lock();
+            defer entry.runtime.content_bytes_mutex.unlock();
+
             _ = self.rootDocument().removeNode(known_node_id) catch {};
+            entry.runtime.markTopologyChanged();
         }
         if (session_id) |known_session_id| {
             try self.refreshTmuxPaneSnapshots();
@@ -953,7 +981,16 @@ pub const Store = struct {
                 defer self.allocator.free(surviving_pane_id_copy);
                 _ = try self.rebuildTmuxSessionProjectionForPane(self.rootDocument().root_node_id, surviving_pane_id_copy);
             } else {
+                const entry = try self.documentEntryForPath(root_document_path);
+                entry.runtime.global_structure_fallback_mutex.lock();
+                defer entry.runtime.global_structure_fallback_mutex.unlock();
+                entry.runtime.node_registry_mutex.lock();
+                defer entry.runtime.node_registry_mutex.unlock();
+                entry.runtime.content_bytes_mutex.lock();
+                defer entry.runtime.content_bytes_mutex.unlock();
+
                 _ = try tmux_reconcile.removeSessionProjection(self.rootDocument(), known_session_id);
+                entry.runtime.markTopologyChanged();
             }
         }
         try self.refreshSources();
@@ -991,23 +1028,14 @@ pub const Store = struct {
     }
 
     pub fn appendNode(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
-        const entry = try self.documentEntryForPath(document_path);
-        entry.runtime.structure_registry_mutex.lock();
-        defer entry.runtime.structure_registry_mutex.unlock();
-        const node_id = try document.appendNode(parent_id, kind, title, .{ .none = {} });
-        entry.runtime.markTopologyChanged();
+        const node_id = try self.appendNodeWithRuntime(document_path, document, parent_id, kind, title, .{ .none = {} });
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
 
     pub fn updateNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId, title: ?[]const u8, content: ?[]const u8) !void {
         if (title) |value| try document.setNodeTitle(node_id, value);
-        if (content) |value| {
-            const entry = try self.documentEntryForPath(document_path);
-            entry.runtime.content_bytes_mutex.lock();
-            defer entry.runtime.content_bytes_mutex.unlock();
-            try document.setNodeContent(node_id, value);
-        }
+        if (content) |value| _ = try self.replaceNodeContentWithAccounting(document_path, document, node_id, value);
         self.notifyInvalidate(
             document_path,
             document,
@@ -1023,10 +1051,7 @@ pub const Store = struct {
         node_id: ids.NodeId,
         chunk: []const u8,
     ) !void {
-        const entry = try self.documentEntryForPath(document_path);
-        entry.runtime.content_bytes_mutex.lock();
-        defer entry.runtime.content_bytes_mutex.unlock();
-        try document.appendTextToNode(node_id, chunk);
+        try self.appendNodeContentWithAccounting(document_path, document, node_id, chunk);
         self.notifyInvalidate(document_path, document, node_id, .content);
     }
 
@@ -1038,10 +1063,9 @@ pub const Store = struct {
         title: []const u8,
         session_name: []const u8,
     ) !ids.NodeId {
-        const entry = try self.documentEntryForPath(document_path);
-        entry.runtime.structure_registry_mutex.lock();
-        defer entry.runtime.structure_registry_mutex.unlock();
-        const node_id = try document.appendNode(
+        const node_id = try self.appendNodeWithRuntime(
+            document_path,
+            document,
             parent_id,
             .tty_leaf,
             title,
@@ -1051,7 +1075,6 @@ pub const Store = struct {
                 .pane_id = null,
             } },
         );
-        entry.runtime.markTopologyChanged();
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
@@ -1063,18 +1086,28 @@ pub const Store = struct {
         node_id: ids.NodeId,
         chunk: []const u8,
     ) !void {
-        const node = document.findNode(node_id) orelse return error.UnknownNode;
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.node_registry_mutex.lock();
+        const node = document.findNode(node_id) orelse {
+            entry.runtime.node_registry_mutex.unlock();
+            return error.UnknownNode;
+        };
         switch (node.source) {
             .tty => |tty| {
-                if (tty.pane_id != null) return error.InvalidSourceKind;
+                if (tty.pane_id != null) {
+                    entry.runtime.node_registry_mutex.unlock();
+                    return error.InvalidSourceKind;
+                }
             },
-            else => return error.InvalidSourceKind,
+            else => {
+                entry.runtime.node_registry_mutex.unlock();
+                return error.InvalidSourceKind;
+            },
         }
-
-        const entry = try self.documentEntryForPath(document_path);
         entry.runtime.content_bytes_mutex.lock();
+        entry.runtime.node_registry_mutex.unlock();
         defer entry.runtime.content_bytes_mutex.unlock();
-        try document.appendTextToNode(node_id, chunk);
+        try document.appendTextToStableNode(node, chunk);
         self.notifyInvalidate(document_path, document, node_id, .content);
         self.notifyTtyData(document_path, document, node_id, chunk);
     }
@@ -1093,24 +1126,14 @@ pub const Store = struct {
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
     ) !void {
-        const sections = try self.captureTerminalArtifact(document, node_id, artifact_kind);
+        const document_path = self.documentPathFor(document);
+        const sections = try self.captureTerminalArtifact(document_path, document, node_id, artifact_kind);
         try document.freezeTtyNodeAsArtifact(node_id, artifact_kind, sections);
-        self.notifyInvalidate(self.documentPathFor(document), document, node_id, .structure);
+        self.notifyInvalidate(document_path, document, node_id, .structure);
     }
 
     pub fn removeNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId) !void {
-        const entry = try self.documentEntryForPath(document_path);
-        const mode = try classifyRemoveExecutionMode(document, node_id);
-        entry.runtime.structure_registry_mutex.lock();
-        defer entry.runtime.structure_registry_mutex.unlock();
-        entry.runtime.content_bytes_mutex.lock();
-        defer entry.runtime.content_bytes_mutex.unlock();
-        switch (mode) {
-            .leaf_domain_safe, .leaf_coordinator => try document.removeNode(node_id),
-            .recursive_domain_safe, .recursive_coordinator_safe => try document.removeSubtree(node_id),
-            .root_policy_reject, .unsupported => return error.NodeHasChildren,
-        }
-        entry.runtime.markTopologyChanged();
+        try self.removeNodeWithRuntime(document_path, document, node_id);
         self.notifyInvalidate(document_path, document, node_id, .structure);
     }
 
@@ -1125,10 +1148,9 @@ pub const Store = struct {
     }
 
     fn attachPaneRef(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
-        const entry = try self.documentEntryForPath(document_path);
-        entry.runtime.structure_registry_mutex.lock();
-        defer entry.runtime.structure_registry_mutex.unlock();
-        const node_id = try document.appendNode(
+        const node_id = try self.appendNodeWithRuntime(
+            document_path,
+            document,
             parent_id,
             .tty_leaf,
             pane_ref.session_name,
@@ -1138,13 +1160,15 @@ pub const Store = struct {
                 .pane_id = if (pane_ref.pane_id.len == 0) null else pane_ref.pane_id,
             } },
         );
-        entry.runtime.markTopologyChanged();
         try self.refreshSourcesForDocument(document);
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
 
     pub fn findNodeIdByPaneId(self: *Store, pane_id: []const u8) ?ids.NodeId {
+        const entry = self.documentEntryForPath(root_document_path) catch return null;
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
         for (self.rootDocument().nodeIdsInOrder()) |node_id| {
             const node = self.rootDocument().findNodeConst(node_id) orelse continue;
             switch (node.source) {
@@ -1173,6 +1197,14 @@ pub const Store = struct {
     }
 
     fn reconcileKnownTmuxProjections(self: *Store) !void {
+        const entry = try self.documentEntryForPath(root_document_path);
+        entry.runtime.global_structure_fallback_mutex.lock();
+        defer entry.runtime.global_structure_fallback_mutex.unlock();
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+
         const projections = try tmux_reconcile.listSessionProjections(self.rootDocument(), self.allocator);
         defer {
             for (projections) |*projection| projection.deinit(self.allocator);
@@ -1196,6 +1228,7 @@ pub const Store = struct {
 
             _ = try tmux_reconcile.reconcileSessionSnapshots(self.rootDocument(), projection.parent_id, snapshots.items);
         }
+        entry.runtime.markTopologyChanged();
     }
 
     fn ensureControlConnectionForKnownTmuxState(self: *Store) !void {
@@ -1256,12 +1289,16 @@ pub const Store = struct {
 
         const node = self.rootDocument().findNodeByBackendId(bid) orelse return;
         const node_id = node.id;
-        const child_ids = self.allocator.dupe(ids.NodeId, node.children.items) catch return;
-        defer self.allocator.free(child_ids);
-        for (child_ids) |child_id| {
-            self.rootDocument().removeNode(child_id) catch {};
-        }
-        self.rootDocument().removeNode(node_id) catch {};
+        const entry = self.documentEntryForPath(root_document_path) catch return;
+        entry.runtime.global_structure_fallback_mutex.lock();
+        defer entry.runtime.global_structure_fallback_mutex.unlock();
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+
+        self.rootDocument().removeSubtree(node_id) catch return;
+        entry.runtime.markTopologyChanged();
         self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .structure);
     }
 
@@ -1300,17 +1337,30 @@ pub const Store = struct {
 
     fn appendTmuxPaneOutput(self: *Store, pane_id: []const u8, payload: []const u8) !void {
         const node_id = self.findNodeIdByPaneId(pane_id) orelse return error.UnknownPane;
-        const node = self.rootDocument().findNode(node_id) orelse return error.UnknownNode;
-        if (!node.follow_tail) return;
         const normalized = try normalizeTmuxOutputChunk(self.allocator, payload);
         defer self.allocator.free(normalized);
-        try self.rootDocument().appendTextToNode(node_id, normalized);
+
+        const entry = try self.documentEntryForPath(root_document_path);
+        entry.runtime.node_registry_mutex.lock();
+        const node = self.rootDocument().findNode(node_id) orelse {
+            entry.runtime.node_registry_mutex.unlock();
+            return error.UnknownNode;
+        };
+        if (!node.follow_tail) {
+            entry.runtime.node_registry_mutex.unlock();
+            return;
+        }
+        entry.runtime.content_bytes_mutex.lock();
+        entry.runtime.node_registry_mutex.unlock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+        try self.rootDocument().appendTextToStableNode(node, normalized);
         self.notifyInvalidate(root_document_path, self.rootDocument(), node_id, .content);
         self.notifyTtyData(root_document_path, self.rootDocument(), node_id, normalized);
     }
 
     fn captureTerminalArtifact(
         self: *Store,
+        document_path: []const u8,
         document: *document_mod.Document,
         node_id: ids.NodeId,
         artifact_kind: source_mod.TerminalArtifactKind,
@@ -1330,7 +1380,7 @@ pub const Store = struct {
             .surface => try captureSurfaceArtifact(self.allocator, pane_id),
         };
         defer self.allocator.free(capture.content);
-        try document.setNodeContent(node_id, capture.content);
+        _ = try self.replaceNodeContentWithAccounting(document_path, document, node_id, capture.content);
         return capture.sections;
     }
 
@@ -1513,6 +1563,181 @@ pub const Store = struct {
         }
     }
 
+    fn documentUsesGlobalStructuralFallback(document_path: []const u8) bool {
+        return std.mem.eql(u8, document_path, root_document_path);
+    }
+
+    fn appendNeedsCoordinatorParentLock(
+        document: *const document_mod.Document,
+        parent_id: ids.NodeId,
+    ) bool {
+        if (parent_id == document.root_node_id) return true;
+        const parent = document.findNodeConst(parent_id) orelse return false;
+        return parent.kind == .h_container or parent.kind == .v_container;
+    }
+
+    fn maybeAcquireParentLock(
+        runtime: *DocumentRuntime,
+        parent_id: ids.NodeId,
+        enabled: bool,
+    ) !?*StructuralLock {
+        if (!enabled) return null;
+        const parent_lock = try runtime.ensureParentLock(parent_id);
+        parent_lock.mutex.lock();
+        return parent_lock;
+    }
+
+    fn releaseOptionalParentLock(parent_lock: ?*StructuralLock) void {
+        if (parent_lock) |lock| lock.mutex.unlock();
+    }
+
+    fn replaceNodeContentWithAccounting(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+        content: []const u8,
+    ) !bool {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.node_registry_mutex.lock();
+        const node = document.findNode(node_id) orelse {
+            entry.runtime.node_registry_mutex.unlock();
+            return error.UnknownNode;
+        };
+        entry.runtime.content_bytes_mutex.lock();
+        entry.runtime.node_registry_mutex.unlock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+
+        const changed = !std.mem.eql(u8, node.content, content);
+        if (!changed) return false;
+        try document.setStableNodeContent(node, content);
+        return true;
+    }
+
+    fn appendNodeContentWithAccounting(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+    ) !void {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.node_registry_mutex.lock();
+        const node = document.findNode(node_id) orelse {
+            entry.runtime.node_registry_mutex.unlock();
+            return error.UnknownNode;
+        };
+        entry.runtime.content_bytes_mutex.lock();
+        entry.runtime.node_registry_mutex.unlock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+        try document.appendTextToStableNode(node, chunk);
+    }
+
+    fn appendNodeWithRuntime(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        parent_id: ids.NodeId,
+        kind: types.NodeKind,
+        title: []const u8,
+        source: source_mod.Source,
+    ) !ids.NodeId {
+        const entry = try self.documentEntryForPath(document_path);
+        const use_global_fallback = documentUsesGlobalStructuralFallback(document_path);
+        if (use_global_fallback) entry.runtime.global_structure_fallback_mutex.lock();
+        defer if (use_global_fallback) entry.runtime.global_structure_fallback_mutex.unlock();
+
+        const needs_parent_lock = blk: {
+            if (use_global_fallback) break :blk false;
+            entry.runtime.node_registry_mutex.lock();
+            defer entry.runtime.node_registry_mutex.unlock();
+            break :blk appendNeedsCoordinatorParentLock(document, parent_id);
+        };
+
+        const parent_lock = try maybeAcquireParentLock(
+            &entry.runtime,
+            parent_id,
+            needs_parent_lock,
+        );
+        defer releaseOptionalParentLock(parent_lock);
+
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
+
+        const node_id = document.reserveNodeId();
+        const node_ptr = try document.prepareNodeWithId(node_id, parent_id, kind, title, source);
+        errdefer document.destroyPreparedNode(node_ptr);
+        try document.commitPreparedNode(parent_id, node_ptr);
+        entry.runtime.markTopologyChanged();
+        return node_id;
+    }
+
+    fn removeNodeWithRuntime(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+    ) !void {
+        const entry = try self.documentEntryForPath(document_path);
+        const use_global_fallback = documentUsesGlobalStructuralFallback(document_path);
+        if (use_global_fallback) entry.runtime.global_structure_fallback_mutex.lock();
+        defer if (use_global_fallback) entry.runtime.global_structure_fallback_mutex.unlock();
+
+        const resolved = blk: {
+            entry.runtime.node_registry_mutex.lock();
+            defer entry.runtime.node_registry_mutex.unlock();
+
+            const mode = try classifyRemoveExecutionMode(document, node_id);
+            switch (mode) {
+                .root_policy_reject, .unsupported => return error.NodeHasChildren,
+                else => {},
+            }
+
+            const node = document.findNodeConst(node_id) orelse return error.UnknownNode;
+            break :blk .{
+                .mode = mode,
+                .parent_id = node.parent_id orelse return error.UnknownParent,
+            };
+        };
+
+        const mode = resolved.mode;
+        const parent_id = resolved.parent_id;
+        switch (mode) {
+            .root_policy_reject, .unsupported => unreachable,
+            else => {},
+        }
+
+        var single_postorder = [_]ids.NodeId{node_id};
+        var postorder: []const ids.NodeId = single_postorder[0..];
+        var owned_postorder: ?[]ids.NodeId = null;
+        defer if (owned_postorder) |value| self.allocator.free(value);
+
+        const parent_lock = try maybeAcquireParentLock(
+            &entry.runtime,
+            parent_id,
+            !use_global_fallback and (mode == .leaf_coordinator or mode == .recursive_coordinator_safe),
+        );
+        defer releaseOptionalParentLock(parent_lock);
+
+        entry.runtime.node_registry_mutex.lock();
+        defer entry.runtime.node_registry_mutex.unlock();
+        switch (mode) {
+            .leaf_domain_safe, .leaf_coordinator => {},
+            .recursive_domain_safe, .recursive_coordinator_safe => {
+                owned_postorder = try document.collectSubtreePostorderAlloc(self.allocator, node_id);
+                postorder = owned_postorder.?;
+            },
+            .root_policy_reject, .unsupported => unreachable,
+        }
+        const total_content_bytes = try document.totalContentBytesForNodes(postorder);
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
+
+        try document.detachChildFromParent(parent_id, node_id);
+        try document.removeDetachedPostorder(postorder, total_content_bytes);
+        entry.runtime.markTopologyChanged();
+    }
+
     fn setNodeContentFromSource(
         self: *Store,
         document_path: []const u8,
@@ -1520,10 +1745,8 @@ pub const Store = struct {
         node_id: ids.NodeId,
         content: []const u8,
     ) !void {
-        const node = document.findNodeConst(node_id) orelse return error.UnknownNode;
-        const changed = !std.mem.eql(u8, node.content, content);
+        const changed = try self.replaceNodeContentWithAccounting(document_path, document, node_id, content);
         if (!changed) return;
-        try document.setNodeContent(node_id, content);
         self.notifyInvalidate(document_path, document, node_id, .content);
     }
 };

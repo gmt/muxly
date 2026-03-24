@@ -81,26 +81,74 @@ pub const Document = struct {
         title: []const u8,
         source: source_mod.Source,
     ) !ids.NodeId {
-        const parent = self.findNode(parent_id) orelse return error.UnknownParent;
-        const node_id = self.nextNodeId();
+        const node_id = self.reserveNodeId();
+        const node_ptr = try self.prepareNodeWithId(node_id, parent_id, kind, title, source);
+        errdefer self.destroyPreparedNode(node_ptr);
+        try self.commitPreparedNode(parent_id, node_ptr);
+        return node_id;
+    }
+
+    /// Reserves the next stable node id.
+    pub fn reserveNodeId(self: *Document) ids.NodeId {
+        return self.nextNodeId();
+    }
+
+    /// Allocates one node payload using a caller-chosen id without mutating
+    /// global document registries or parent child lists.
+    pub fn prepareNodeWithId(
+        self: *Document,
+        node_id: ids.NodeId,
+        parent_id: ids.NodeId,
+        kind: types.NodeKind,
+        title: []const u8,
+        source: source_mod.Source,
+    ) !*muxml.Node {
+        _ = self.findNode(parent_id) orelse return error.UnknownParent;
+
         var node = try muxml.Node.init(self.allocator, node_id, kind, title, parent_id, source);
+        errdefer node.deinit(self.allocator);
         node.name = try self.defaultChildName(parent_id, title);
         if (kind == .static_file_leaf) node.follow_tail = false;
+
         const node_ptr = try self.allocator.create(muxml.Node);
         errdefer self.allocator.destroy(node_ptr);
         node_ptr.* = node;
+        return node_ptr;
+    }
 
-        try self.nodes_by_id.put(self.allocator, node_id, node_ptr);
-        errdefer _ = self.nodes_by_id.remove(node_id);
-        try self.node_order.append(self.allocator, node_id);
-        errdefer _ = self.node_order.pop();
-        try parent.children.append(self.allocator, node_id);
-        return node_id;
+    /// Releases a node prepared by `prepareNodeWithId` that was never committed.
+    pub fn destroyPreparedNode(self: *Document, node_ptr: *muxml.Node) void {
+        node_ptr.deinit(self.allocator);
+        self.allocator.destroy(node_ptr);
+    }
+
+    /// Commits one previously prepared node into the document registry and
+    /// parent child list.
+    pub fn commitPreparedNode(
+        self: *Document,
+        parent_id: ids.NodeId,
+        node_ptr: *muxml.Node,
+    ) !void {
+        const parent = self.findNode(parent_id) orelse return error.UnknownParent;
+
+        try parent.children.append(self.allocator, node_ptr.id);
+        errdefer _ = parent.children.pop();
+
+        try self.nodes_by_id.put(self.allocator, node_ptr.id, node_ptr);
+        errdefer _ = self.nodes_by_id.remove(node_ptr.id);
+
+        try self.node_order.append(self.allocator, node_ptr.id);
     }
 
     /// Appends text to an existing node content buffer.
     pub fn appendTextToNode(self: *Document, node_id: ids.NodeId, chunk: []const u8) !void {
         const node = self.findNode(node_id) orelse return error.UnknownNode;
+        try self.appendTextToStableNode(node, chunk);
+    }
+
+    /// Appends text to one stable node pointer that the caller has already
+    /// resolved safely.
+    pub fn appendTextToStableNode(self: *Document, node: *muxml.Node, chunk: []const u8) !void {
         try self.reserveAdditionalContentBytes(chunk.len, self.max_content_bytes);
         try node.appendContent(self.allocator, chunk);
         self.content_bytes += chunk.len;
@@ -109,6 +157,12 @@ pub const Document = struct {
     /// Replaces a node's content.
     pub fn setNodeContent(self: *Document, node_id: ids.NodeId, content: []const u8) !void {
         const node = self.findNode(node_id) orelse return error.UnknownNode;
+        try self.setStableNodeContent(node, content);
+    }
+
+    /// Replaces content on one stable node pointer that the caller has already
+    /// resolved safely.
+    pub fn setStableNodeContent(self: *Document, node: *muxml.Node, content: []const u8) !void {
         const existing_len = node.content.len;
         try self.reserveReplacementContentBytes(existing_len, content.len, self.max_content_bytes);
         try node.setContent(self.allocator, content);
@@ -253,45 +307,29 @@ pub const Document = struct {
     pub fn removeNode(self: *Document, node_id: ids.NodeId) !void {
         const node = self.findNode(node_id) orelse return error.UnknownNode;
         if (node.children.items.len != 0) return error.NodeHasChildren;
-        const node_content_len = node.content.len;
-        if (node_content_len > self.content_bytes) return error.ContentAccountingDrift;
-
-        if (node.parent_id) |parent_id| {
-            const parent = self.findNode(parent_id) orelse return error.UnknownParent;
-            var child_index: ?usize = null;
-            for (parent.children.items, 0..) |child_id, idx| {
-                if (child_id == node_id) {
-                    child_index = idx;
-                    break;
-                }
-            }
-            if (child_index) |idx| {
-                _ = parent.children.swapRemove(idx);
-            }
-        }
-
-        self.content_bytes -= node_content_len;
-        _ = self.nodes_by_id.remove(node_id);
-        if (self.findNodeOrderIndex(node_id)) |order_index| {
-            _ = self.node_order.orderedRemove(order_index);
-        }
-        node.deinit(self.allocator);
-        self.allocator.destroy(node);
-
-        if (self.view_root_node_id != null and self.view_root_node_id.? == node_id) {
-            self.view_root_node_id = null;
-        }
-
-        for (self.elided_node_ids.items, 0..) |elided_id, idx| {
-            if (elided_id == node_id) {
-                _ = self.elided_node_ids.swapRemove(idx);
-                break;
-            }
-        }
+        const total_content_bytes = try self.totalContentBytesForNodes(&.{node_id});
+        if (node.parent_id) |parent_id| try self.detachChildFromParent(parent_id, node_id);
+        try self.removeDetachedPostorder(&.{node_id}, total_content_bytes);
     }
 
     pub fn removeSubtree(self: *Document, node_id: ids.NodeId) !void {
         if (node_id == self.root_node_id) return error.NodeHasChildren;
+        const target = self.findNodeConst(node_id) orelse return error.UnknownNode;
+        const postorder = try self.collectSubtreePostorderAlloc(self.allocator, node_id);
+        defer self.allocator.free(postorder);
+
+        const total_content_bytes = try self.totalContentBytesForNodes(postorder);
+        const parent_id = target.parent_id orelse return error.UnknownParent;
+        try self.detachChildFromParent(parent_id, node_id);
+        try self.removeDetachedPostorder(postorder, total_content_bytes);
+    }
+
+    /// Collects one subtree in descendant-first postorder.
+    pub fn collectSubtreePostorderAlloc(
+        self: *const Document,
+        allocator: std.mem.Allocator,
+        node_id: ids.NodeId,
+    ) ![]ids.NodeId {
         _ = self.findNodeConst(node_id) orelse return error.UnknownNode;
 
         const Frame = struct {
@@ -300,11 +338,11 @@ pub const Document = struct {
         };
 
         var stack = std.ArrayListUnmanaged(Frame){};
-        defer stack.deinit(self.allocator);
+        defer stack.deinit(allocator);
         var postorder = std.ArrayListUnmanaged(ids.NodeId){};
-        defer postorder.deinit(self.allocator);
+        defer postorder.deinit(allocator);
 
-        try stack.append(self.allocator, .{
+        try stack.append(allocator, .{
             .node_id = node_id,
             .expanded = false,
         });
@@ -313,27 +351,67 @@ pub const Document = struct {
             const frame = stack.pop().?;
             const current = self.findNodeConst(frame.node_id) orelse return error.UnknownNode;
             if (frame.expanded) {
-                try postorder.append(self.allocator, frame.node_id);
+                try postorder.append(allocator, frame.node_id);
                 continue;
             }
 
-            try stack.append(self.allocator, .{
+            try stack.append(allocator, .{
                 .node_id = frame.node_id,
                 .expanded = true,
             });
             var index = current.children.items.len;
             while (index != 0) {
                 index -= 1;
-                try stack.append(self.allocator, .{
+                try stack.append(allocator, .{
                     .node_id = current.children.items[index],
                     .expanded = false,
                 });
             }
         }
 
-        for (postorder.items) |current_id| {
-            try self.removeNode(current_id);
+        return try postorder.toOwnedSlice(allocator);
+    }
+
+    /// Returns the aggregate content bytes for one planned set of nodes.
+    pub fn totalContentBytesForNodes(
+        self: *const Document,
+        node_ids: []const ids.NodeId,
+    ) !usize {
+        var total: usize = 0;
+        for (node_ids) |node_id| {
+            const node = self.findNodeConst(node_id) orelse return error.UnknownNode;
+            total = std.math.add(usize, total, node.content.len) catch return error.ContentAccountingDrift;
         }
+        return total;
+    }
+
+    /// Removes one child reference from its parent without touching registries.
+    pub fn detachChildFromParent(
+        self: *Document,
+        parent_id: ids.NodeId,
+        child_id: ids.NodeId,
+    ) !void {
+        const parent = self.findNode(parent_id) orelse return error.UnknownParent;
+        for (parent.children.items, 0..) |listed_child_id, idx| {
+            if (listed_child_id == child_id) {
+                _ = parent.children.swapRemove(idx);
+                break;
+            }
+        }
+    }
+
+    /// Removes one planned postorder subtree after the caller has already
+    /// detached the root from its immediate parent.
+    pub fn removeDetachedPostorder(
+        self: *Document,
+        postorder: []const ids.NodeId,
+        total_content_bytes: usize,
+    ) !void {
+        if (total_content_bytes > self.content_bytes) return error.ContentAccountingDrift;
+        for (postorder) |node_id| {
+            try self.removeNodeRegistryOnly(node_id);
+        }
+        self.content_bytes -= total_content_bytes;
     }
 
     /// Marks the entire document as frozen.
@@ -623,6 +701,29 @@ pub const Document = struct {
         const id = self.next_node_id;
         self.next_node_id += 1;
         return id;
+    }
+
+    fn removeNodeRegistryOnly(self: *Document, node_id: ids.NodeId) !void {
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+
+        _ = self.nodes_by_id.remove(node_id);
+        if (self.findNodeOrderIndex(node_id)) |order_index| {
+            _ = self.node_order.orderedRemove(order_index);
+        }
+
+        if (self.view_root_node_id != null and self.view_root_node_id.? == node_id) {
+            self.view_root_node_id = null;
+        }
+
+        for (self.elided_node_ids.items, 0..) |elided_id, idx| {
+            if (elided_id == node_id) {
+                _ = self.elided_node_ids.swapRemove(idx);
+                break;
+            }
+        }
+
+        node.deinit(self.allocator);
+        self.allocator.destroy(node);
     }
 
     fn findNodeOrderIndex(self: *const Document, node_id: ids.NodeId) ?usize {
