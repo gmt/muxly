@@ -60,6 +60,10 @@ pub const RequestGuard = union(enum) {
         runtime: *DocumentRuntime,
         domain_ids: []ids.NodeId,
     },
+    participating_domain_write: struct {
+        runtime: *DocumentRuntime,
+        domain_ids: []ids.NodeId,
+    },
     domain_write: struct {
         runtime: *DocumentRuntime,
         domain_lock: *DomainLock,
@@ -79,6 +83,10 @@ pub const RequestGuard = union(enum) {
                 value.runtime.coordinator_mutex.unlock();
             },
             .quiescent_read => |value| {
+                value.runtime.unlockExistingDomainIds(value.domain_ids);
+                value.runtime.allocator.free(value.domain_ids);
+            },
+            .participating_domain_write => |value| {
                 value.runtime.unlockExistingDomainIds(value.domain_ids);
                 value.runtime.allocator.free(value.domain_ids);
             },
@@ -213,6 +221,13 @@ pub const DocumentRuntime = struct {
     fn lockExistingDomainIds(self: *DocumentRuntime, domain_ids: []const ids.NodeId) void {
         for (domain_ids) |domain_id| {
             const domain_lock = self.existingDomainLock(domain_id) orelse continue;
+            domain_lock.mutex.lock();
+        }
+    }
+
+    fn ensureAndLockDomainIds(self: *DocumentRuntime, domain_ids: []const ids.NodeId) !void {
+        for (domain_ids) |domain_id| {
+            const domain_lock = try self.ensureDomainLock(domain_id);
             domain_lock.mutex.lock();
         }
     }
@@ -431,6 +446,16 @@ pub const Store = struct {
                         } };
                     },
                 }
+            }
+
+            if (try self.resolveParticipatingDeleteDomainIdsWithStableTopology(allocator, entry, parsed.value)) |domain_ids| {
+                errdefer allocator.free(domain_ids);
+                try entry.runtime.ensureAndLockDomainIds(domain_ids);
+                entry.runtime.coordinator_mutex.unlock();
+                return .{ .participating_domain_write = .{
+                    .runtime = &entry.runtime,
+                    .domain_ids = domain_ids,
+                } };
             }
 
             entry.runtime.coordinator_mutex.unlock();
@@ -1260,6 +1285,43 @@ pub const Store = struct {
         } };
     }
 
+    fn resolveParticipatingDeleteDomainIdsWithStableTopology(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        entry: *DocumentEntry,
+        request: muxly.protocol.RequestEnvelope,
+    ) !?[]ids.NodeId {
+        _ = self;
+        if (!requestIsRemoveLike(request.method)) return null;
+
+        const node_id = resolveRequestNodeIdWithStableTopology(allocator, &entry.document, request) catch |err| switch (err) {
+            error.MissingNodeTarget,
+            error.InvalidNodeTarget,
+            error.UnknownResourceSelectorSegment,
+            error.AmbiguousResourceSelector,
+            error.InvalidResourceSelector,
+            error.ResourceSelectorEscapesRoot,
+            => return null,
+            else => return err,
+        };
+
+        const mode = classifyRemoveExecutionMode(&entry.document, node_id) catch |err| switch (err) {
+            error.UnknownNode,
+            error.UnknownParent,
+            => return null,
+            else => return err,
+        };
+        if (mode != .recursive_coordinator_safe) return null;
+
+        const domain_ids = try collectParticipatingDeleteDomainIds(allocator, &entry.document, node_id);
+        errdefer allocator.free(domain_ids);
+        if (domain_ids.len < 2) {
+            allocator.free(domain_ids);
+            return null;
+        }
+        return domain_ids;
+    }
+
     fn documentPathFor(self: *Store, document: *const document_mod.Document) []const u8 {
         self.documents_mutex.lock();
         defer self.documents_mutex.unlock();
@@ -1359,6 +1421,42 @@ fn classifyRemoveExecutionMode(
     }
 
     return .recursive_domain_safe;
+}
+
+fn collectParticipatingDeleteDomainIds(
+    allocator: std.mem.Allocator,
+    document: *const document_mod.Document,
+    node_id: ids.NodeId,
+) ![]ids.NodeId {
+    const concurrent_kinds = enabledConcurrentContainerKinds();
+
+    var stack = std.ArrayListUnmanaged(ids.NodeId){};
+    defer stack.deinit(allocator);
+    try stack.append(allocator, node_id);
+
+    var domain_ids = std.ArrayListUnmanaged(ids.NodeId){};
+    defer domain_ids.deinit(allocator);
+
+    while (stack.items.len != 0) {
+        const current_id = stack.pop().?;
+        const current = document.findNodeConst(current_id) orelse return error.UnknownNode;
+        if (try document.concurrentContainerDomainRoot(current_id, concurrent_kinds)) |domain_id| {
+            var seen = false;
+            for (domain_ids.items) |existing| {
+                if (existing == domain_id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) try domain_ids.append(allocator, domain_id);
+        }
+        for (current.children.items) |child_id| {
+            try stack.append(allocator, child_id);
+        }
+    }
+
+    std.sort.heap(ids.NodeId, domain_ids.items, {}, comptime std.sort.asc(ids.NodeId));
+    return try domain_ids.toOwnedSlice(allocator);
 }
 
 pub fn requestSupportsDynamicDomainLane(request: muxly.protocol.RequestEnvelope) bool {

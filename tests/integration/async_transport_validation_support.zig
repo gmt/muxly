@@ -175,6 +175,8 @@ pub fn runTransportScenario(
             try runDifferentHorizontalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentVerticalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandNodeRemoveSerialization(allocator, kind, daemon.actual_spec);
+            try runMultiDomainRecursiveDeleteAllowsUnrelatedIslandProgress(allocator, kind, daemon.actual_spec);
+            try runMultiDomainRecursiveDeleteBlocksParticipatingDomain(allocator, kind, daemon.actual_spec);
             try runPublicHorizontalDomainRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicVerticalDomainRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicDomainSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
@@ -551,6 +553,16 @@ const HorizontalSplitFixture = struct {
     bottom_leaf: u64,
 };
 
+const MultiDomainDeleteFixture = struct {
+    subtree_id: u64,
+    nested_h_id: u64,
+    left_id: u64,
+    right_id: u64,
+    left_leaf: u64,
+    right_leaf: u64,
+    unrelated_leaf: u64,
+};
+
 fn setupHorizontalSplitFixture(
     allocator: std.mem.Allocator,
     client: *muxly.client.ConversationClient,
@@ -591,6 +603,43 @@ fn setupHorizontalSplitFixture(
         .bottom_id = bottom_id,
         .top_leaf = top_leaf,
         .bottom_leaf = bottom_leaf,
+    };
+}
+
+fn setupMultiDomainDeleteFixture(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    name_prefix: []const u8,
+) !MultiDomainDeleteFixture {
+    const island_title = try std.fmt.allocPrint(allocator, "{s}-island-a", .{name_prefix});
+    defer allocator.free(island_title);
+    const unrelated_island_title = try std.fmt.allocPrint(allocator, "{s}-island-b", .{name_prefix});
+    defer allocator.free(unrelated_island_title);
+    const subtree_title = try std.fmt.allocPrint(allocator, "{s}-subtree", .{name_prefix});
+    defer allocator.free(subtree_title);
+    const h_title = try std.fmt.allocPrint(allocator, "{s}-h", .{name_prefix});
+    defer allocator.free(h_title);
+
+    const island_id = try appendNode(allocator, client, document_path, 1, .subdocument, island_title);
+    const subtree_id = try appendNode(allocator, client, document_path, island_id, .container, subtree_title);
+    const nested_h_id = try appendNode(allocator, client, document_path, subtree_id, .h_container, h_title);
+    const left_id = try appendNode(allocator, client, document_path, nested_h_id, .scroll_region, "left");
+    const right_id = try appendNode(allocator, client, document_path, nested_h_id, .scroll_region, "right");
+    const left_leaf = try appendNode(allocator, client, document_path, left_id, .text_leaf, "left-leaf");
+    const right_leaf = try appendNode(allocator, client, document_path, right_id, .text_leaf, "right-leaf");
+
+    const unrelated_island_id = try appendNode(allocator, client, document_path, 1, .subdocument, unrelated_island_title);
+    const unrelated_leaf = try appendNode(allocator, client, document_path, unrelated_island_id, .text_leaf, "unrelated-leaf");
+
+    return .{
+        .subtree_id = subtree_id,
+        .nested_h_id = nested_h_id,
+        .left_id = left_id,
+        .right_id = right_id,
+        .left_leaf = left_leaf,
+        .right_leaf = right_leaf,
+        .unrelated_leaf = unrelated_leaf,
     };
 }
 
@@ -1293,6 +1342,121 @@ fn runSameIslandNodeRemoveSerialization(
     try std.testing.expect((try elapsedMsSince(started)) > 430);
     try expectNodeMissing(allocator, &first_client, "/a", first_leaf);
     try expectNodeMissing(allocator, &first_client, "/a", second_leaf);
+}
+
+fn runMultiDomainRecursiveDeleteAllowsUnrelatedIslandProgress(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const fixture = try setupMultiDomainDeleteFixture(allocator, &first_client, "/a", "multi-domain-progress");
+    const slow_params = try debugNodeRemoveParams(allocator, targeted_overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try nodeUpdateContentParams(allocator, "other-content");
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.subtree_id,
+    }, "debug.node.remove", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.unrelated_leaf,
+    }, "node.update", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedMultiDomainDeleteToAllowUnrelatedIslandProgress;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectOk(allocator, slow_response);
+
+    const unrelated_content = try getNodeContent(allocator, &first_client, "/a", fixture.unrelated_leaf);
+    defer allocator.free(unrelated_content);
+    try std.testing.expectEqualStrings("other-content", unrelated_content);
+
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.subtree_id);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.nested_h_id);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.left_id);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.right_id);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.left_leaf);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.right_leaf);
+}
+
+fn runMultiDomainRecursiveDeleteBlocksParticipatingDomain(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const fixture = try setupMultiDomainDeleteFixture(allocator, &first_client, "/a", "multi-domain-block");
+    const slow_params = try debugNodeRemoveParams(allocator, targeted_overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try debugSleepParams(allocator, targeted_overlap_fast_ms);
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.subtree_id,
+    }, "debug.node.remove", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.right_leaf,
+    }, "debug.sleep", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedMultiDomainDeleteToBlockParticipatingDomain;
+        },
+    }
+
+    const fast_response = try waitForReady(&fast, 3_000);
+    defer allocator.free(fast_response);
+    try expectSleptMs(allocator, fast_response, targeted_overlap_fast_ms);
 }
 
 fn runPublicHorizontalDomainRootRemoveSucceeds(
