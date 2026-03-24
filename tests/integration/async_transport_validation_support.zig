@@ -175,6 +175,9 @@ pub fn runTransportScenario(
             try runDifferentHorizontalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentVerticalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandNodeRemoveSerialization(allocator, kind, daemon.actual_spec);
+            try runPublicDomainSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
+            try runPublicCoordinatorSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
+            try runPublicUnsupportedSubtreeRemoveRejects(allocator, kind, daemon.actual_spec);
             try runDifferentIslandTextAppendOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandTextAppendSerialization(allocator, kind, daemon.actual_spec);
             try runDifferentIslandTtyPushOverlap(allocator, kind, daemon.actual_spec);
@@ -1289,6 +1292,81 @@ fn runSameIslandNodeRemoveSerialization(
     try expectNodeMissing(allocator, &first_client, "/a", second_leaf);
 }
 
+fn runPublicDomainSafeSubtreeRemoveSucceeds(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-subtree-domain");
+    const subtree = try appendNode(allocator, &client, "/a", island, .container, "subtree");
+    const nested = try appendNode(allocator, &client, "/a", subtree, .container, "nested");
+    const leaf = try appendNode(allocator, &client, "/a", nested, .text_leaf, "leaf");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = subtree,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectOk(allocator, response);
+
+    try expectNodeMissing(allocator, &client, "/a", subtree);
+    try expectNodeMissing(allocator, &client, "/a", nested);
+    try expectNodeMissing(allocator, &client, "/a", leaf);
+}
+
+fn runPublicCoordinatorSafeSubtreeRemoveSucceeds(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-subtree-coordinator");
+    const subtree = try appendNode(allocator, &client, "/a", island, .container, "subtree");
+    const nested_h = try appendNode(allocator, &client, "/a", subtree, .h_container, "nested-h");
+    const left = try appendNode(allocator, &client, "/a", nested_h, .scroll_region, "left");
+    const leaf = try appendNode(allocator, &client, "/a", left, .text_leaf, "leaf");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = subtree,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectOk(allocator, response);
+
+    try expectNodeMissing(allocator, &client, "/a", subtree);
+    try expectNodeMissing(allocator, &client, "/a", nested_h);
+    try expectNodeMissing(allocator, &client, "/a", left);
+    try expectNodeMissing(allocator, &client, "/a", leaf);
+}
+
+fn runPublicUnsupportedSubtreeRemoveRejects(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-subtree-unsupported");
+    _ = try appendNode(allocator, &client, "/a", island, .text_leaf, "leaf");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = island,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectErrorMessageSuffix(allocator, response, "NodeHasChildren");
+    try expectNodePresent(allocator, &client, "/a", island);
+}
+
 fn runDifferentIslandNodeUpdateTitleSerialization(
     allocator: std.mem.Allocator,
     kind: TransportKind,
@@ -2224,6 +2302,24 @@ fn expectOk(allocator: std.mem.Allocator, response: []const u8) !void {
     const ok = result.object.get("ok") orelse return error.InvalidResponse;
     if (ok != .bool) return error.InvalidResponse;
     try std.testing.expect(ok.bool);
+}
+
+fn expectErrorMessageSuffix(
+    allocator: std.mem.Allocator,
+    response: []const u8,
+    suffix: []const u8,
+) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidResponse;
+    const error_value = parsed.value.object.get("error") orelse return error.InvalidResponse;
+    if (error_value != .object) return error.InvalidResponse;
+    const message = error_value.object.get("message") orelse return error.InvalidResponse;
+    if (message != .string) return error.InvalidResponse;
+    try std.testing.expect(std.mem.endsWith(u8, message.string, suffix));
 }
 
 fn expectPong(allocator: std.mem.Allocator, response: []const u8) !void {

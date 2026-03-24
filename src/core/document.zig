@@ -222,6 +222,31 @@ pub const Document = struct {
         };
     }
 
+    pub fn subtreeContainsEnabledContainerKinds(
+        self: *const Document,
+        node_id: ids.NodeId,
+        enabled: ConcurrentContainerKinds,
+    ) !bool {
+        const node = self.findNodeConst(node_id) orelse return error.UnknownNode;
+        if (containerChildDomainsEnabled(node.kind, enabled)) return true;
+
+        var stack = std.ArrayListUnmanaged(ids.NodeId){};
+        defer stack.deinit(self.allocator);
+        try stack.append(self.allocator, node_id);
+
+        while (stack.items.len != 0) {
+            const current_id = stack.pop().?;
+            const current = self.findNodeConst(current_id) orelse return error.UnknownNode;
+            for (current.children.items) |child_id| {
+                const child = self.findNodeConst(child_id) orelse return error.UnknownChild;
+                if (containerChildDomainsEnabled(child.kind, enabled)) return true;
+                try stack.append(self.allocator, child_id);
+            }
+        }
+
+        return false;
+    }
+
     /// Removes a leaf node from the document.
     ///
     /// Callers must remove descendants before removing a parent node.
@@ -262,6 +287,52 @@ pub const Document = struct {
                 _ = self.elided_node_ids.swapRemove(idx);
                 break;
             }
+        }
+    }
+
+    pub fn removeSubtree(self: *Document, node_id: ids.NodeId) !void {
+        if (node_id == self.root_node_id) return error.NodeHasChildren;
+        _ = self.findNodeConst(node_id) orelse return error.UnknownNode;
+
+        const Frame = struct {
+            node_id: ids.NodeId,
+            expanded: bool,
+        };
+
+        var stack = std.ArrayListUnmanaged(Frame){};
+        defer stack.deinit(self.allocator);
+        var postorder = std.ArrayListUnmanaged(ids.NodeId){};
+        defer postorder.deinit(self.allocator);
+
+        try stack.append(self.allocator, .{
+            .node_id = node_id,
+            .expanded = false,
+        });
+
+        while (stack.items.len != 0) {
+            const frame = stack.pop().?;
+            const current = self.findNodeConst(frame.node_id) orelse return error.UnknownNode;
+            if (frame.expanded) {
+                try postorder.append(self.allocator, frame.node_id);
+                continue;
+            }
+
+            try stack.append(self.allocator, .{
+                .node_id = frame.node_id,
+                .expanded = true,
+            });
+            var index = current.children.items.len;
+            while (index != 0) {
+                index -= 1;
+                try stack.append(self.allocator, .{
+                    .node_id = current.children.items[index],
+                    .expanded = false,
+                });
+            }
+        }
+
+        for (postorder.items) |current_id| {
+            try self.removeNode(current_id);
         }
     }
 
@@ -707,4 +778,101 @@ test "removeNode reports content accounting drift instead of underflowing" {
         document.removeNode(node_id),
     );
     try std.testing.expect(document.findNode(node_id) != null);
+}
+
+test "removeSubtree removes descendants, content accounting, and shared view state" {
+    var document = try Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const island_id = try document.appendNode(
+        document.root_node_id,
+        .subdocument,
+        "island",
+        .{ .none = {} },
+    );
+    const subtree_id = try document.appendNode(
+        island_id,
+        .container,
+        "subtree",
+        .{ .none = {} },
+    );
+    const nested_id = try document.appendNode(
+        subtree_id,
+        .container,
+        "nested",
+        .{ .none = {} },
+    );
+    const doomed_leaf = try document.appendNode(
+        nested_id,
+        .text_leaf,
+        "doomed",
+        .{ .none = {} },
+    );
+    const survivor_leaf = try document.appendNode(
+        island_id,
+        .text_leaf,
+        "survivor",
+        .{ .none = {} },
+    );
+
+    try document.setNodeContent(doomed_leaf, "doomed-content");
+    try document.setNodeContent(survivor_leaf, "survivor");
+    try document.setViewRoot(doomed_leaf);
+    try document.setElided(doomed_leaf, true);
+
+    const expected_content_bytes = document.findNode(survivor_leaf).?.content.len;
+
+    try document.removeSubtree(subtree_id);
+
+    try std.testing.expect(document.findNode(subtree_id) == null);
+    try std.testing.expect(document.findNode(nested_id) == null);
+    try std.testing.expect(document.findNode(doomed_leaf) == null);
+    try std.testing.expect(document.findNode(survivor_leaf) != null);
+    try std.testing.expectEqual(expected_content_bytes, document.content_bytes);
+    try std.testing.expect(document.view_root_node_id == null);
+    try std.testing.expectEqual(@as(usize, 0), document.elided_node_ids.items.len);
+}
+
+test "subtreeContainsEnabledContainerKinds reports nested concurrent boundaries" {
+    var document = try Document.init(std.testing.allocator, 1, "demo");
+    defer document.deinit();
+
+    const island_id = try document.appendNode(
+        document.root_node_id,
+        .subdocument,
+        "island",
+        .{ .none = {} },
+    );
+    const plain_container = try document.appendNode(
+        island_id,
+        .container,
+        "plain",
+        .{ .none = {} },
+    );
+    const nested_h = try document.appendNode(
+        plain_container,
+        .h_container,
+        "nested-h",
+        .{ .none = {} },
+    );
+    const nested_child = try document.appendNode(
+        nested_h,
+        .scroll_region,
+        "child",
+        .{ .none = {} },
+    );
+    _ = try document.appendNode(
+        nested_child,
+        .text_leaf,
+        "leaf",
+        .{ .none = {} },
+    );
+
+    const enabled: Document.ConcurrentContainerKinds = .{
+        .horizontal = true,
+        .vertical = true,
+    };
+
+    try std.testing.expect(!(try document.subtreeContainsEnabledContainerKinds(island_id, .{})));
+    try std.testing.expect(try document.subtreeContainsEnabledContainerKinds(plain_container, enabled));
 }

@@ -179,9 +179,55 @@ test "execution lane classification keeps document-local requests on document la
         .root => return error.ExpectedDocumentLane,
     }
 
-    const island_remove_request = try std.fmt.allocPrint(
+    const subtree_parent = try store.appendNode("/demo", document, island_id, .container, "subtree-parent");
+    const subtree_leaf = try store.appendNode("/demo", document, subtree_parent, .text_leaf, "subtree-leaf");
+    _ = subtree_leaf;
+    const subtree_remove_request = try std.fmt.allocPrint(
         std.testing.allocator,
         "{{\"jsonrpc\":\"2.0\",\"id\":12,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{subtree_parent},
+    );
+    defer std.testing.allocator.free(subtree_remove_request);
+    var subtree_remove = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        subtree_remove_request,
+    );
+    defer subtree_remove.deinit(std.testing.allocator);
+    switch (subtree_remove) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(island_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const coordinator_parent = try store.appendNode("/demo", document, island_id, .container, "coordinator-parent");
+    const nested_h = try store.appendNode("/demo", document, coordinator_parent, .h_container, "nested-h");
+    const nested_child = try store.appendNode("/demo", document, nested_h, .scroll_region, "nested-child");
+    _ = try store.appendNode("/demo", document, nested_child, .text_leaf, "nested-leaf");
+    const coordinator_remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":13,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{coordinator_parent},
+    );
+    defer std.testing.allocator.free(coordinator_remove_request);
+    var coordinator_remove = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        coordinator_remove_request,
+    );
+    defer coordinator_remove.deinit(std.testing.allocator);
+    switch (coordinator_remove) {
+        .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
+        .document_domain => return error.ExpectedCoordinatorLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const island_remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":14,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
         .{island_id},
     );
     defer std.testing.allocator.free(island_remove_request);
@@ -501,6 +547,72 @@ test "request guards keep same-island structural requests behind an active domai
     var context = ThreadContext{
         .store = &store,
         .request = append_request,
+        .acquired = &acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+
+    const worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!acquired.load(.acquire));
+
+    slow_guard.release();
+    worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(acquired.load(.acquire));
+}
+
+test "request guards keep same-island subtree remove behind an active domain writer" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const parent_id = try store.appendNode("/demo", document, island_id, .container, "parent");
+    const nested_id = try store.appendNode("/demo", document, parent_id, .container, "nested");
+    const leaf_id = try store.appendNode("/demo", document, nested_id, .text_leaf, "leaf");
+
+    const slow_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{leaf_id},
+    );
+    defer std.testing.allocator.free(slow_request);
+    const remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{parent_id},
+    );
+    defer std.testing.allocator.free(remove_request);
+
+    var slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_request);
+    errdefer slow_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+    var context = ThreadContext{
+        .store = &store,
+        .request = remove_request,
         .acquired = &acquired,
         .mutex = &failure_mutex,
         .failure = &failure,

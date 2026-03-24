@@ -41,6 +41,14 @@ const DomainWritePlan = union(enum) {
     },
 };
 
+const RemoveExecutionMode = enum {
+    leaf_domain_safe,
+    leaf_coordinator,
+    recursive_domain_safe,
+    recursive_coordinator_safe,
+    unsupported,
+};
+
 pub const RequestGuard = union(enum) {
     none,
     coordinator_exclusive: struct {
@@ -910,11 +918,16 @@ pub const Store = struct {
 
     pub fn removeNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId) !void {
         const entry = try self.documentEntryForPath(document_path);
+        const mode = try classifyRemoveExecutionMode(document, node_id);
         entry.runtime.structure_registry_mutex.lock();
         defer entry.runtime.structure_registry_mutex.unlock();
         entry.runtime.content_bytes_mutex.lock();
         defer entry.runtime.content_bytes_mutex.unlock();
-        try document.removeNode(node_id);
+        switch (mode) {
+            .leaf_domain_safe, .leaf_coordinator => try document.removeNode(node_id),
+            .recursive_domain_safe, .recursive_coordinator_safe => try document.removeSubtree(node_id),
+            .unsupported => return error.NodeHasChildren,
+        }
         self.notifyInvalidate(document_path, document, node_id, .structure);
     }
 
@@ -1165,12 +1178,7 @@ pub const Store = struct {
         const node = entry.document.findNodeConst(node_id) orelse return null;
         if (node.kind == .h_container or node.kind == .v_container) return null;
 
-        const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
-            .horizontal = true,
-            .vertical = true,
-        };
-
-        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, concurrent_kinds) catch |err| switch (err) {
+        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, enabledConcurrentContainerKinds()) catch |err| switch (err) {
             error.UnknownNode,
             error.UnknownParent,
             => null,
@@ -1196,12 +1204,7 @@ pub const Store = struct {
             const parent = entry.document.findNodeConst(parent_id) orelse return null;
             if (parent.kind == .h_container or parent.kind == .v_container) return null;
 
-            const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
-                .horizontal = true,
-                .vertical = true,
-            };
-
-            const domain_id = entry.document.concurrentContainerDomainRoot(parent_id, concurrent_kinds) catch |err| switch (err) {
+            const domain_id = entry.document.concurrentContainerDomainRoot(parent_id, enabledConcurrentContainerKinds()) catch |err| switch (err) {
                 error.UnknownNode,
                 error.UnknownParent,
                 => return null,
@@ -1227,18 +1230,22 @@ pub const Store = struct {
 
         if (node_id == entry.document.root_node_id) return null;
         const node = entry.document.findNodeConst(node_id) orelse return null;
-        const parent_id = node.parent_id orelse return null;
-        if (parent_id == entry.document.root_node_id) return null;
-        if (node.children.items.len != 0) return null;
-        const parent = entry.document.findNodeConst(parent_id) orelse return null;
-        if (parent.kind == .h_container or parent.kind == .v_container) return null;
-
-        const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
-            .horizontal = true,
-            .vertical = true,
+        const mode = classifyRemoveExecutionMode(&entry.document, node_id) catch |err| switch (err) {
+            error.UnknownNode,
+            error.UnknownParent,
+            => return null,
+            else => return err,
         };
+        switch (mode) {
+            .leaf_domain_safe, .recursive_domain_safe => {},
+            .leaf_coordinator,
+            .recursive_coordinator_safe,
+            .unsupported,
+            => return null,
+        }
 
-        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, concurrent_kinds) catch |err| switch (err) {
+        const parent_id = node.parent_id orelse return null;
+        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, enabledConcurrentContainerKinds()) catch |err| switch (err) {
             error.UnknownNode,
             error.UnknownParent,
             => return null,
@@ -1313,6 +1320,43 @@ fn resolveRequestNodeIdWithStableTopology(
     const node_id = muxly.protocol.getInteger(request.params, "nodeId") orelse return error.MissingNodeTarget;
     if (node_id < 0) return error.InvalidNodeTarget;
     return @intCast(node_id);
+}
+
+fn enabledConcurrentContainerKinds() document_mod.Document.ConcurrentContainerKinds {
+    return .{
+        .horizontal = true,
+        .vertical = true,
+    };
+}
+
+fn classifyRemoveExecutionMode(
+    document: *const document_mod.Document,
+    node_id: ids.NodeId,
+) !RemoveExecutionMode {
+    if (node_id == document.root_node_id) return .unsupported;
+
+    const node = document.findNodeConst(node_id) orelse return error.UnknownNode;
+    const parent_id = node.parent_id orelse return error.UnknownParent;
+    const parent = document.findNodeConst(parent_id) orelse return error.UnknownParent;
+
+    if (node.children.items.len == 0) {
+        if (parent_id == document.root_node_id) return .leaf_coordinator;
+        if (parent.kind == .h_container or parent.kind == .v_container) return .leaf_coordinator;
+        return .leaf_domain_safe;
+    }
+
+    if (parent_id == document.root_node_id) return .unsupported;
+    if (parent.kind == .h_container or parent.kind == .v_container) return .unsupported;
+
+    const concurrent_kinds = enabledConcurrentContainerKinds();
+    const domain_id = try document.concurrentContainerDomainRoot(node_id, concurrent_kinds) orelse return .unsupported;
+    if (domain_id == node_id) return .unsupported;
+
+    if (try document.subtreeContainsEnabledContainerKinds(node_id, concurrent_kinds)) {
+        return .recursive_coordinator_safe;
+    }
+
+    return .recursive_domain_safe;
 }
 
 pub fn requestSupportsDynamicDomainLane(request: muxly.protocol.RequestEnvelope) bool {
