@@ -158,6 +158,8 @@ pub fn runTransportScenario(
         .full => {
             try runDifferentDocumentOverlap(allocator, kind, daemon.actual_spec);
             try runSameDocumentSerialization(allocator, kind, daemon.actual_spec);
+            try runSameDocumentDifferentTargetOverlap(allocator, kind, daemon.actual_spec);
+            try runSameDocumentSameTargetSerialization(allocator, kind, daemon.actual_spec);
             try runRootVsDocumentOverlap(allocator, kind, daemon.actual_spec);
             try runCancelAndFollowOn(allocator, daemon.actual_spec);
             try runDisconnectReconnect(allocator, daemon.actual_spec);
@@ -256,6 +258,118 @@ fn runSameDocumentSerialization(
         .second => |bytes| {
             defer allocator.free(bytes);
             return error.ExpectedSameDocumentRequestsToStayFIFO;
+        },
+    }
+
+    const second_response = try waitForReady(&second, 3_000);
+    defer allocator.free(second_response);
+    try expectSleptMs(allocator, second_response, same_lane_sleep_ms);
+
+    try std.testing.expect((try elapsedMsSince(started)) > 430);
+}
+
+fn runSameDocumentDifferentTargetOverlap(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const first_target = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "lane-a");
+    const second_target = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "lane-b");
+
+    const slow_params = try debugSleepParams(allocator, overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try debugSleepParams(allocator, overlap_fast_ms);
+    defer allocator.free(fast_params);
+
+    const started = try std.time.Instant.now();
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = first_target,
+    }, "debug.sleep", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = second_target,
+    }, "debug.sleep", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedDifferentTargetsToOverlap;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            try expectSleptMs(allocator, bytes, overlap_fast_ms);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectSleptMs(allocator, slow_response, overlap_slow_ms);
+
+    try std.testing.expect((try elapsedMsSince(started)) < 500);
+}
+
+fn runSameDocumentSameTargetSerialization(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const target = try appendNode(allocator, &first_client, "/a", 1, .subdocument, "serialized-target");
+    const params = try debugSleepParams(allocator, same_lane_sleep_ms);
+    defer allocator.free(params);
+
+    const started = try std.time.Instant.now();
+
+    var first = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = target,
+    }, "debug.sleep", params);
+    defer first.deinit();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    var second = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = target,
+    }, "debug.sleep", params);
+    defer second.deinit();
+
+    const first_ready = try waitForEitherReady(&first, &second, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            try expectSleptMs(allocator, bytes, same_lane_sleep_ms);
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedSameTargetRequestsToStayFIFO;
         },
     }
 
@@ -393,6 +507,38 @@ fn createDocument(
     defer allocator.free(response);
     var parsed = try parseSuccessResponse(allocator, response);
     parsed.deinit();
+}
+
+fn appendNode(
+    allocator: std.mem.Allocator,
+    client: *muxly.client.ConversationClient,
+    document_path: []const u8,
+    parent_id: u64,
+    kind: muxly.types.NodeKind,
+    title: []const u8,
+) !u64 {
+    const title_json = try std.json.Stringify.valueAlloc(allocator, title, .{});
+    defer allocator.free(title_json);
+
+    const params_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"parentId\":{d},\"kind\":\"{s}\",\"title\":{s}}}",
+        .{ parent_id, @tagName(kind), title_json },
+    );
+    defer allocator.free(params_json);
+
+    const response = try client.requestTarget(.{
+        .documentPath = document_path,
+    }, "node.append", params_json);
+    defer allocator.free(response);
+
+    var parsed = try parseSuccessResponse(allocator, response);
+    defer parsed.deinit();
+    const result_value = parsed.value.object.get("result") orelse return error.InvalidResponse;
+    if (result_value != .object) return error.InvalidResponse;
+    const result = result_value.object.get("nodeId") orelse return error.InvalidResponse;
+    if (result != .integer or result.integer < 0) return error.InvalidResponse;
+    return @intCast(result.integer);
 }
 
 fn startDaemon(allocator: std.mem.Allocator, requested_transport: []const u8) !DaemonInstance {

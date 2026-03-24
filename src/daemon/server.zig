@@ -687,6 +687,7 @@ const Lane = struct {
     allocator: std.mem.Allocator,
     executor: *ServerExecutor,
     document_path: ?[]u8,
+    domain_root_node_id: ?u64,
     queue: std.array_list.Managed(QueuedWork),
     mutex: std.Thread.Mutex = .{},
     condition: std.Thread.Condition = .{},
@@ -698,6 +699,7 @@ const Lane = struct {
             .allocator = allocator,
             .executor = executor,
             .document_path = null,
+            .domain_root_node_id = null,
             .queue = std.array_list.Managed(QueuedWork).init(allocator),
         };
         const thread = try std.Thread.spawn(.{}, workerMain, .{lane});
@@ -705,10 +707,11 @@ const Lane = struct {
         return lane;
     }
 
-    fn initDocument(
+    fn initDocumentLane(
         allocator: std.mem.Allocator,
         executor: *ServerExecutor,
         document_path: []u8,
+        domain_root_node_id: ?u64,
     ) !*Lane {
         const lane = try allocator.create(Lane);
         errdefer allocator.destroy(lane);
@@ -716,6 +719,7 @@ const Lane = struct {
             .allocator = allocator,
             .executor = executor,
             .document_path = document_path,
+            .domain_root_node_id = domain_root_node_id,
             .queue = std.array_list.Managed(QueuedWork).init(allocator),
         };
         const thread = try std.Thread.spawn(.{}, workerMain, .{lane});
@@ -794,18 +798,41 @@ const ServerExecutor = struct {
     fn resolveLane(self: *ServerExecutor, lane_key: router.ExecutionLane) !*Lane {
         return switch (lane_key) {
             .root => self.root_lane,
-            .document => |document_path| blk: {
+            .document_coordinator => |document_path| blk: {
                 self.lanes_mutex.lock();
                 defer self.lanes_mutex.unlock();
 
                 for (self.document_lanes.items) |lane| {
-                    if (std.mem.eql(u8, lane.document_path.?, document_path)) {
+                    if (lane.domain_root_node_id == null and std.mem.eql(u8, lane.document_path.?, document_path)) {
                         self.allocator.free(document_path);
                         break :blk lane;
                     }
                 }
 
-                const lane = try Lane.initDocument(self.allocator, self, document_path);
+                const lane = try Lane.initDocumentLane(self.allocator, self, document_path, null);
+                try self.document_lanes.append(lane);
+                break :blk lane;
+            },
+            .document_domain => |domain| blk: {
+                self.lanes_mutex.lock();
+                defer self.lanes_mutex.unlock();
+
+                for (self.document_lanes.items) |lane| {
+                    if (lane.domain_root_node_id != null and
+                        lane.domain_root_node_id.? == domain.root_node_id and
+                        std.mem.eql(u8, lane.document_path.?, domain.document_path))
+                    {
+                        self.allocator.free(domain.document_path);
+                        break :blk lane;
+                    }
+                }
+
+                const lane = try Lane.initDocumentLane(
+                    self.allocator,
+                    self,
+                    domain.document_path,
+                    domain.root_node_id,
+                );
                 try self.document_lanes.append(lane);
                 break :blk lane;
             },

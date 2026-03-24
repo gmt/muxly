@@ -11,12 +11,17 @@ const debug_rpc_env_name = "MUXLY_ENABLE_DEBUG_RPC";
 
 pub const ExecutionLane = union(enum) {
     root,
-    document: []u8,
+    document_coordinator: []u8,
+    document_domain: struct {
+        document_path: []u8,
+        root_node_id: u64,
+    },
 
     pub fn deinit(self: *ExecutionLane, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .root => {},
-            .document => |path| allocator.free(path),
+            .document_coordinator => |path| allocator.free(path),
+            .document_domain => |*domain| allocator.free(domain.document_path),
         }
     }
 };
@@ -32,7 +37,20 @@ pub fn classifyExecutionLane(
     if (std.mem.eql(u8, document_path, "/")) return .root;
     if (!requestRunsOnDocumentLane(parsed.value.method, parsed.value.params)) return .root;
 
-    return .{ .document = try allocator.dupe(u8, document_path) };
+    if (std.mem.eql(u8, parsed.value.method, "debug.sleep")) {
+        if (parsed.value.target) |target| {
+            if (target.nodeId) |root_node_id| {
+                return .{
+                    .document_domain = .{
+                        .document_path = try allocator.dupe(u8, document_path),
+                        .root_node_id = root_node_id,
+                    },
+                };
+            }
+        }
+    }
+
+    return .{ .document_coordinator = try allocator.dupe(u8, document_path) };
 }
 
 pub fn handleRequest(
