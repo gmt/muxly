@@ -7,11 +7,13 @@ use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer, ServerName};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::env;
+use std::io::Write;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{
@@ -562,49 +564,102 @@ where
         .handshake(stream)
         .await
         .context("unable to establish H2 client session")?;
-    let connection_task = tokio::spawn(async move {
-        let _ = connection.await;
+    let mut connection_task = tokio::spawn(async move {
+        match connection.await {
+            Ok(()) => {
+                trace("h2 client connection task completed cleanly");
+                Ok(())
+            }
+            Err(err) => {
+                trace(&format!(
+                    "h2 client connection task ended with error: {err:#}"
+                ));
+                Err(err).context("h2 client connection task failed")
+            }
+        }
     });
 
     let sender = Arc::new(Mutex::new(sender));
     let mut stdin = BufReader::new(tokio::io::stdin());
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
-    let mut tasks = Vec::new();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut stdin_closed = false;
+    let mut connection_done = false;
 
-    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
-        trace(&format!(
-            "h2 session client request {} bytes={}",
-            summarize_transport_payload(&request),
-            request.len()
-        ));
-        let stdout = stdout.clone();
-        let host = args.host.clone();
-        let path = args.path.clone();
-        let port = args.port;
-        let max_message_bytes = args.max_message_bytes;
-        // Keep H2 stream creation in stdin order so daemon-side FIFO lanes
-        // observe the same request ordering the client submitted.
-        let response_future = {
-            let sender = sender.lock().await;
-            start_h2_request(&sender, &host, port, &path, request).await?
-        };
-        tasks.push(tokio::spawn(async move {
-            let mut response = finish_h2_request(response_future).await?;
-            copy_h2_body_to_shared_stdout(&mut response, max_message_bytes, stdout).await
-        }));
+    loop {
+        if stdin_closed && tasks.is_empty() {
+            break;
+        }
+
+        tokio::select! {
+            request_result = read_line_message(&mut stdin, args.max_message_bytes), if !stdin_closed => {
+                match request_result? {
+                    Some(request) => {
+                        trace(&format!(
+                            "h2 session client request {} bytes={}",
+                            summarize_transport_payload(&request),
+                            request.len()
+                        ));
+                        let stdout = stdout.clone();
+                        let host = args.host.clone();
+                        let path = args.path.clone();
+                        let port = args.port;
+                        let max_message_bytes = args.max_message_bytes;
+                        // Keep H2 stream creation in stdin order so daemon-side FIFO lanes
+                        // observe the same request ordering the client submitted.
+                        let response_future = {
+                            trace("h2 session client acquiring sender lock");
+                            let sender = sender.lock().await;
+                            trace("h2 session client sender lock acquired");
+                            start_h2_request(&sender, &host, port, &path, request).await?
+                        };
+                        trace("h2 session client request stream started");
+                        tasks.spawn(async move {
+                            let mut response = timeout(Duration::from_secs(20), finish_h2_request(response_future))
+                                .await
+                                .context("timed out while awaiting H2 response headers")??;
+                            copy_h2_body_to_shared_stdout(&mut response, max_message_bytes, stdout).await?;
+                            Result::<()>::Ok(())
+                        });
+                    },
+                    None => {
+                        stdin_closed = true;
+                    },
+                }
+            }
+            task_result = tasks.join_next(), if !tasks.is_empty() => {
+                match task_result {
+                    Some(Ok(Ok(()))) => {},
+                    Some(Ok(Err(err))) => return Err(err),
+                    Some(Err(err)) => return Err(anyhow!("h2 session client task join error: {err}")),
+                    None => {},
+                }
+            }
+            connection_result = &mut connection_task, if !connection_done => {
+                connection_done = true;
+                connection_result
+                    .context("h2 client connection task join error")??;
+                if !stdin_closed || !tasks.is_empty() {
+                    bail!("h2 client connection ended before requests and responses completed");
+                }
+            }
+        }
     }
 
-    for task in tasks {
-        task.await??;
+    if !connection_done {
+        connection_task.abort();
+        let _ = connection_task.await;
     }
-
-    connection_task.abort();
-    let _ = connection_task.await;
     Ok(())
 }
 
 async fn run_h2_server(args: HttpServerArgs) -> Result<()> {
-    let lanes = Arc::new(tokio::sync::Mutex::new(HashMap::<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>::new()));
+    let lanes = Arc::new(tokio::sync::Mutex::new(HashMap::<
+        UpstreamLaneKey,
+        Arc<LaneQueue>,
+    >::new()));
+    let body_read_queue = Arc::new(OrderedSequenceGate::default());
+    let next_accept_sequence = Arc::new(AtomicU64::new(1));
     let listener = TcpListener::bind((args.listen_host.as_str(), args.listen_port))
         .await
         .with_context(|| {
@@ -628,12 +683,24 @@ async fn run_h2_server(args: HttpServerArgs) -> Result<()> {
 
     loop {
         let (socket, _) = listener.accept().await?;
+        trace("h2 server accepted tcp connection");
         let path = args.path.clone();
         let upstream_unix = args.upstream_unix.clone();
         let max_message_bytes = args.max_message_bytes;
         let lanes = lanes.clone();
+        let body_read_queue = body_read_queue.clone();
+        let next_accept_sequence = next_accept_sequence.clone();
         tokio::spawn(async move {
-            let _ = handle_h2_connection(socket, upstream_unix, path, max_message_bytes, lanes).await;
+            let _ = handle_h2_connection(
+                socket,
+                upstream_unix,
+                path,
+                max_message_bytes,
+                lanes,
+                body_read_queue,
+                next_accept_sequence,
+            )
+            .await;
         });
     }
 }
@@ -643,45 +710,56 @@ async fn handle_h2_connection(
     upstream_unix: PathBuf,
     path: String,
     max_message_bytes: usize,
-    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>>>,
+    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<LaneQueue>>>>,
+    body_read_queue: Arc<OrderedSequenceGate>,
+    next_accept_sequence: Arc<AtomicU64>,
 ) -> Result<()> {
     let mut builder = server::Builder::new();
     configure_h2_server_windows(&mut builder, max_message_bytes);
+    trace("h2 server starting session handshake");
     let mut connection = builder
         .handshake(socket)
         .await
         .context("unable to establish H2C server session")?;
+    trace("h2 server session handshake complete");
 
+    trace("h2 server waiting for request stream");
     while let Some(result) = connection.accept().await {
+        trace("h2 server accepted stream");
         let (request, respond) = result?;
         let expected_path = path.clone();
         let upstream_unix = upstream_unix.clone();
         let lanes = lanes.clone();
-        // Preserve upstream request handoff order in H2 stream accept order so
-        // daemon-side FIFO lanes see the same ordering the client submitted.
-        let active = match start_h2_stream(
-            request,
-            respond,
-            upstream_unix,
-            expected_path,
-            max_message_bytes,
-            lanes,
-        )
-        .await
-        {
-            Ok(active) => active,
-            Err(err) => {
-                trace(&format!("h2 server request setup failed: {err:#}"));
-                continue;
-            }
-        };
+        let body_read_queue = body_read_queue.clone();
+        let accept_sequence = next_accept_sequence.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
+            let active = match start_h2_stream(
+                request,
+                respond,
+                upstream_unix,
+                expected_path,
+                max_message_bytes,
+                lanes,
+                body_read_queue,
+                accept_sequence,
+            )
+            .await
+            {
+                Ok(active) => active,
+                Err(err) => {
+                    trace(&format!("h2 server request setup failed: {err:#}"));
+                    return;
+                }
+            };
+
             if let Err(err) = finish_server_h2_stream(active, max_message_bytes).await {
                 trace(&format!("h2 server response forwarding failed: {err:#}"));
             }
         });
+        trace("h2 server waiting for request stream");
     }
 
+    trace("h2 server session ended");
     Ok(())
 }
 
@@ -689,7 +767,126 @@ struct ActiveServerH2Stream {
     upstream: BufStream<UnixStream>,
     send: SendStream<Bytes>,
     trace_summary: String,
-    _lane_guard: tokio::sync::OwnedMutexGuard<()>,
+    lane_guard: Option<LaneGuard>,
+}
+
+struct OrderedSequenceGate {
+    state: std::sync::Mutex<OrderedSequenceGateState>,
+    notify: tokio::sync::Notify,
+}
+
+struct OrderedSequenceGateState {
+    busy: bool,
+    next_sequence: u64,
+}
+
+struct OrderedSequenceGuard {
+    gate: Arc<OrderedSequenceGate>,
+}
+
+impl Default for OrderedSequenceGate {
+    fn default() -> Self {
+        return Self {
+            state: std::sync::Mutex::new(OrderedSequenceGateState {
+                busy: false,
+                next_sequence: 1,
+            }),
+            notify: tokio::sync::Notify::new(),
+        };
+    }
+}
+
+impl OrderedSequenceGate {
+    async fn acquire(self: &Arc<OrderedSequenceGate>, sequence: u64) -> OrderedSequenceGuard {
+        loop {
+            let notified = self.notify.notified();
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("ordered sequence gate mutex poisoned");
+                if !state.busy && state.next_sequence == sequence {
+                    state.busy = true;
+                    return OrderedSequenceGuard { gate: self.clone() };
+                }
+            }
+
+            notified.await;
+        }
+    }
+
+    fn release(&self) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .expect("ordered sequence gate mutex poisoned");
+            state.busy = false;
+            state.next_sequence += 1;
+        }
+        self.notify.notify_waiters();
+    }
+}
+
+impl Drop for OrderedSequenceGuard {
+    fn drop(&mut self) {
+        self.gate.release();
+    }
+}
+
+#[derive(Default)]
+struct LaneQueue {
+    state: std::sync::Mutex<LaneQueueState>,
+    notify: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct LaneQueueState {
+    busy: bool,
+    waiting_sequences: BTreeSet<u64>,
+}
+
+struct LaneGuard {
+    queue: Arc<LaneQueue>,
+}
+
+impl LaneQueue {
+    async fn acquire(self: &Arc<LaneQueue>, sequence: u64) -> LaneGuard {
+        {
+            let mut state = self.state.lock().expect("lane queue mutex poisoned");
+            let _ = state.waiting_sequences.insert(sequence);
+        }
+
+        loop {
+            let notified = self.notify.notified();
+            {
+                let mut state = self.state.lock().expect("lane queue mutex poisoned");
+                if !state.busy && state.waiting_sequences.first().copied() == Some(sequence) {
+                    state.busy = true;
+                    let _ = state.waiting_sequences.remove(&sequence);
+                    return LaneGuard {
+                        queue: self.clone(),
+                    };
+                }
+            }
+
+            notified.await;
+        }
+    }
+
+    fn release(&self) {
+        {
+            let mut state = self.state.lock().expect("lane queue mutex poisoned");
+            state.busy = false;
+        }
+        self.notify.notify_waiters();
+    }
+}
+
+impl Drop for LaneGuard {
+    fn drop(&mut self) {
+        self.queue.release();
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -704,13 +901,17 @@ async fn start_h2_stream(
     upstream_unix: PathBuf,
     expected_path: String,
     max_message_bytes: usize,
-    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<tokio::sync::Mutex<()>>>>>,
+    lanes: Arc<tokio::sync::Mutex<HashMap<UpstreamLaneKey, Arc<LaneQueue>>>>,
+    body_read_queue: Arc<OrderedSequenceGate>,
+    accept_sequence: u64,
 ) -> Result<ActiveServerH2Stream> {
     if request.uri().path() != expected_path {
         send_h2_error_response(&mut respond, 404)?;
         bail!("unexpected H2 path: {}", request.uri().path());
     }
 
+    let body_read_guard = body_read_queue.acquire(accept_sequence).await;
+    trace("h2 server reading request body");
     let request = match read_h2_request_body(request, max_message_bytes).await {
         Ok(request) => request,
         Err(err) => {
@@ -718,15 +919,20 @@ async fn start_h2_stream(
             return Err(err);
         }
     };
+    drop(body_read_guard);
+    trace("h2 server request body read");
     let lane_key = classify_upstream_lane_key(&request);
-    let lane_mutex = {
+    let lane_queue = {
         let mut lane_map = lanes.lock().await;
         lane_map
             .entry(lane_key)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .or_insert_with(|| Arc::new(LaneQueue::default()))
             .clone()
     };
-    let lane_guard = lane_mutex.lock_owned().await;
+    trace("h2 server waiting for lane lock");
+    let lane_guard = lane_queue.acquire(accept_sequence).await;
+    trace("h2 server lane lock acquired");
+    let hold_lane_until_response_complete = !request_is_stream_open(&request);
     let trace_summary = summarize_transport_payload(&request);
     trace(&format!(
         "h2 server request {} bytes={}",
@@ -768,7 +974,11 @@ async fn start_h2_stream(
         upstream,
         send,
         trace_summary,
-        _lane_guard: lane_guard,
+        lane_guard: if hold_lane_until_response_complete {
+            Some(lane_guard)
+        } else {
+            None
+        },
     })
 }
 
@@ -792,6 +1002,7 @@ async fn finish_server_h2_stream(
     }
 
     active.send.send_data(Bytes::new(), true)?;
+    drop(active.lane_guard.take());
     Ok(())
 }
 
@@ -821,23 +1032,34 @@ async fn start_h2_request(
     host: &str,
     port: u16,
     path: &str,
-    request: Vec<u8>,
+    mut request: Vec<u8>,
 ) -> Result<client::ResponseFuture> {
+    trace("h2 client waiting for ready sender");
     let mut sender = sender.clone().ready().await?;
+    trace("h2 client sender ready");
     let request_head = Request::builder()
         .method("POST")
         .uri(format!("http://{}{}", authority(host, port), path))
         .body(())
         .context("unable to build H2 request")?;
+    trace("h2 client sending request head");
     let (response, mut send_stream) = sender.send_request(request_head, false)?;
-    send_stream.send_data(Bytes::from(request), false)?;
-    send_stream.send_data(Bytes::from_static(b"\n"), true)?;
+    trace("h2 client request head sent");
+    request.push(b'\n');
+    send_stream.send_data(Bytes::from(request), true)?;
+    trace("h2 client request body sent");
+    tokio::task::yield_now().await;
 
     Ok(response)
 }
 
 async fn finish_h2_request(response: client::ResponseFuture) -> Result<RecvStream> {
+    trace("h2 client waiting for response headers");
     let response = response.await?;
+    trace(&format!(
+        "h2 client received response status={}",
+        response.status()
+    ));
     if response.status() != 200 {
         bail!("unexpected H2 status {}", response.status());
     }
@@ -910,49 +1132,69 @@ async fn run_h3wt_session_client(args: H3wtClientArgs) -> Result<()> {
     verify_h3wt_pin(&connection, args.sha256.as_deref())?;
     let mut stdin = BufReader::new(tokio::io::stdin());
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
-    let mut tasks = Vec::new();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut stdin_closed = false;
 
-    while let Some(request) = read_line_message(&mut stdin, args.max_message_bytes).await? {
-        trace(&format!(
-            "h3wt session client request bytes={}",
-            request.len()
-        ));
-        let connection = connection.clone();
-        let stdout = stdout.clone();
-        tasks.push(tokio::spawn(async move {
-            let stream = timeout(Duration::from_secs(5), connection.open_bi())
-                .await
-                .context("timed out while opening WebTransport request stream")??;
-            let (mut send_stream, recv_stream) =
-                timeout(Duration::from_secs(5), stream)
-                    .await
-                    .context("timed out while awaiting WebTransport request stream readiness")??;
+    loop {
+        if stdin_closed && tasks.is_empty() {
+            break;
+        }
 
-            send_stream.write_all(&request).await?;
-            send_stream.write_all(b"\n").await?;
-            send_stream.flush().await?;
-            send_stream.finish().await?;
+        tokio::select! {
+            request_result = read_line_message(&mut stdin, args.max_message_bytes), if !stdin_closed => {
+                match request_result? {
+                    Some(request) => {
+                        trace(&format!(
+                            "h3wt session client request bytes={}",
+                            request.len()
+                        ));
+                        let connection = connection.clone();
+                        let stdout = stdout.clone();
+                        tasks.spawn(async move {
+                            let stream = timeout(Duration::from_secs(5), connection.open_bi())
+                                .await
+                                .context("timed out while opening WebTransport request stream")??;
+                            let (mut send_stream, recv_stream) =
+                                timeout(Duration::from_secs(5), stream)
+                                    .await
+                                    .context("timed out while awaiting WebTransport request stream readiness")??;
 
-            let mut recv_reader = BufReader::new(recv_stream);
-            while let Some(response) =
-                read_line_message(&mut recv_reader, args.max_message_bytes).await?
-            {
-                trace(&format!(
-                    "h3wt session client response bytes={}",
-                    response.len()
-                ));
+                            send_stream.write_all(&request).await?;
+                            send_stream.write_all(b"\n").await?;
+                            send_stream.flush().await?;
+                            send_stream.finish().await?;
 
-                let mut stdout = stdout.lock().await;
-                stdout.write_all(&response).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
+                            let mut recv_reader = BufReader::new(recv_stream);
+                            while let Some(response) =
+                                read_line_message(&mut recv_reader, args.max_message_bytes).await?
+                            {
+                                trace(&format!(
+                                    "h3wt session client response bytes={}",
+                                    response.len()
+                                ));
+
+                                let mut stdout = stdout.lock().await;
+                                stdout.write_all(&response).await?;
+                                stdout.write_all(b"\n").await?;
+                                stdout.flush().await?;
+                            }
+                            Result::<()>::Ok(())
+                        });
+                    },
+                    None => {
+                        stdin_closed = true;
+                    },
+                }
             }
-            Result::<()>::Ok(())
-        }));
-    }
-
-    for task in tasks {
-        task.await??;
+            task_result = tasks.join_next(), if !tasks.is_empty() => {
+                match task_result {
+                    Some(Ok(Ok(()))) => {},
+                    Some(Ok(Err(err))) => return Err(err),
+                    Some(Err(err)) => return Err(anyhow!("h3wt session client task join error: {err}")),
+                    None => {},
+                }
+            }
+        }
     }
 
     connection.close(VarInt::from_u32(0), b"muxly client done");
@@ -1309,12 +1551,17 @@ async fn read_h2_request_body(
 ) -> Result<Vec<u8>> {
     let mut body = request.into_body();
     let mut decoder = H2LineDecoder::new(max_message_bytes);
-    let mut lines = Vec::new();
 
     while let Some(chunk) = body.data().await {
-        lines.extend(decoder.push_chunk(&chunk?)?);
+        let mut lines = decoder.push_chunk(&chunk?)?;
+        match lines.len() {
+            0 => {}
+            1 => return Ok(lines.pop().expect("single line should exist")),
+            _ => bail!("H2 request body contained multiple logical messages"),
+        }
     }
-    lines.extend(decoder.finish());
+
+    let mut lines = decoder.finish();
 
     match lines.len() {
         0 => bail!("missing H2 request body"),
@@ -1578,8 +1825,21 @@ where
 }
 
 fn trace(message: &str) {
+    let line = format!(
+        "[muxly-transport-bridge pid={}] {message}",
+        std::process::id()
+    );
     if env::var_os("MUXLY_TRANSPORT_BRIDGE_TRACE").is_some() {
-        eprintln!("[muxly-transport-bridge] {message}");
+        eprintln!("{line}");
+    }
+    if let Some(path) = env::var_os("MUXLY_TRANSPORT_BRIDGE_TRACE_FILE") {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
     }
 }
 
@@ -1668,7 +1928,8 @@ fn summarize_transport_payload(bytes: &[u8]) -> String {
         .get("target")
         .and_then(|target| target.get("documentPath"))
         .or_else(|| {
-            value.get("payload")
+            value
+                .get("payload")
                 .and_then(|payload| payload.get("target"))
                 .and_then(|target| target.get("documentPath"))
         })
@@ -1679,6 +1940,19 @@ fn summarize_transport_payload(bytes: &[u8]) -> String {
         "conversation={} request={} method={} document={}",
         conversation_id, request_id, method, document_path
     )
+}
+
+fn request_is_stream_open(bytes: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+
+    value
+        .get("payload")
+        .and_then(|payload| payload.get("method"))
+        .or_else(|| value.get("method"))
+        .and_then(|entry| entry.as_str())
+        .is_some_and(|method| method.ends_with(".stream.open"))
 }
 
 fn h2_window_bytes(max_message_bytes: usize) -> u32 {
@@ -1871,6 +2145,9 @@ mod tests {
             std::str::from_utf8(request).expect("request should be utf8"),
         );
 
-        assert_eq!(classify_upstream_lane_key(envelope.as_bytes()), UpstreamLaneKey::Root);
+        assert_eq!(
+            classify_upstream_lane_key(envelope.as_bytes()),
+            UpstreamLaneKey::Root
+        );
     }
 }

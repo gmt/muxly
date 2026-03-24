@@ -293,8 +293,10 @@ pub fn build(b: *std.Build) void {
         "MUXLY_TEST_DAEMON_BINARY",
         b.getInstallPath(.prefix, "bin/muxlyd"),
     );
-    test_transport_step.dependOn(&run_transport_bridge_unit_tests.step);
-    test_transport_step.dependOn(&run_transport_tests.step);
+    // These transport suites contend on Cargo state and CPU enough to create
+    // avoidable flakes when run in parallel under one aggregate build step.
+    run_transport_tests.step.dependOn(&run_transport_bridge_unit_tests.step);
+    run_async_transport_validation_tests.step.dependOn(&run_transport_tests.step);
     test_transport_step.dependOn(&run_async_transport_validation_tests.step);
 
     const run_transport_stress_tests = addTimedSystemCommand(b, transport_stress_timeout_seconds, &.{

@@ -139,6 +139,7 @@ pub fn runTransportScenario(
     scenario: Scenario,
 ) !void {
     var daemon = try startDaemon(allocator, kind.requestedTransportSpec());
+    defer daemon.deinit();
     errdefer {
         daemon.preserveArtifacts();
         std.debug.print(
@@ -146,7 +147,6 @@ pub fn runTransportScenario(
             .{daemon.stderr_drain.log_path},
         );
     }
-    defer daemon.deinit();
 
     var admin = try muxly.client.ConversationClient.init(allocator, daemon.actual_spec);
     defer admin.deinit();
