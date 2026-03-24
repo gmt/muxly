@@ -24,6 +24,7 @@ const TmuxProjectionState = enum {
 
 const root_document_path = "/";
 const tmux_control_poll_timeout_ms: i32 = 10;
+const dynamic_guard_retry_limit: usize = 3;
 
 const DomainLock = struct {
     mutex: std.Thread.Mutex = .{},
@@ -48,6 +49,105 @@ const RemoveExecutionMode = enum {
     recursive_domain_safe,
     recursive_coordinator_safe,
     unsupported,
+};
+
+const DynamicGuardPlanKind = enum {
+    domain_write,
+    structural_write,
+    participating_domain_write,
+};
+
+const DynamicGuardPlan = union(enum) {
+    none,
+    domain_write: struct {
+        runtime: *DocumentRuntime,
+        revision: u64,
+        domain_lock: *DomainLock,
+    },
+    structural_write: struct {
+        runtime: *DocumentRuntime,
+        revision: u64,
+        domain_lock: *DomainLock,
+        parent_lock: *StructuralLock,
+    },
+    participating_domain_write: struct {
+        runtime: *DocumentRuntime,
+        revision: u64,
+        domain_ids: []ids.NodeId,
+    },
+
+    fn deinit(self: *DynamicGuardPlan, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .participating_domain_write => |value| value.runtime.allocator.free(value.domain_ids),
+            else => {},
+        }
+        _ = allocator;
+        self.* = .none;
+    }
+
+    fn lockRuntime(self: *DynamicGuardPlan) !void {
+        switch (self.*) {
+            .none => {},
+            .domain_write => |value| value.domain_lock.mutex.lock(),
+            .structural_write => |value| {
+                value.domain_lock.mutex.lock();
+                errdefer value.domain_lock.mutex.unlock();
+                value.parent_lock.mutex.lock();
+            },
+            .participating_domain_write => |value| try value.runtime.ensureAndLockDomainIds(value.domain_ids),
+        }
+    }
+
+    fn unlockRuntime(self: *DynamicGuardPlan) void {
+        switch (self.*) {
+            .none => {},
+            .domain_write => |value| value.domain_lock.mutex.unlock(),
+            .structural_write => |value| {
+                value.parent_lock.mutex.unlock();
+                value.domain_lock.mutex.unlock();
+            },
+            .participating_domain_write => |value| value.runtime.unlockExistingDomainIds(value.domain_ids),
+        }
+    }
+
+    fn kind(self: DynamicGuardPlan) ?DynamicGuardPlanKind {
+        return switch (self) {
+            .domain_write => .domain_write,
+            .structural_write => .structural_write,
+            .participating_domain_write => .participating_domain_write,
+            .none => null,
+        };
+    }
+
+    fn revisionMatches(self: DynamicGuardPlan) bool {
+        return switch (self) {
+            .domain_write => |value| value.runtime.currentTopologyRevision() == value.revision,
+            .structural_write => |value| value.runtime.currentTopologyRevision() == value.revision,
+            .participating_domain_write => |value| value.runtime.currentTopologyRevision() == value.revision,
+            .none => true,
+        };
+    }
+
+    fn intoRequestGuard(self: *DynamicGuardPlan) RequestGuard {
+        const guard = switch (self.*) {
+            .none => RequestGuard{ .none = {} },
+            .domain_write => |value| RequestGuard{ .domain_write = .{
+                .runtime = value.runtime,
+                .domain_lock = value.domain_lock,
+            } },
+            .structural_write => |value| RequestGuard{ .structural_write = .{
+                .runtime = value.runtime,
+                .domain_lock = value.domain_lock,
+                .parent_lock = value.parent_lock,
+            } },
+            .participating_domain_write => |value| RequestGuard{ .participating_domain_write = .{
+                .runtime = value.runtime,
+                .domain_ids = value.domain_ids,
+            } },
+        };
+        self.* = .none;
+        return guard;
+    }
 };
 
 pub const RequestGuard = union(enum) {
@@ -109,10 +209,12 @@ pub const DocumentRuntime = struct {
     coordinator_mutex: std.Thread.Mutex = .{},
     content_bytes_mutex: std.Thread.Mutex = .{},
     structure_registry_mutex: std.Thread.Mutex = .{},
+    topology_revision: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     domains_mutex: std.Thread.Mutex = .{},
     domain_locks: std.AutoHashMapUnmanaged(ids.NodeId, *DomainLock) = .{},
     structural_locks_mutex: std.Thread.Mutex = .{},
     parent_locks: std.AutoHashMapUnmanaged(ids.NodeId, *StructuralLock) = .{},
+    dynamic_guard_before_validate_observer: ?DynamicGuardBeforeValidateObserver = null,
 
     pub fn init(allocator: std.mem.Allocator) DocumentRuntime {
         return .{ .allocator = allocator };
@@ -172,6 +274,20 @@ pub const DocumentRuntime = struct {
             .runtime = self,
             .domain_lock = domain_lock,
         } };
+    }
+
+    pub fn markTopologyChanged(self: *DocumentRuntime) void {
+        _ = self.topology_revision.fetchAdd(1, .acq_rel);
+    }
+
+    pub fn currentTopologyRevision(self: *const DocumentRuntime) u64 {
+        return self.topology_revision.load(.acquire);
+    }
+
+    fn notifyBeforeValidate(self: *DocumentRuntime, kind: DynamicGuardPlanKind) void {
+        if (self.dynamic_guard_before_validate_observer) |observer| {
+            observer.callback(observer.context, kind);
+        }
     }
 
     fn ensureDomainLock(self: *DocumentRuntime, domain_id: ids.NodeId) !*DomainLock {
@@ -240,6 +356,11 @@ pub const DocumentRuntime = struct {
             domain_lock.mutex.unlock();
         }
     }
+};
+
+pub const DynamicGuardBeforeValidateObserver = struct {
+    context: *anyopaque,
+    callback: *const fn (context: *anyopaque, kind: DynamicGuardPlanKind) void,
 };
 
 pub const ProjectionEventReason = enum {
@@ -419,46 +540,26 @@ pub const Store = struct {
         };
 
         if (requestSupportsDynamicDomainLane(parsed.value)) {
-            entry.runtime.coordinator_mutex.lock();
-            errdefer entry.runtime.coordinator_mutex.unlock();
+            var attempt: usize = 0;
+            while (attempt < dynamic_guard_retry_limit) : (attempt += 1) {
+                var plan = try self.planDynamicGuardAcquisition(allocator, entry, parsed.value);
+                defer plan.deinit(allocator);
+                if (plan == .none) break;
 
-            if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, parsed.value)) |plan| {
-                switch (plan) {
-                    .content => |domain_id| {
-                        const domain_lock = try entry.runtime.ensureDomainLock(domain_id);
-                        domain_lock.mutex.lock();
-                        entry.runtime.coordinator_mutex.unlock();
-                        return .{ .domain_write = .{
-                            .runtime = &entry.runtime,
-                            .domain_lock = domain_lock,
-                        } };
-                    },
-                    .structural => |value| {
-                        const domain_lock = try entry.runtime.ensureDomainLock(value.domain_id);
-                        const parent_lock = try entry.runtime.ensureParentLock(value.parent_id);
-                        domain_lock.mutex.lock();
-                        parent_lock.mutex.lock();
-                        entry.runtime.coordinator_mutex.unlock();
-                        return .{ .structural_write = .{
-                            .runtime = &entry.runtime,
-                            .domain_lock = domain_lock,
-                            .parent_lock = parent_lock,
-                        } };
-                    },
+                try plan.lockRuntime();
+                errdefer plan.unlockRuntime();
+
+                if (plan.kind()) |kind| entry.runtime.notifyBeforeValidate(kind);
+                const matches = plan.revisionMatches();
+
+                if (matches) {
+                    return plan.intoRequestGuard();
                 }
+
+                plan.unlockRuntime();
             }
 
-            if (try self.resolveParticipatingDeleteDomainIdsWithStableTopology(allocator, entry, parsed.value)) |domain_ids| {
-                errdefer allocator.free(domain_ids);
-                try entry.runtime.ensureAndLockDomainIds(domain_ids);
-                entry.runtime.coordinator_mutex.unlock();
-                return .{ .participating_domain_write = .{
-                    .runtime = &entry.runtime,
-                    .domain_ids = domain_ids,
-                } };
-            }
-
-            entry.runtime.coordinator_mutex.unlock();
+            return try entry.runtime.acquireCoordinatorExclusive();
         }
 
         if (requestUsesQuiescentReadGuard(parsed.value.method)) {
@@ -466,6 +567,59 @@ pub const Store = struct {
         }
 
         return try entry.runtime.acquireCoordinatorExclusive();
+    }
+
+    fn planDynamicGuardAcquisition(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        entry: *DocumentEntry,
+        request: muxly.protocol.RequestEnvelope,
+    ) !DynamicGuardPlan {
+        entry.runtime.coordinator_mutex.lock();
+        errdefer entry.runtime.coordinator_mutex.unlock();
+
+        if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, request)) |plan| {
+            const revision = entry.runtime.currentTopologyRevision();
+            return switch (plan) {
+                .content => |domain_id| blk: {
+                    const domain_lock = try entry.runtime.ensureDomainLock(domain_id);
+                    entry.runtime.coordinator_mutex.unlock();
+                    break :blk .{ .domain_write = .{
+                        .runtime = &entry.runtime,
+                        .revision = revision,
+                        .domain_lock = domain_lock,
+                    } };
+                },
+                .structural => |value| blk: {
+                    const domain_lock = try entry.runtime.ensureDomainLock(value.domain_id);
+                    const parent_lock = try entry.runtime.ensureParentLock(value.parent_id);
+                    entry.runtime.coordinator_mutex.unlock();
+                    break :blk .{ .structural_write = .{
+                        .runtime = &entry.runtime,
+                        .revision = revision,
+                        .domain_lock = domain_lock,
+                        .parent_lock = parent_lock,
+                    } };
+                },
+            };
+        }
+
+        if (try self.resolveParticipatingDeleteDomainIdsWithStableTopology(entry.runtime.allocator, entry, request)) |domain_ids| {
+            errdefer entry.runtime.allocator.free(domain_ids);
+            for (domain_ids) |domain_id| {
+                _ = try entry.runtime.ensureDomainLock(domain_id);
+            }
+            const revision = entry.runtime.currentTopologyRevision();
+            entry.runtime.coordinator_mutex.unlock();
+            return .{ .participating_domain_write = .{
+                .runtime = &entry.runtime,
+                .revision = revision,
+                .domain_ids = domain_ids,
+            } };
+        }
+
+        entry.runtime.coordinator_mutex.unlock();
+        return .none;
     }
 
     pub fn createDocument(
@@ -841,6 +995,7 @@ pub const Store = struct {
         entry.runtime.structure_registry_mutex.lock();
         defer entry.runtime.structure_registry_mutex.unlock();
         const node_id = try document.appendNode(parent_id, kind, title, .{ .none = {} });
+        entry.runtime.markTopologyChanged();
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
@@ -896,6 +1051,7 @@ pub const Store = struct {
                 .pane_id = null,
             } },
         );
+        entry.runtime.markTopologyChanged();
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
     }
@@ -954,6 +1110,7 @@ pub const Store = struct {
             .recursive_domain_safe, .recursive_coordinator_safe => try document.removeSubtree(node_id),
             .root_policy_reject, .unsupported => return error.NodeHasChildren,
         }
+        entry.runtime.markTopologyChanged();
         self.notifyInvalidate(document_path, document, node_id, .structure);
     }
 
@@ -981,6 +1138,7 @@ pub const Store = struct {
                 .pane_id = if (pane_ref.pane_id.len == 0) null else pane_ref.pane_id,
             } },
         );
+        entry.runtime.markTopologyChanged();
         try self.refreshSourcesForDocument(document);
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
@@ -1609,4 +1767,102 @@ fn readPathAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usiz
     }
 
     return try std.fs.cwd().readFileAlloc(allocator, path, max_bytes);
+}
+
+test "dynamic guard acquisition retries after one topology revision invalidation" {
+    var store = try Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const leaf = try store.appendNode("/demo", document, island, .text_leaf, "leaf");
+    const entry = try store.documentEntryForPath("/demo");
+
+    const ObserverContext = struct {
+        runtime: *DocumentRuntime,
+        attempts: usize = 0,
+        remaining_invalidations: usize = 1,
+
+        fn callback(context_ptr: *anyopaque, kind: DynamicGuardPlanKind) void {
+            _ = kind;
+            const context: *@This() = @ptrCast(@alignCast(context_ptr));
+            context.attempts += 1;
+            if (context.remaining_invalidations != 0) {
+                context.remaining_invalidations -= 1;
+                context.runtime.markTopologyChanged();
+            }
+        }
+    };
+
+    var observer_context = ObserverContext{ .runtime = &entry.runtime };
+    entry.runtime.dynamic_guard_before_validate_observer = .{
+        .context = &observer_context,
+        .callback = ObserverContext.callback,
+    };
+    defer entry.runtime.dynamic_guard_before_validate_observer = null;
+
+    const request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{leaf},
+    );
+    defer std.testing.allocator.free(request);
+
+    var guard = try store.acquireRequestGuard(std.testing.allocator, request);
+    defer guard.release();
+
+    switch (guard) {
+        .domain_write => {},
+        else => return error.ExpectedDomainWriteGuard,
+    }
+    try std.testing.expectEqual(@as(usize, 2), observer_context.attempts);
+}
+
+test "dynamic guard acquisition falls back after bounded topology invalidation retries" {
+    var store = try Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const leaf = try store.appendNode("/demo", document, island, .text_leaf, "leaf");
+    const entry = try store.documentEntryForPath("/demo");
+
+    const ObserverContext = struct {
+        runtime: *DocumentRuntime,
+        attempts: usize = 0,
+        remaining_invalidations: usize = dynamic_guard_retry_limit,
+
+        fn callback(context_ptr: *anyopaque, kind: DynamicGuardPlanKind) void {
+            _ = kind;
+            const context: *@This() = @ptrCast(@alignCast(context_ptr));
+            context.attempts += 1;
+            if (context.remaining_invalidations != 0) {
+                context.remaining_invalidations -= 1;
+                context.runtime.markTopologyChanged();
+            }
+        }
+    };
+
+    var observer_context = ObserverContext{ .runtime = &entry.runtime };
+    entry.runtime.dynamic_guard_before_validate_observer = .{
+        .context = &observer_context,
+        .callback = ObserverContext.callback,
+    };
+    defer entry.runtime.dynamic_guard_before_validate_observer = null;
+
+    const request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{leaf},
+    );
+    defer std.testing.allocator.free(request);
+
+    var guard = try store.acquireRequestGuard(std.testing.allocator, request);
+    defer guard.release();
+
+    switch (guard) {
+        .coordinator_exclusive => {},
+        else => return error.ExpectedCoordinatorFallbackGuard,
+    }
+    try std.testing.expectEqual(@as(usize, dynamic_guard_retry_limit), observer_context.attempts);
 }

@@ -1067,6 +1067,267 @@ test "multi-domain recursive remove guards block participating domains" {
     try std.testing.expect(acquired.load(.acquire));
 }
 
+test "blocked same-domain content request does not hold coordinator over unrelated island work" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_a = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-a");
+    const island_b = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-b");
+    const leaf_a = try store.appendNode("/demo", document, island_a, .text_leaf, "leaf-a");
+    const leaf_b = try store.appendNode("/demo", document, island_b, .text_leaf, "leaf-b");
+
+    const held_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{leaf_a},
+    );
+    defer std.testing.allocator.free(held_request);
+    const blocked_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"blocked\"}}}}",
+        .{leaf_a},
+    );
+    defer std.testing.allocator.free(blocked_request);
+    const unrelated_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"unrelated\"}}}}",
+        .{leaf_b},
+    );
+    defer std.testing.allocator.free(unrelated_request);
+
+    var held_guard = try store.acquireRequestGuard(std.testing.allocator, held_request);
+    errdefer held_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var blocked_acquired = std.atomic.Value(bool).init(false);
+    var unrelated_acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+
+    var blocked_context = ThreadContext{
+        .store = &store,
+        .request = blocked_request,
+        .acquired = &blocked_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const blocked_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&blocked_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!blocked_acquired.load(.acquire));
+
+    var unrelated_context = ThreadContext{
+        .store = &store,
+        .request = unrelated_request,
+        .acquired = &unrelated_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const unrelated_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&unrelated_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(unrelated_acquired.load(.acquire));
+
+    held_guard.release();
+    blocked_worker.join();
+    unrelated_worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(blocked_acquired.load(.acquire));
+}
+
+test "blocked same-parent structural request does not hold coordinator over unrelated structural work" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_a = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-a");
+    const island_b = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-b");
+    const parent_a = try store.appendNode("/demo", document, island_a, .container, "parent-a");
+    const parent_b = try store.appendNode("/demo", document, island_b, .container, "parent-b");
+
+    const held_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"debug.node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"held\",\"pauseMs\":50}}}}",
+        .{parent_a},
+    );
+    defer std.testing.allocator.free(held_request);
+    const blocked_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"debug.node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"blocked\",\"pauseMs\":0}}}}",
+        .{parent_a},
+    );
+    defer std.testing.allocator.free(blocked_request);
+    const unrelated_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"debug.node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"unrelated\",\"pauseMs\":0}}}}",
+        .{parent_b},
+    );
+    defer std.testing.allocator.free(unrelated_request);
+
+    var held_guard = try store.acquireRequestGuard(std.testing.allocator, held_request);
+    errdefer held_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var blocked_acquired = std.atomic.Value(bool).init(false);
+    var unrelated_acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+
+    var blocked_context = ThreadContext{
+        .store = &store,
+        .request = blocked_request,
+        .acquired = &blocked_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const blocked_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&blocked_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!blocked_acquired.load(.acquire));
+
+    var unrelated_context = ThreadContext{
+        .store = &store,
+        .request = unrelated_request,
+        .acquired = &unrelated_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const unrelated_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&unrelated_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(unrelated_acquired.load(.acquire));
+
+    held_guard.release();
+    blocked_worker.join();
+    unrelated_worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(blocked_acquired.load(.acquire));
+}
+
+test "blocked participating-domain delete request does not hold coordinator over unrelated island work" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_a = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-a");
+    const subtree = try store.appendNode("/demo", document, island_a, .container, "subtree");
+    const nested_h = try store.appendNode("/demo", document, subtree, .h_container, "nested-h");
+    const left_id = try store.appendNode("/demo", document, nested_h, .scroll_region, "left");
+    const right_id = try store.appendNode("/demo", document, nested_h, .scroll_region, "right");
+    _ = try store.appendNode("/demo", document, left_id, .text_leaf, "left-leaf");
+    const right_leaf = try store.appendNode("/demo", document, right_id, .text_leaf, "right-leaf");
+
+    const island_b = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-b");
+    const unrelated_leaf = try store.appendNode("/demo", document, island_b, .text_leaf, "leaf-b");
+
+    const held_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{right_leaf},
+    );
+    defer std.testing.allocator.free(held_request);
+    const blocked_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.node.remove\",\"params\":{{\"pauseMs\":50}}}}",
+        .{subtree},
+    );
+    defer std.testing.allocator.free(blocked_request);
+    const unrelated_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":3,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"unrelated\"}}}}",
+        .{unrelated_leaf},
+    );
+    defer std.testing.allocator.free(unrelated_request);
+
+    var held_guard = try store.acquireRequestGuard(std.testing.allocator, held_request);
+    errdefer held_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var blocked_acquired = std.atomic.Value(bool).init(false);
+    var unrelated_acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+
+    var blocked_context = ThreadContext{
+        .store = &store,
+        .request = blocked_request,
+        .acquired = &blocked_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const blocked_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&blocked_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!blocked_acquired.load(.acquire));
+
+    var unrelated_context = ThreadContext{
+        .store = &store,
+        .request = unrelated_request,
+        .acquired = &unrelated_acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+    const unrelated_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&unrelated_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(unrelated_acquired.load(.acquire));
+
+    held_guard.release();
+    blocked_worker.join();
+    unrelated_worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(blocked_acquired.load(.acquire));
+}
+
 test "request guards let horizontal and vertical split siblings acquire separate domains while same-child work stays serialized" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
