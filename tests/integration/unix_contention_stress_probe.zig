@@ -19,6 +19,7 @@ const text_replace_threshold: u32 = 7_500;
 const WorkerKind = enum {
     child_container,
     horizontal_container,
+    vertical_container,
     tty,
     text,
     parent_container,
@@ -27,6 +28,7 @@ const WorkerKind = enum {
         return switch (self) {
             .child_container => "child-container",
             .horizontal_container => "horizontal-container",
+            .vertical_container => "vertical-container",
             .tty => "tty",
             .text => "text",
             .parent_container => "parent-container",
@@ -51,6 +53,7 @@ const TextMode = enum {
 const WorkerOutcome = union(enum) {
     child_container,
     horizontal_container,
+    vertical_container,
     tty,
     parent_container,
     text: TextMode,
@@ -68,6 +71,7 @@ const Island = struct {
     h_container_id: u64,
     h_child_ids: [2]u64,
     v_container_id: u64,
+    v_child_ids: [2]u64,
     text_leaf_ids: [text_leaves_per_island]u64,
     tty_leaf_ids: [tty_leaves_per_island]u64,
 };
@@ -86,6 +90,9 @@ const Shared = struct {
     horizontal_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     horizontal_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     horizontal_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    vertical_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    vertical_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    vertical_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tty_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -244,11 +251,12 @@ pub fn main() !void {
     for (worker_contexts, 0..) |*context, index| {
         context.* = .{
             .worker_id = index,
-            .preferred_kind = switch (index % 5) {
+            .preferred_kind = switch (index % 7) {
                 0, 1 => .horizontal_container,
-                2 => .child_container,
-                3 => .tty,
-                4 => .text,
+                2, 3 => .vertical_container,
+                4 => .child_container,
+                5 => .tty,
+                6 => .text,
                 else => .parent_container,
             },
             .seed = config.seed +% @as(u64, @intCast(index * 977)),
@@ -286,7 +294,7 @@ pub fn main() !void {
         if ((try elapsedNsSince(last_progress_check)) >= progress_stall_seconds * std.time.ns_per_s) {
             shared.failure.set(
                 allocator,
-                "stress progress stalled for {d}s with totals child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}",
+                "stress progress stalled for {d}s with totals child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}",
                 .{
                     progress_stall_seconds,
                     shared.child_ops.load(.monotonic),
@@ -295,6 +303,9 @@ pub fn main() !void {
                     shared.horizontal_ops.load(.monotonic),
                     shared.horizontal_append_ops.load(.monotonic),
                     shared.horizontal_remove_ops.load(.monotonic),
+                    shared.vertical_ops.load(.monotonic),
+                    shared.vertical_append_ops.load(.monotonic),
+                    shared.vertical_remove_ops.load(.monotonic),
                     shared.tty_ops.load(.monotonic),
                     shared.text_ops.load(.monotonic),
                     shared.text_append_ops.load(.monotonic),
@@ -321,7 +332,7 @@ pub fn main() !void {
 
     try validateDocument(allocator, &admin);
     std.debug.print(
-        "unix-contention-stress complete total={d} child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}\n",
+        "unix-contention-stress complete total={d} child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}\n",
         .{
             shared.total_ops.load(.monotonic),
             shared.child_ops.load(.monotonic),
@@ -330,6 +341,9 @@ pub fn main() !void {
             shared.horizontal_ops.load(.monotonic),
             shared.horizontal_append_ops.load(.monotonic),
             shared.horizontal_remove_ops.load(.monotonic),
+            shared.vertical_ops.load(.monotonic),
+            shared.vertical_append_ops.load(.monotonic),
+            shared.vertical_remove_ops.load(.monotonic),
             shared.tty_ops.load(.monotonic),
             shared.text_ops.load(.monotonic),
             shared.text_append_ops.load(.monotonic),
@@ -399,11 +413,12 @@ fn selectWorkerKind(prng: *std.Random.DefaultPrng, preferred_kind: WorkerKind) W
     const roll = random.uintLessThan(u32, job_reassign_roll_max);
     if (roll < job_reassign_threshold) return preferred_kind;
 
-    return switch (random.uintLessThan(u8, 6)) {
+    return switch (random.uintLessThan(u8, 7)) {
         0, 1 => .horizontal_container,
-        2 => .child_container,
-        3 => .tty,
-        4 => .text,
+        2 => .vertical_container,
+        3 => .child_container,
+        4 => .tty,
+        5 => .text,
         else => .parent_container,
     };
 }
@@ -433,6 +448,7 @@ fn workerMain(context: *const WorkerContext) void {
             const result = switch (job_kind) {
                 .child_container => runChildContainerChurn(&client, context, &prng, local_iteration),
                 .horizontal_container => runHorizontalContainerChurn(&client, context, &prng, local_iteration),
+                .vertical_container => runVerticalContainerChurn(&client, context, &prng, local_iteration),
                 .tty => runTtyChurn(&client, context, &prng, local_iteration),
                 .text => runTextChurn(&client, context, &prng, local_iteration, &mixed_state),
                 .parent_container => runParentContainerChurn(&client, context, &prng, local_iteration),
@@ -449,6 +465,11 @@ fn workerMain(context: *const WorkerContext) void {
                         _ = context.shared.horizontal_ops.fetchAdd(1, .monotonic);
                         _ = context.shared.horizontal_append_ops.fetchAdd(2, .monotonic);
                         _ = context.shared.horizontal_remove_ops.fetchAdd(2, .monotonic);
+                    },
+                    .vertical_container => {
+                        _ = context.shared.vertical_ops.fetchAdd(1, .monotonic);
+                        _ = context.shared.vertical_append_ops.fetchAdd(2, .monotonic);
+                        _ = context.shared.vertical_remove_ops.fetchAdd(2, .monotonic);
                     },
                     .tty => _ = context.shared.tty_ops.fetchAdd(1, .monotonic),
                     .parent_container => {
@@ -546,6 +567,40 @@ fn runHorizontalContainerChurn(
     try removeNode(client, document_path, leaf_id);
     try removeNode(client, document_path, container_id);
     return .horizontal_container;
+}
+
+fn runVerticalContainerChurn(
+    client: *muxly.client.ConversationClient,
+    context: *const WorkerContext,
+    prng: *std.Random.DefaultPrng,
+    iteration: u64,
+) !WorkerOutcome {
+    const random = prng.random();
+    const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
+    const parent_id = island.v_child_ids[random.uintLessThan(u8, 2)];
+
+    var container_title: [96]u8 = undefined;
+    const container_title_text = try std.fmt.bufPrint(
+        &container_title,
+        "vertical-arena-{d}-{d}-{d}",
+        .{ context.worker_id, iteration, random.uintLessThan(u16, 10_000) },
+    );
+    const container_id = try appendNode(client, document_path, parent_id, "container", container_title_text);
+
+    var leaf_title: [96]u8 = undefined;
+    const leaf_title_text = try std.fmt.bufPrint(
+        &leaf_title,
+        "vertical-leaf-{d}-{d}-{d}",
+        .{ context.worker_id, iteration, random.uintLessThan(u16, 10_000) },
+    );
+    const leaf_id = try appendNode(client, document_path, container_id, "text_leaf", leaf_title_text);
+
+    var chunk_buffer: [96]u8 = undefined;
+    const chunk = try std.fmt.bufPrint(&chunk_buffer, "vertical-churn worker={d} iter={d}\n", .{ context.worker_id, iteration });
+    try appendTextChunk(client, document_path, leaf_id, chunk);
+    try removeNode(client, document_path, leaf_id);
+    try removeNode(client, document_path, container_id);
+    return .vertical_container;
 }
 
 fn runTtyChurn(
@@ -693,6 +748,8 @@ fn buildTopology(
         island.h_child_ids[1] = right_region;
         const top_region = try appendNode(client, document_path, island.v_container_id, "scroll_region", "top-region");
         const bottom_region = try appendNode(client, document_path, island.v_container_id, "scroll_region", "bottom-region");
+        island.v_child_ids[0] = top_region;
+        island.v_child_ids[1] = bottom_region;
 
         island.text_leaf_ids[0] = try appendNode(client, document_path, left_region, "text_leaf", "left-text");
         island.text_leaf_ids[1] = try appendNode(client, document_path, right_region, "text_leaf", "right-text");

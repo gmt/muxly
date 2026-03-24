@@ -1163,9 +1163,14 @@ pub const Store = struct {
         };
 
         const node = entry.document.findNodeConst(node_id) orelse return null;
-        if (node.kind == .h_container) return null;
+        if (node.kind == .h_container or node.kind == .v_container) return null;
 
-        const domain_id = entry.document.horizontalConcurrentDomainRoot(node_id) catch |err| switch (err) {
+        const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
+            .horizontal = true,
+            .vertical = true,
+        };
+
+        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, concurrent_kinds) catch |err| switch (err) {
             error.UnknownNode,
             error.UnknownParent,
             => null,
@@ -1189,9 +1194,14 @@ pub const Store = struct {
             const parent_id: ids.NodeId = @intCast(parent_value);
             if (parent_id == entry.document.root_node_id) return null;
             const parent = entry.document.findNodeConst(parent_id) orelse return null;
-            if (parent.kind == .h_container) return null;
+            if (parent.kind == .h_container or parent.kind == .v_container) return null;
 
-            const domain_id = entry.document.horizontalConcurrentDomainRoot(parent_id) catch |err| switch (err) {
+            const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
+                .horizontal = true,
+                .vertical = true,
+            };
+
+            const domain_id = entry.document.concurrentContainerDomainRoot(parent_id, concurrent_kinds) catch |err| switch (err) {
                 error.UnknownNode,
                 error.UnknownParent,
                 => return null,
@@ -1221,9 +1231,14 @@ pub const Store = struct {
         if (parent_id == entry.document.root_node_id) return null;
         if (node.children.items.len != 0) return null;
         const parent = entry.document.findNodeConst(parent_id) orelse return null;
-        if (parent.kind == .h_container) return null;
+        if (parent.kind == .h_container or parent.kind == .v_container) return null;
 
-        const domain_id = entry.document.horizontalConcurrentDomainRoot(node_id) catch |err| switch (err) {
+        const concurrent_kinds: document_mod.Document.ConcurrentContainerKinds = .{
+            .horizontal = true,
+            .vertical = true,
+        };
+
+        const domain_id = entry.document.concurrentContainerDomainRoot(node_id, concurrent_kinds) catch |err| switch (err) {
             error.UnknownNode,
             error.UnknownParent,
             => return null,

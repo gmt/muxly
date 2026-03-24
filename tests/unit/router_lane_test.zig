@@ -198,7 +198,7 @@ test "execution lane classification keeps document-local requests on document la
     }
 }
 
-test "horizontal split descendants classify below the first-layer island while vertical descendants stay on the island domain" {
+test "horizontal and vertical split descendants classify below the first-layer island" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -259,7 +259,7 @@ test "horizontal split descendants classify below the first-layer island while v
     switch (top_update) {
         .document_domain => |domain| {
             try std.testing.expectEqualStrings("/demo", domain.document_path);
-            try std.testing.expectEqual(island_id, domain.root_node_id);
+            try std.testing.expectEqual(top_id, domain.root_node_id);
         },
         .document_coordinator => return error.ExpectedDomainLane,
         .root => return error.ExpectedDocumentLane,
@@ -274,6 +274,20 @@ test "horizontal split descendants classify below the first-layer island while v
     var direct_h_append = try router.classifyExecutionLane(std.testing.allocator, &store, direct_h_append_request);
     defer direct_h_append.deinit(std.testing.allocator);
     switch (direct_h_append) {
+        .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
+        .document_domain => return error.ExpectedCoordinatorLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const direct_v_append_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":5,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"child\"}}}}",
+        .{v_id},
+    );
+    defer std.testing.allocator.free(direct_v_append_request);
+    var direct_v_append = try router.classifyExecutionLane(std.testing.allocator, &store, direct_v_append_request);
+    defer direct_v_append.deinit(std.testing.allocator);
+    switch (direct_v_append) {
         .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
         .document_domain => return error.ExpectedCoordinatorLane,
         .root => return error.ExpectedDocumentLane,
@@ -563,7 +577,7 @@ test "request guards keep root parent churn on the coordinator path" {
     try std.testing.expect(acquired.load(.acquire));
 }
 
-test "request guards let horizontal split siblings acquire separate domains while vertical siblings still share the island domain" {
+test "request guards let horizontal and vertical split siblings acquire separate domains while same-child work stays serialized" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
 
@@ -698,11 +712,45 @@ test "request guards let horizontal split siblings acquire separate domains whil
 
     const vertical_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&vertical_context});
     std.Thread.sleep(50 * std.time.ns_per_ms);
-    try std.testing.expect(!vertical_acquired.load(.acquire));
+    try std.testing.expect(vertical_acquired.load(.acquire));
     slow_guard.release();
     vertical_worker.join();
     if (vertical_failure) |err| return err;
-    try std.testing.expect(vertical_acquired.load(.acquire));
+
+    const slow_same_vertical_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":7,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{top_leaf},
+    );
+    defer std.testing.allocator.free(slow_same_vertical_request);
+    const fast_same_vertical_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":8,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"content\":\"updated\"}}}}",
+        .{top_leaf},
+    );
+    defer std.testing.allocator.free(fast_same_vertical_request);
+
+    slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_same_vertical_request);
+    errdefer slow_guard.release();
+
+    var same_vertical_acquired = std.atomic.Value(bool).init(false);
+    var same_vertical_failure: ?anyerror = null;
+    var same_vertical_failure_mutex = std.Thread.Mutex{};
+    var same_vertical_context = ThreadContext{
+        .store = &store,
+        .request = fast_same_vertical_request,
+        .acquired = &same_vertical_acquired,
+        .mutex = &same_vertical_failure_mutex,
+        .failure = &same_vertical_failure,
+    };
+
+    const same_vertical_worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&same_vertical_context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!same_vertical_acquired.load(.acquire));
+    slow_guard.release();
+    same_vertical_worker.join();
+    if (same_vertical_failure) |err| return err;
+    try std.testing.expect(same_vertical_acquired.load(.acquire));
 }
 
 test "execution lane classification keeps tmux and root-only work on the root lane" {

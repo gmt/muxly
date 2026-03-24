@@ -185,14 +185,21 @@ pub const Document = struct {
         }
     }
 
-    /// Returns the nearest enabled concurrent domain root for `node_id` when
-    /// horizontal split children are allowed to run independently.
+    pub const ConcurrentContainerKinds = struct {
+        horizontal: bool = false,
+        vertical: bool = false,
+    };
+
+    /// Returns the nearest enabled concurrent domain root for `node_id`.
     ///
-    /// Today that means:
-    /// - the direct child beneath an `h_container`, when one exists on the path
-    /// - otherwise the first-layer child beneath the document root
-    /// - `null` when `node_id` is the document root
-    pub fn horizontalConcurrentDomainRoot(self: *const Document, node_id: ids.NodeId) !?ids.NodeId {
+    /// Enabled container kinds contribute their direct children as valid domain
+    /// roots; otherwise the first-layer child beneath the document root remains
+    /// the fallback domain root.
+    pub fn concurrentContainerDomainRoot(
+        self: *const Document,
+        node_id: ids.NodeId,
+        enabled: ConcurrentContainerKinds,
+    ) !?ids.NodeId {
         if (node_id == self.root_node_id) return null;
 
         var current_id = node_id;
@@ -202,9 +209,17 @@ pub const Document = struct {
             if (parent_id == self.root_node_id) return current_id;
 
             const parent = self.findNodeConst(parent_id) orelse return error.UnknownParent;
-            if (parent.kind == .h_container) return current_id;
+            if (containerChildDomainsEnabled(parent.kind, enabled)) return current_id;
             current_id = parent_id;
         }
+    }
+
+    fn containerChildDomainsEnabled(kind: types.NodeKind, enabled: ConcurrentContainerKinds) bool {
+        return switch (kind) {
+            .h_container => enabled.horizontal,
+            .v_container => enabled.vertical,
+            else => false,
+        };
     }
 
     /// Removes a leaf node from the document.

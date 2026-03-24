@@ -164,12 +164,16 @@ pub fn runTransportScenario(
             try runSameDocumentSameTargetSerialization(allocator, kind, daemon.actual_spec);
             try runDifferentIslandNodeUpdateContentOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentHorizontalChildrenNodeUpdateOverlap(allocator, kind, daemon.actual_spec);
+            try runDifferentVerticalChildrenNodeUpdateOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentIslandNodeAppendOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentHorizontalChildrenNodeAppendOverlap(allocator, kind, daemon.actual_spec);
+            try runDifferentVerticalChildrenNodeAppendOverlap(allocator, kind, daemon.actual_spec);
             try runDirectHorizontalContainerAppendSerialization(allocator, kind, daemon.actual_spec);
+            try runDirectVerticalContainerAppendSerialization(allocator, kind, daemon.actual_spec);
             try runSameIslandNodeAppendSerialization(allocator, kind, daemon.actual_spec);
             try runDifferentIslandNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentHorizontalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
+            try runDifferentVerticalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandNodeRemoveSerialization(allocator, kind, daemon.actual_spec);
             try runDifferentIslandTextAppendOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandTextAppendSerialization(allocator, kind, daemon.actual_spec);
@@ -640,6 +644,62 @@ fn runDifferentHorizontalChildrenNodeUpdateOverlap(
     try std.testing.expectEqualStrings("right-content", content);
 }
 
+fn runDifferentVerticalChildrenNodeUpdateOverlap(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const fixture = try setupHorizontalSplitFixture(allocator, &first_client, "/a", "vertical-update");
+    const slow_params = try debugSleepParams(allocator, targeted_overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try nodeUpdateContentParams(allocator, "bottom-content");
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.top_leaf,
+    }, "debug.sleep", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{
+        .documentPath = "/a",
+        .nodeId = fixture.bottom_leaf,
+    }, "node.update", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedVerticalChildrenToOverlap;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            try expectOk(allocator, bytes);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectSleptMs(allocator, slow_response, targeted_overlap_slow_ms);
+
+    const content = try getNodeContent(allocator, &first_client, "/a", fixture.bottom_leaf);
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("bottom-content", content);
+}
+
 fn runSameHorizontalChildNodeUpdateSerialization(
     allocator: std.mem.Allocator,
     kind: TransportKind,
@@ -745,6 +805,56 @@ fn runDifferentHorizontalChildrenNodeAppendOverlap(
     try expectNodePresent(allocator, &first_client, "/a", fast_node_id);
 }
 
+fn runDifferentVerticalChildrenNodeAppendOverlap(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const fixture = try setupHorizontalSplitFixture(allocator, &first_client, "/a", "vertical-append");
+    const slow_params = try debugNodeAppendParams(allocator, fixture.top_id, .text_leaf, "slow-top", targeted_overlap_slow_ms);
+    defer allocator.free(slow_params);
+    const fast_params = try debugNodeAppendParams(allocator, fixture.bottom_id, .text_leaf, "fast-bottom", targeted_overlap_fast_ms);
+    defer allocator.free(fast_params);
+
+    var slow = try first_client.startRequest(.{ .documentPath = "/a" }, "debug.node.append", slow_params);
+    defer slow.deinit();
+
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
+
+    var fast = try second_client.startRequest(.{ .documentPath = "/a" }, "debug.node.append", fast_params);
+    defer fast.deinit();
+
+    const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
+    var fast_node_id: u64 = undefined;
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedVerticalAppendToOverlap;
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            fast_node_id = try extractNodeIdFromResponse(allocator, bytes);
+        },
+    }
+
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    const slow_node_id = try extractNodeIdFromResponse(allocator, slow_response);
+
+    try expectNodePresent(allocator, &first_client, "/a", slow_node_id);
+    try expectNodePresent(allocator, &first_client, "/a", fast_node_id);
+}
+
 fn runDirectHorizontalContainerAppendSerialization(
     allocator: std.mem.Allocator,
     kind: TransportKind,
@@ -783,6 +893,53 @@ fn runDirectHorizontalContainerAppendSerialization(
         .second => |bytes| {
             defer allocator.free(bytes);
             return error.ExpectedDirectHorizontalChildListEditsToSerialize;
+        },
+    }
+
+    const second_response = try waitForReady(&second, 3_000);
+    defer allocator.free(second_response);
+    _ = try extractNodeIdFromResponse(allocator, second_response);
+    try std.testing.expect((try elapsedMsSince(started)) > 430);
+}
+
+fn runDirectVerticalContainerAppendSerialization(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    var first_client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer first_client.deinit();
+
+    var second_client_storage: muxly.client.ConversationClient = undefined;
+    const second_client: *muxly.client.ConversationClient = if (kind == .tcp) blk: {
+        second_client_storage = try muxly.client.ConversationClient.init(allocator, actual_spec);
+        break :blk &second_client_storage;
+    } else &first_client;
+    defer if (kind == .tcp) second_client_storage.deinit();
+
+    const fixture = try setupHorizontalSplitFixture(allocator, &first_client, "/a", "vertical-parent");
+    const params = try debugNodeAppendParams(allocator, fixture.v_id, .text_leaf, "same-parent", same_lane_sleep_ms);
+    defer allocator.free(params);
+
+    const started = try std.time.Instant.now();
+
+    var first = try first_client.startRequest(.{ .documentPath = "/a" }, "debug.node.append", params);
+    defer first.deinit();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    var second = try second_client.startRequest(.{ .documentPath = "/a" }, "debug.node.append", params);
+    defer second.deinit();
+
+    const first_ready = try waitForEitherReady(&first, &second, 3_000);
+    switch (first_ready) {
+        .first => |bytes| {
+            defer allocator.free(bytes);
+            _ = try extractNodeIdFromResponse(allocator, bytes);
+        },
+        .second => |bytes| {
+            defer allocator.free(bytes);
+            return error.ExpectedDirectVerticalChildListEditsToSerialize;
         },
     }
 
@@ -847,7 +1004,7 @@ fn runDifferentHorizontalChildrenNodeRemoveOverlap(
     try expectNodeMissing(allocator, &first_client, "/a", fixture.right_leaf);
 }
 
-fn runDifferentVerticalChildrenStaySerialized(
+fn runDifferentVerticalChildrenNodeRemoveOverlap(
     allocator: std.mem.Allocator,
     kind: TransportKind,
     actual_spec: []const u8,
@@ -862,44 +1019,44 @@ fn runDifferentVerticalChildrenStaySerialized(
     } else &first_client;
     defer if (kind == .tcp) second_client_storage.deinit();
 
-    const fixture = try setupHorizontalSplitFixture(allocator, &first_client, "/a", "vertical-serialized");
-    const slow_params = try debugSleepParams(allocator, same_lane_sleep_ms);
+    const fixture = try setupHorizontalSplitFixture(allocator, &first_client, "/a", "vertical-remove");
+    const slow_params = try debugNodeRemoveParams(allocator, targeted_overlap_slow_ms);
     defer allocator.free(slow_params);
-    const fast_params = try nodeUpdateContentParams(allocator, "bottom-content");
+    const fast_params = try debugNodeRemoveParams(allocator, targeted_overlap_fast_ms);
     defer allocator.free(fast_params);
-
-    const started = try std.time.Instant.now();
 
     var slow = try first_client.startRequest(.{
         .documentPath = "/a",
         .nodeId = fixture.top_leaf,
-    }, "debug.sleep", slow_params);
+    }, "debug.node.remove", slow_params);
     defer slow.deinit();
 
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.Thread.sleep(request_gap_ms * std.time.ns_per_ms);
 
     var fast = try second_client.startRequest(.{
         .documentPath = "/a",
         .nodeId = fixture.bottom_leaf,
-    }, "node.update", fast_params);
+    }, "debug.node.remove", fast_params);
     defer fast.deinit();
 
     const first_ready = try waitForEitherReady(&slow, &fast, 3_000);
     switch (first_ready) {
         .first => |bytes| {
             defer allocator.free(bytes);
-            try expectSleptMs(allocator, bytes, same_lane_sleep_ms);
+            return error.ExpectedVerticalRemoveToOverlap;
         },
         .second => |bytes| {
             defer allocator.free(bytes);
-            return error.ExpectedVerticalChildrenToStaySerialized;
+            try expectOk(allocator, bytes);
         },
     }
 
-    const fast_response = try waitForReady(&fast, 3_000);
-    defer allocator.free(fast_response);
-    try expectOk(allocator, fast_response);
-    try std.testing.expect((try elapsedMsSince(started)) > 430);
+    const slow_response = try waitForReady(&slow, 3_000);
+    defer allocator.free(slow_response);
+    try expectOk(allocator, slow_response);
+
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.top_leaf);
+    try expectNodeMissing(allocator, &first_client, "/a", fixture.bottom_leaf);
 }
 
 fn runDifferentIslandNodeAppendOverlap(
