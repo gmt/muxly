@@ -9,8 +9,7 @@ test "execution lane classification keeps document-local requests on document la
     const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
     const leaf_id = try store.appendNode("/demo", document, island_id, .text_leaf, "leaf");
 
-    var doc_get = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var doc_get = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"document.get","params":{}}
     );
     defer doc_get.deinit(std.testing.allocator);
@@ -20,8 +19,7 @@ test "execution lane classification keeps document-local requests on document la
         .root => return error.ExpectedDocumentLane,
     }
 
-    var file_attach = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var file_attach = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"leaf.source.attach","params":{"kind":"static-file","path":"README.md"}}
     );
     defer file_attach.deinit(std.testing.allocator);
@@ -31,8 +29,7 @@ test "execution lane classification keeps document-local requests on document la
         .root => return error.ExpectedDocumentLane,
     }
 
-    var debug_sleep = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var debug_sleep = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/demo"},"method":"debug.sleep","params":{"ms":50}}
     );
     defer debug_sleep.deinit(std.testing.allocator);
@@ -120,13 +117,81 @@ test "execution lane classification keeps document-local requests on document la
         .root => return error.ExpectedDocumentLane,
     }
 
-    var root_content_update = try router.classifyExecutionLane(
-        std.testing.allocator,
-        &store,
+    var root_content_update = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":8,"target":{"documentPath":"/demo","nodeId":1},"method":"node.update","params":{"content":"updated"}}
     );
     defer root_content_update.deinit(std.testing.allocator);
     switch (root_content_update) {
+        .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
+        .document_domain => return error.ExpectedCoordinatorLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const island_append_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":9,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"child\"}}}}",
+        .{island_id},
+    );
+    defer std.testing.allocator.free(island_append_request);
+    var island_append = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        island_append_request,
+    );
+    defer island_append.deinit(std.testing.allocator);
+    switch (island_append) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(island_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    var root_append = try router.classifyExecutionLane(std.testing.allocator, &store,
+        \\{"jsonrpc":"2.0","id":10,"target":{"documentPath":"/demo"},"method":"node.append","params":{"parentId":1,"kind":"text_leaf","title":"root-child"}}
+    );
+    defer root_append.deinit(std.testing.allocator);
+    switch (root_append) {
+        .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
+        .document_domain => return error.ExpectedCoordinatorLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const leaf_remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":11,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{leaf_id},
+    );
+    defer std.testing.allocator.free(leaf_remove_request);
+    var leaf_remove = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        leaf_remove_request,
+    );
+    defer leaf_remove.deinit(std.testing.allocator);
+    switch (leaf_remove) {
+        .document_domain => |domain| {
+            try std.testing.expectEqualStrings("/demo", domain.document_path);
+            try std.testing.expectEqual(island_id, domain.root_node_id);
+        },
+        .document_coordinator => return error.ExpectedDomainLane,
+        .root => return error.ExpectedDocumentLane,
+    }
+
+    const island_remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":12,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{island_id},
+    );
+    defer std.testing.allocator.free(island_remove_request);
+    var island_remove = try router.classifyExecutionLane(
+        std.testing.allocator,
+        &store,
+        island_remove_request,
+    );
+    defer island_remove.deinit(std.testing.allocator);
+    switch (island_remove) {
         .document_coordinator => |path| try std.testing.expectEqualStrings("/demo", path),
         .document_domain => return error.ExpectedCoordinatorLane,
         .root => return error.ExpectedDocumentLane,
@@ -290,12 +355,137 @@ test "request guards keep title and mixed node.update on the coordinator path" {
     try std.testing.expect(mixed_acquired.load(.acquire));
 }
 
+test "request guards keep same-island structural requests behind an active domain writer" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const parent_id = try store.appendNode("/demo", document, island_id, .container, "parent");
+    const leaf_id = try store.appendNode("/demo", document, parent_id, .text_leaf, "leaf");
+
+    const slow_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{leaf_id},
+    );
+    defer std.testing.allocator.free(slow_request);
+    const append_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\"}},\"method\":\"node.append\",\"params\":{{\"parentId\":{d},\"kind\":\"text_leaf\",\"title\":\"child\"}}}}",
+        .{parent_id},
+    );
+    defer std.testing.allocator.free(append_request);
+
+    var slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_request);
+    errdefer slow_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+    var context = ThreadContext{
+        .store = &store,
+        .request = append_request,
+        .acquired = &acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+
+    const worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!acquired.load(.acquire));
+
+    slow_guard.release();
+    worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(acquired.load(.acquire));
+}
+
+test "request guards keep root parent churn on the coordinator path" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_id = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island");
+    const leaf_id = try store.appendNode("/demo", document, island_id, .text_leaf, "leaf");
+
+    const slow_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"debug.sleep\",\"params\":{{\"ms\":50}}}}",
+        .{leaf_id},
+    );
+    defer std.testing.allocator.free(slow_request);
+    const root_append_request =
+        \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"node.append","params":{"parentId":1,"kind":"text_leaf","title":"root-child"}}
+    ;
+
+    var slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_request);
+    errdefer slow_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+    var context = ThreadContext{
+        .store = &store,
+        .request = root_append_request,
+        .acquired = &acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+
+    const worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!acquired.load(.acquire));
+
+    slow_guard.release();
+    worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(acquired.load(.acquire));
+}
+
 test "execution lane classification keeps tmux and root-only work on the root lane" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();
 
-    var session_create = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var session_create = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"session.create","params":{"sessionName":"demo"}}
     );
     defer session_create.deinit(std.testing.allocator);
@@ -304,8 +494,7 @@ test "execution lane classification keeps tmux and root-only work on the root la
         .document_coordinator, .document_domain => return error.ExpectedRootLane,
     }
 
-    var tty_attach = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var tty_attach = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":2,"target":{"documentPath":"/demo"},"method":"leaf.source.attach","params":{"kind":"tty","sessionName":"demo"}}
     );
     defer tty_attach.deinit(std.testing.allocator);
@@ -314,8 +503,7 @@ test "execution lane classification keeps tmux and root-only work on the root la
         .document_coordinator, .document_domain => return error.ExpectedRootLane,
     }
 
-    var root_doc = try router.classifyExecutionLane(std.testing.allocator,
-        &store,
+    var root_doc = try router.classifyExecutionLane(std.testing.allocator, &store,
         \\{"jsonrpc":"2.0","id":3,"target":{"documentPath":"/"},"method":"document.get","params":{}}
     );
     defer root_doc.deinit(std.testing.allocator);

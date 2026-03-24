@@ -1898,6 +1898,8 @@ fn request_runs_on_document_lane(method: &str, params: Option<&serde_json::Value
             | "document.freeze"
             | "debug.sleep"
             | "node.get"
+            | "debug.node.append"
+            | "debug.node.remove"
             | "node.append"
             | "node.update"
             | "node.freeze"
@@ -1919,7 +1921,16 @@ fn request_runs_on_document_lane(method: &str, params: Option<&serde_json::Value
 }
 
 fn request_supports_dynamic_domain_lane(method: &str, request_value: &serde_json::Value) -> bool {
-    if matches!(method, "debug.sleep" | "debug.text.append" | "debug.tty.push") {
+    if matches!(
+        method,
+        "debug.sleep"
+            | "debug.text.append"
+            | "debug.tty.push"
+            | "node.append"
+            | "node.remove"
+            | "debug.node.append"
+            | "debug.node.remove"
+    ) {
         return true;
     }
 
@@ -1948,6 +1959,9 @@ fn request_target_key(request_value: &serde_json::Value) -> Option<String> {
         .and_then(|value| value.get("nodeId"))
         .and_then(|entry| entry.as_u64())
     {
+        if node_id == 1 {
+            return None;
+        }
         return Some(format!("node:{node_id}"));
     }
 
@@ -1963,7 +1977,21 @@ fn request_target_key(request_value: &serde_json::Value) -> Option<String> {
         .and_then(|value| value.get("nodeId"))
         .and_then(|entry| entry.as_u64())
     {
+        if node_id == 1 {
+            return None;
+        }
         return Some(format!("node:{node_id}"));
+    }
+
+    if let Some(parent_id) = request_value
+        .get("params")
+        .and_then(|value| value.get("parentId"))
+        .and_then(|entry| entry.as_u64())
+    {
+        if parent_id == 1 {
+            return None;
+        }
+        return Some(format!("node:{parent_id}"));
     }
 
     None
@@ -2217,6 +2245,52 @@ mod tests {
     #[test]
     fn classify_upstream_lane_key_uses_target_lane_for_content_only_node_update() {
         let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":7},"method":"node.update","params":{"content":"updated"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::DocumentTarget {
+                document_path: "/demo".to_string(),
+                target_key: "node:7".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_keeps_root_target_content_update_on_document_lane() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":1},"method":"node.update","params":{"content":"updated"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::Document("/demo".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_uses_parent_target_lane_for_nested_append() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"node.append","params":{"parentId":7,"kind":"text_leaf","title":"child"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::DocumentTarget {
+                document_path: "/demo".to_string(),
+                target_key: "node:7".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_keeps_root_append_on_document_lane() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"node.append","params":{"parentId":1,"kind":"text_leaf","title":"child"}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::Document("/demo".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_upstream_lane_key_uses_target_lane_for_node_remove() {
+        let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":7},"method":"node.remove","params":{}}"#;
 
         assert_eq!(
             classify_upstream_lane_key(request),

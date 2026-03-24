@@ -218,6 +218,46 @@ pub fn handleRequest(
         return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.node.append")) {
+        const parent_id = protocol.getInteger(parsed.value.params, "parentId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "parentId is required");
+        const kind_name = protocol.getString(parsed.value.params, "kind") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "kind is required");
+        const title = protocol.getString(parsed.value.params, "title") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "title is required");
+        const kind = parseNodeKind(kind_name) orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "unsupported node kind");
+        if (protocol.getInteger(parsed.value.params, "pauseMs")) |pause_ms| {
+            if (pause_ms < 0) {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "pauseMs must be non-negative");
+            }
+            std.Thread.sleep(@as(u64, @intCast(pause_ms)) * std.time.ns_per_ms);
+        }
+        const node_id = store.appendNode(document_path, document, @intCast(parent_id), kind, title) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to append node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, @tagName(kind));
+    }
+
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.node.remove")) {
+        const node_id = requestNodeIdOrError(document, parsed.value) catch |err|
+            return try buildNodeTargetError(allocator, parsed.value.id, err);
+        if (protocol.getInteger(parsed.value.params, "pauseMs")) |pause_ms| {
+            if (pause_ms < 0) {
+                return try buildError(allocator, parsed.value.id, .invalid_params, "pauseMs must be non-negative");
+            }
+            std.Thread.sleep(@as(u64, @intCast(pause_ms)) * std.time.ns_per_ms);
+        }
+        store.removeNode(document_path, document, @intCast(node_id)) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to remove node: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
     if (std.mem.eql(u8, document_path, "/")) {
         store.pumpTmuxBackend() catch |err| switch (err) {
             error.FileNotFound, error.TmuxCommandFailed, error.ControlModeUnavailable => {},
@@ -929,6 +969,8 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
         std.mem.eql(u8, method, "debug.sleep") or
         std.mem.eql(u8, method, "debug.document.validate") or
         std.mem.eql(u8, method, "debug.text.append") or
+        std.mem.eql(u8, method, "debug.node.append") or
+        std.mem.eql(u8, method, "debug.node.remove") or
         std.mem.eql(u8, method, "debug.tty.attach") or
         std.mem.eql(u8, method, "debug.tty.push") or
         std.mem.eql(u8, method, "node.get") or

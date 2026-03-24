@@ -77,12 +77,16 @@ const Shared = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     total_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     child_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    island_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    island_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tty_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_replace_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_mixed_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     parent_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    root_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    root_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     job_reassignments: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     failure: FailureState = .{},
 };
@@ -233,10 +237,10 @@ pub fn main() !void {
     for (worker_contexts, 0..) |*context, index| {
         context.* = .{
             .worker_id = index,
-            .preferred_kind = switch (index % 4) {
-                0 => .child_container,
-                1 => .tty,
-                2 => .text,
+            .preferred_kind = switch (index % 5) {
+                0, 1 => .child_container,
+                2 => .tty,
+                3 => .text,
                 else => .parent_container,
             },
             .seed = config.seed +% @as(u64, @intCast(index * 977)),
@@ -274,16 +278,20 @@ pub fn main() !void {
         if ((try elapsedNsSince(last_progress_check)) >= progress_stall_seconds * std.time.ns_per_s) {
             shared.failure.set(
                 allocator,
-                "stress progress stalled for {d}s with totals child={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} reassignments={d}",
+                "stress progress stalled for {d}s with totals child={d} island-append={d} island-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}",
                 .{
                     progress_stall_seconds,
                     shared.child_ops.load(.monotonic),
+                    shared.island_append_ops.load(.monotonic),
+                    shared.island_remove_ops.load(.monotonic),
                     shared.tty_ops.load(.monotonic),
                     shared.text_ops.load(.monotonic),
                     shared.text_append_ops.load(.monotonic),
                     shared.text_replace_ops.load(.monotonic),
                     shared.text_mixed_ops.load(.monotonic),
                     shared.parent_ops.load(.monotonic),
+                    shared.root_append_ops.load(.monotonic),
+                    shared.root_remove_ops.load(.monotonic),
                     shared.job_reassignments.load(.monotonic),
                 },
             );
@@ -302,16 +310,20 @@ pub fn main() !void {
 
     try validateDocument(allocator, &admin);
     std.debug.print(
-        "unix-contention-stress complete total={d} child={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} reassignments={d}\n",
+        "unix-contention-stress complete total={d} child={d} island-append={d} island-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}\n",
         .{
             shared.total_ops.load(.monotonic),
             shared.child_ops.load(.monotonic),
+            shared.island_append_ops.load(.monotonic),
+            shared.island_remove_ops.load(.monotonic),
             shared.tty_ops.load(.monotonic),
             shared.text_ops.load(.monotonic),
             shared.text_append_ops.load(.monotonic),
             shared.text_replace_ops.load(.monotonic),
             shared.text_mixed_ops.load(.monotonic),
             shared.parent_ops.load(.monotonic),
+            shared.root_append_ops.load(.monotonic),
+            shared.root_remove_ops.load(.monotonic),
             shared.job_reassignments.load(.monotonic),
         },
     );
@@ -373,10 +385,10 @@ fn selectWorkerKind(prng: *std.Random.DefaultPrng, preferred_kind: WorkerKind) W
     const roll = random.uintLessThan(u32, job_reassign_roll_max);
     if (roll < job_reassign_threshold) return preferred_kind;
 
-    return switch (random.uintLessThan(u8, 4)) {
-        0 => .child_container,
-        1 => .tty,
-        2 => .text,
+    return switch (random.uintLessThan(u8, 5)) {
+        0, 1 => .child_container,
+        2 => .tty,
+        3 => .text,
         else => .parent_container,
     };
 }
@@ -412,9 +424,17 @@ fn workerMain(context: *const WorkerContext) void {
             if (result) |outcome| {
                 _ = context.shared.total_ops.fetchAdd(1, .monotonic);
                 switch (outcome) {
-                    .child_container => _ = context.shared.child_ops.fetchAdd(1, .monotonic),
+                    .child_container => {
+                        _ = context.shared.child_ops.fetchAdd(1, .monotonic);
+                        _ = context.shared.island_append_ops.fetchAdd(2, .monotonic);
+                        _ = context.shared.island_remove_ops.fetchAdd(2, .monotonic);
+                    },
                     .tty => _ = context.shared.tty_ops.fetchAdd(1, .monotonic),
-                    .parent_container => _ = context.shared.parent_ops.fetchAdd(1, .monotonic),
+                    .parent_container => {
+                        _ = context.shared.parent_ops.fetchAdd(1, .monotonic);
+                        _ = context.shared.root_append_ops.fetchAdd(2, .monotonic);
+                        _ = context.shared.root_remove_ops.fetchAdd(2, .monotonic);
+                    },
                     .text => |mode| {
                         _ = context.shared.text_ops.fetchAdd(1, .monotonic);
                         switch (mode) {

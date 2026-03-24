@@ -29,6 +29,18 @@ const DomainLock = struct {
     mutex: std.Thread.Mutex = .{},
 };
 
+const StructuralLock = struct {
+    mutex: std.Thread.Mutex = .{},
+};
+
+const DomainWritePlan = union(enum) {
+    content: ids.NodeId,
+    structural: struct {
+        domain_id: ids.NodeId,
+        parent_id: ids.NodeId,
+    },
+};
+
 pub const RequestGuard = union(enum) {
     none,
     coordinator_exclusive: struct {
@@ -42,6 +54,11 @@ pub const RequestGuard = union(enum) {
     domain_write: struct {
         runtime: *DocumentRuntime,
         domain_lock: *DomainLock,
+    },
+    structural_write: struct {
+        runtime: *DocumentRuntime,
+        domain_lock: *DomainLock,
+        parent_lock: *StructuralLock,
     },
 
     pub fn release(self: *RequestGuard) void {
@@ -60,6 +77,11 @@ pub const RequestGuard = union(enum) {
                 _ = value.runtime;
                 value.domain_lock.mutex.unlock();
             },
+            .structural_write => |value| {
+                _ = value.runtime;
+                value.parent_lock.mutex.unlock();
+                value.domain_lock.mutex.unlock();
+            },
         }
         self.* = .none;
     }
@@ -69,8 +91,11 @@ pub const DocumentRuntime = struct {
     allocator: std.mem.Allocator,
     coordinator_mutex: std.Thread.Mutex = .{},
     content_bytes_mutex: std.Thread.Mutex = .{},
+    structure_registry_mutex: std.Thread.Mutex = .{},
     domains_mutex: std.Thread.Mutex = .{},
     domain_locks: std.AutoHashMapUnmanaged(ids.NodeId, *DomainLock) = .{},
+    structural_locks_mutex: std.Thread.Mutex = .{},
+    parent_locks: std.AutoHashMapUnmanaged(ids.NodeId, *StructuralLock) = .{},
 
     pub fn init(allocator: std.mem.Allocator) DocumentRuntime {
         return .{ .allocator = allocator };
@@ -82,6 +107,12 @@ pub const DocumentRuntime = struct {
             self.allocator.destroy(lock_ptr.*);
         }
         self.domain_locks.deinit(self.allocator);
+
+        var structural_iterator = self.parent_locks.valueIterator();
+        while (structural_iterator.next()) |lock_ptr| {
+            self.allocator.destroy(lock_ptr.*);
+        }
+        self.parent_locks.deinit(self.allocator);
     }
 
     pub fn acquireCoordinatorExclusive(self: *DocumentRuntime) !RequestGuard {
@@ -133,6 +164,18 @@ pub const DocumentRuntime = struct {
         const entry = try self.domain_locks.getOrPut(self.allocator, domain_id);
         if (!entry.found_existing) {
             entry.value_ptr.* = try self.allocator.create(DomainLock);
+            entry.value_ptr.*.* = .{};
+        }
+        return entry.value_ptr.*;
+    }
+
+    fn ensureParentLock(self: *DocumentRuntime, parent_id: ids.NodeId) !*StructuralLock {
+        self.structural_locks_mutex.lock();
+        defer self.structural_locks_mutex.unlock();
+
+        const entry = try self.parent_locks.getOrPut(self.allocator, parent_id);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = try self.allocator.create(StructuralLock);
             entry.value_ptr.*.* = .{};
         }
         return entry.value_ptr.*;
@@ -326,7 +369,13 @@ pub const Store = struct {
         };
         entry.runtime.coordinator_mutex.lock();
         defer entry.runtime.coordinator_mutex.unlock();
-        return self.resolveRequestDomainRootWithStableTopology(allocator, entry, request);
+        if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, request)) |plan| {
+            return switch (plan) {
+                .content => |domain_id| domain_id,
+                .structural => |value| value.domain_id,
+            };
+        }
+        return null;
     }
 
     pub fn acquireRequestGuard(
@@ -345,18 +394,34 @@ pub const Store = struct {
             else => return err,
         };
 
-        if (requestUsesDomainWriteGuard(parsed.value)) {
+        if (requestSupportsDynamicDomainLane(parsed.value)) {
             entry.runtime.coordinator_mutex.lock();
             errdefer entry.runtime.coordinator_mutex.unlock();
 
-            if (try self.resolveRequestDomainRootWithStableTopology(allocator, entry, parsed.value)) |domain_id| {
-                const domain_lock = try entry.runtime.ensureDomainLock(domain_id);
-                domain_lock.mutex.lock();
-                entry.runtime.coordinator_mutex.unlock();
-                return .{ .domain_write = .{
-                    .runtime = &entry.runtime,
-                    .domain_lock = domain_lock,
-                } };
+            if (try self.resolveDomainWritePlanWithStableTopology(allocator, entry, parsed.value)) |plan| {
+                switch (plan) {
+                    .content => |domain_id| {
+                        const domain_lock = try entry.runtime.ensureDomainLock(domain_id);
+                        domain_lock.mutex.lock();
+                        entry.runtime.coordinator_mutex.unlock();
+                        return .{ .domain_write = .{
+                            .runtime = &entry.runtime,
+                            .domain_lock = domain_lock,
+                        } };
+                    },
+                    .structural => |value| {
+                        const domain_lock = try entry.runtime.ensureDomainLock(value.domain_id);
+                        const parent_lock = try entry.runtime.ensureParentLock(value.parent_id);
+                        domain_lock.mutex.lock();
+                        parent_lock.mutex.lock();
+                        entry.runtime.coordinator_mutex.unlock();
+                        return .{ .structural_write = .{
+                            .runtime = &entry.runtime,
+                            .domain_lock = domain_lock,
+                            .parent_lock = parent_lock,
+                        } };
+                    },
+                }
             }
 
             entry.runtime.coordinator_mutex.unlock();
@@ -738,6 +803,9 @@ pub const Store = struct {
     }
 
     pub fn appendNode(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, kind: types.NodeKind, title: []const u8) !ids.NodeId {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.structure_registry_mutex.lock();
+        defer entry.runtime.structure_registry_mutex.unlock();
         const node_id = try document.appendNode(parent_id, kind, title, .{ .none = {} });
         self.notifyInvalidate(document_path, document, node_id, .structure);
         return node_id;
@@ -781,6 +849,9 @@ pub const Store = struct {
         title: []const u8,
         session_name: []const u8,
     ) !ids.NodeId {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.structure_registry_mutex.lock();
+        defer entry.runtime.structure_registry_mutex.unlock();
         const node_id = try document.appendNode(
             parent_id,
             .tty_leaf,
@@ -838,6 +909,11 @@ pub const Store = struct {
     }
 
     pub fn removeNode(self: *Store, document_path: []const u8, document: *document_mod.Document, node_id: ids.NodeId) !void {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.structure_registry_mutex.lock();
+        defer entry.runtime.structure_registry_mutex.unlock();
+        entry.runtime.content_bytes_mutex.lock();
+        defer entry.runtime.content_bytes_mutex.unlock();
         try document.removeNode(node_id);
         self.notifyInvalidate(document_path, document, node_id, .structure);
     }
@@ -853,6 +929,9 @@ pub const Store = struct {
     }
 
     fn attachPaneRef(self: *Store, document_path: []const u8, document: *document_mod.Document, parent_id: ids.NodeId, pane_ref: tmux.PaneRef) !ids.NodeId {
+        const entry = try self.documentEntryForPath(document_path);
+        entry.runtime.structure_registry_mutex.lock();
+        defer entry.runtime.structure_registry_mutex.unlock();
         const node_id = try document.appendNode(
             parent_id,
             .tty_leaf,
@@ -1062,13 +1141,15 @@ pub const Store = struct {
         return self.documentForPath(root_document_path) catch unreachable;
     }
 
-    fn resolveRequestDomainRootWithStableTopology(
+    fn resolveDomainWritePlanWithStableTopology(
         self: *Store,
         allocator: std.mem.Allocator,
         entry: *DocumentEntry,
         request: muxly.protocol.RequestEnvelope,
-    ) !?ids.NodeId {
-        _ = self;
+    ) !?DomainWritePlan {
+        if (requestIsStructuralDomainWrite(request)) {
+            return try self.resolveStructuralDomainWritePlanWithStableTopology(allocator, entry, request);
+        }
 
         const node_id = resolveRequestNodeIdWithStableTopology(allocator, &entry.document, request) catch |err| switch (err) {
             error.MissingNodeTarget,
@@ -1081,12 +1162,71 @@ pub const Store = struct {
             else => return err,
         };
 
-        return entry.document.firstLayerAncestor(node_id) catch |err| switch (err) {
+        const domain_id = entry.document.firstLayerAncestor(node_id) catch |err| switch (err) {
             error.UnknownNode,
             error.UnknownParent,
             => null,
             else => return err,
         };
+        return if (domain_id) |value| .{ .content = value } else null;
+    }
+
+    fn resolveStructuralDomainWritePlanWithStableTopology(
+        self: *Store,
+        allocator: std.mem.Allocator,
+        entry: *DocumentEntry,
+        request: muxly.protocol.RequestEnvelope,
+    ) !?DomainWritePlan {
+        _ = self;
+
+        if (requestIsAppendLike(request.method)) {
+            const parent_value = muxly.protocol.getInteger(request.params, "parentId") orelse return null;
+            if (parent_value < 0) return null;
+
+            const parent_id: ids.NodeId = @intCast(parent_value);
+            if (parent_id == entry.document.root_node_id) return null;
+
+            const domain_id = entry.document.firstLayerAncestor(parent_id) catch |err| switch (err) {
+                error.UnknownNode,
+                error.UnknownParent,
+                => return null,
+                else => return err,
+            } orelse return null;
+
+            return .{ .structural = .{
+                .domain_id = domain_id,
+                .parent_id = parent_id,
+            } };
+        }
+
+        const node_id = resolveRequestNodeIdWithStableTopology(allocator, &entry.document, request) catch |err| switch (err) {
+            error.MissingNodeTarget,
+            error.InvalidNodeTarget,
+            error.UnknownResourceSelectorSegment,
+            error.AmbiguousResourceSelector,
+            error.InvalidResourceSelector,
+            error.ResourceSelectorEscapesRoot,
+            => return null,
+            else => return err,
+        };
+
+        if (node_id == entry.document.root_node_id) return null;
+        const node = entry.document.findNodeConst(node_id) orelse return null;
+        const parent_id = node.parent_id orelse return null;
+        if (parent_id == entry.document.root_node_id) return null;
+        if (node.children.items.len != 0) return null;
+
+        const domain_id = entry.document.firstLayerAncestor(node_id) catch |err| switch (err) {
+            error.UnknownNode,
+            error.UnknownParent,
+            => return null,
+            else => return err,
+        } orelse return null;
+
+        return .{ .structural = .{
+            .domain_id = domain_id,
+            .parent_id = parent_id,
+        } };
     }
 
     fn documentPathFor(self: *Store, document: *const document_mod.Document) []const u8 {
@@ -1154,10 +1294,6 @@ fn resolveRequestNodeIdWithStableTopology(
 }
 
 pub fn requestSupportsDynamicDomainLane(request: muxly.protocol.RequestEnvelope) bool {
-    return requestUsesDomainWriteGuard(request);
-}
-
-fn requestUsesDomainWriteGuard(request: muxly.protocol.RequestEnvelope) bool {
     if (std.mem.eql(u8, request.method, "debug.sleep") or
         std.mem.eql(u8, request.method, "debug.text.append") or
         std.mem.eql(u8, request.method, "debug.tty.push"))
@@ -1165,7 +1301,22 @@ fn requestUsesDomainWriteGuard(request: muxly.protocol.RequestEnvelope) bool {
         return true;
     }
 
-    return requestIsContentOnlyNodeUpdate(request);
+    return requestIsContentOnlyNodeUpdate(request) or
+        requestIsStructuralDomainWrite(request);
+}
+
+fn requestIsStructuralDomainWrite(request: muxly.protocol.RequestEnvelope) bool {
+    return requestIsAppendLike(request.method) or requestIsRemoveLike(request.method);
+}
+
+fn requestIsAppendLike(method: []const u8) bool {
+    return std.mem.eql(u8, method, "node.append") or
+        std.mem.eql(u8, method, "debug.node.append");
+}
+
+fn requestIsRemoveLike(method: []const u8) bool {
+    return std.mem.eql(u8, method, "node.remove") or
+        std.mem.eql(u8, method, "debug.node.remove");
 }
 
 fn requestIsContentOnlyNodeUpdate(request: muxly.protocol.RequestEnvelope) bool {
