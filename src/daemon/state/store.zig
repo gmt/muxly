@@ -1346,7 +1346,7 @@ fn classifyRemoveExecutionMode(
     }
 
     if (parent_id == document.root_node_id) return .unsupported;
-    if (parent.kind == .h_container or parent.kind == .v_container) return .unsupported;
+    if (parent.kind == .h_container or parent.kind == .v_container) return .recursive_coordinator_safe;
 
     const concurrent_kinds = enabledConcurrentContainerKinds();
     const domain_id = try document.concurrentContainerDomainRoot(node_id, concurrent_kinds) orelse return .unsupported;

@@ -175,6 +175,8 @@ pub fn runTransportScenario(
             try runDifferentHorizontalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runDifferentVerticalChildrenNodeRemoveOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandNodeRemoveSerialization(allocator, kind, daemon.actual_spec);
+            try runPublicHorizontalDomainRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
+            try runPublicVerticalDomainRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicDomainSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicCoordinatorSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicUnsupportedSubtreeRemoveRejects(allocator, kind, daemon.actual_spec);
@@ -1290,6 +1292,55 @@ fn runSameIslandNodeRemoveSerialization(
     try std.testing.expect((try elapsedMsSince(started)) > 430);
     try expectNodeMissing(allocator, &first_client, "/a", first_leaf);
     try expectNodeMissing(allocator, &first_client, "/a", second_leaf);
+}
+
+fn runPublicHorizontalDomainRootRemoveSucceeds(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const fixture = try setupHorizontalSplitFixture(allocator, &client, "/a", "public-horizontal-root-remove");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = fixture.left_id,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectOk(allocator, response);
+
+    try expectNodeMissing(allocator, &client, "/a", fixture.left_id);
+    try expectNodeMissing(allocator, &client, "/a", fixture.left_leaf_a);
+    try expectNodeMissing(allocator, &client, "/a", fixture.left_leaf_b);
+    try expectNodePresent(allocator, &client, "/a", fixture.right_id);
+    try expectNodePresent(allocator, &client, "/a", fixture.right_leaf);
+}
+
+fn runPublicVerticalDomainRootRemoveSucceeds(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const fixture = try setupHorizontalSplitFixture(allocator, &client, "/a", "public-vertical-root-remove");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = fixture.top_id,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectOk(allocator, response);
+
+    try expectNodeMissing(allocator, &client, "/a", fixture.top_id);
+    try expectNodeMissing(allocator, &client, "/a", fixture.top_leaf);
+    try expectNodePresent(allocator, &client, "/a", fixture.bottom_id);
+    try expectNodePresent(allocator, &client, "/a", fixture.bottom_leaf);
 }
 
 fn runPublicDomainSafeSubtreeRemoveSucceeds(

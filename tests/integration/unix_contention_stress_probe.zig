@@ -21,6 +21,7 @@ const WorkerKind = enum {
     horizontal_container,
     vertical_container,
     subtree_container,
+    domain_root_subtree,
     tty,
     text,
     parent_container,
@@ -31,6 +32,7 @@ const WorkerKind = enum {
             .horizontal_container => "horizontal-container",
             .vertical_container => "vertical-container",
             .subtree_container => "subtree-container",
+            .domain_root_subtree => "domain-root-subtree",
             .tty => "tty",
             .text => "text",
             .parent_container => "parent-container",
@@ -57,6 +59,7 @@ const WorkerOutcome = union(enum) {
     horizontal_container,
     vertical_container,
     subtree_container,
+    domain_root_subtree,
     tty,
     parent_container,
     text: TextMode,
@@ -99,6 +102,9 @@ const Shared = struct {
     subtree_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     subtree_create_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     subtree_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    domain_root_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    domain_root_create_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    domain_root_remove_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     tty_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     text_append_ops: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -257,13 +263,14 @@ pub fn main() !void {
     for (worker_contexts, 0..) |*context, index| {
         context.* = .{
             .worker_id = index,
-            .preferred_kind = switch (index % 8) {
+            .preferred_kind = switch (index % 9) {
                 0, 1 => .horizontal_container,
                 2, 3 => .vertical_container,
                 4 => .child_container,
                 5 => .subtree_container,
-                6 => .tty,
-                7 => .text,
+                6 => .domain_root_subtree,
+                7 => .tty,
+                8 => .text,
                 else => .parent_container,
             },
             .seed = config.seed +% @as(u64, @intCast(index * 977)),
@@ -301,7 +308,7 @@ pub fn main() !void {
         if ((try elapsedNsSince(last_progress_check)) >= progress_stall_seconds * std.time.ns_per_s) {
             shared.failure.set(
                 allocator,
-                "stress progress stalled for {d}s with totals child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} subtree={d} subtree-create={d} subtree-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}",
+                "stress progress stalled for {d}s with totals child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} subtree={d} subtree-create={d} subtree-remove={d} domain-root={d} domain-root-create={d} domain-root-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}",
                 .{
                     progress_stall_seconds,
                     shared.child_ops.load(.monotonic),
@@ -316,6 +323,9 @@ pub fn main() !void {
                     shared.subtree_ops.load(.monotonic),
                     shared.subtree_create_ops.load(.monotonic),
                     shared.subtree_remove_ops.load(.monotonic),
+                    shared.domain_root_ops.load(.monotonic),
+                    shared.domain_root_create_ops.load(.monotonic),
+                    shared.domain_root_remove_ops.load(.monotonic),
                     shared.tty_ops.load(.monotonic),
                     shared.text_ops.load(.monotonic),
                     shared.text_append_ops.load(.monotonic),
@@ -342,7 +352,7 @@ pub fn main() !void {
 
     try validateDocument(allocator, &admin);
     std.debug.print(
-        "unix-contention-stress complete total={d} child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} subtree={d} subtree-create={d} subtree-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}\n",
+        "unix-contention-stress complete total={d} child={d} island-append={d} island-remove={d} horizontal={d} horizontal-append={d} horizontal-remove={d} vertical={d} vertical-append={d} vertical-remove={d} subtree={d} subtree-create={d} subtree-remove={d} domain-root={d} domain-root-create={d} domain-root-remove={d} tty={d} text={d} text-append={d} text-replace={d} text-mixed={d} parent={d} root-append={d} root-remove={d} reassignments={d}\n",
         .{
             shared.total_ops.load(.monotonic),
             shared.child_ops.load(.monotonic),
@@ -357,6 +367,9 @@ pub fn main() !void {
             shared.subtree_ops.load(.monotonic),
             shared.subtree_create_ops.load(.monotonic),
             shared.subtree_remove_ops.load(.monotonic),
+            shared.domain_root_ops.load(.monotonic),
+            shared.domain_root_create_ops.load(.monotonic),
+            shared.domain_root_remove_ops.load(.monotonic),
             shared.tty_ops.load(.monotonic),
             shared.text_ops.load(.monotonic),
             shared.text_append_ops.load(.monotonic),
@@ -426,13 +439,14 @@ fn selectWorkerKind(prng: *std.Random.DefaultPrng, preferred_kind: WorkerKind) W
     const roll = random.uintLessThan(u32, job_reassign_roll_max);
     if (roll < job_reassign_threshold) return preferred_kind;
 
-    return switch (random.uintLessThan(u8, 8)) {
+    return switch (random.uintLessThan(u8, 9)) {
         0, 1 => .horizontal_container,
         2 => .vertical_container,
         3 => .subtree_container,
-        4 => .child_container,
-        5 => .tty,
-        6 => .text,
+        4 => .domain_root_subtree,
+        5 => .child_container,
+        6 => .tty,
+        7 => .text,
         else => .parent_container,
     };
 }
@@ -464,6 +478,7 @@ fn workerMain(context: *const WorkerContext) void {
                 .horizontal_container => runHorizontalContainerChurn(&client, context, &prng, local_iteration),
                 .vertical_container => runVerticalContainerChurn(&client, context, &prng, local_iteration),
                 .subtree_container => runSubtreeContainerChurn(&client, context, &prng, local_iteration),
+                .domain_root_subtree => runDomainRootSubtreeChurn(&client, context, &prng, local_iteration),
                 .tty => runTtyChurn(&client, context, &prng, local_iteration),
                 .text => runTextChurn(&client, context, &prng, local_iteration, &mixed_state),
                 .parent_container => runParentContainerChurn(&client, context, &prng, local_iteration),
@@ -490,6 +505,11 @@ fn workerMain(context: *const WorkerContext) void {
                         _ = context.shared.subtree_ops.fetchAdd(1, .monotonic);
                         _ = context.shared.subtree_create_ops.fetchAdd(3, .monotonic);
                         _ = context.shared.subtree_remove_ops.fetchAdd(1, .monotonic);
+                    },
+                    .domain_root_subtree => {
+                        _ = context.shared.domain_root_ops.fetchAdd(1, .monotonic);
+                        _ = context.shared.domain_root_create_ops.fetchAdd(3, .monotonic);
+                        _ = context.shared.domain_root_remove_ops.fetchAdd(1, .monotonic);
                     },
                     .tty => _ = context.shared.tty_ops.fetchAdd(1, .monotonic),
                     .parent_container => {
@@ -668,6 +688,50 @@ fn runSubtreeContainerChurn(
     try appendTextChunk(client, document_path, leaf_id, chunk);
     try removeNode(client, document_path, subtree_id);
     return .subtree_container;
+}
+
+fn runDomainRootSubtreeChurn(
+    client: *muxly.client.ConversationClient,
+    context: *const WorkerContext,
+    prng: *std.Random.DefaultPrng,
+    iteration: u64,
+) !WorkerOutcome {
+    const random = prng.random();
+    const island = &context.topology.islands[random.uintLessThan(u8, island_count)];
+    const target_parent = switch (random.uintLessThan(u8, 2)) {
+        0 => island.h_container_id,
+        else => island.v_container_id,
+    };
+
+    var subtree_title: [96]u8 = undefined;
+    const subtree_title_text = try std.fmt.bufPrint(
+        &subtree_title,
+        "domain-root-subtree-{d}-{d}-{d}",
+        .{ context.worker_id, iteration, random.uintLessThan(u16, 10_000) },
+    );
+    const subtree_id = try appendNode(client, document_path, target_parent, "container", subtree_title_text);
+
+    var nested_title: [96]u8 = undefined;
+    const nested_title_text = try std.fmt.bufPrint(
+        &nested_title,
+        "domain-root-nested-{d}-{d}-{d}",
+        .{ context.worker_id, iteration, random.uintLessThan(u16, 10_000) },
+    );
+    const nested_id = try appendNode(client, document_path, subtree_id, "container", nested_title_text);
+
+    var leaf_title: [96]u8 = undefined;
+    const leaf_title_text = try std.fmt.bufPrint(
+        &leaf_title,
+        "domain-root-leaf-{d}-{d}-{d}",
+        .{ context.worker_id, iteration, random.uintLessThan(u16, 10_000) },
+    );
+    const leaf_id = try appendNode(client, document_path, nested_id, "text_leaf", leaf_title_text);
+
+    var chunk_buffer: [96]u8 = undefined;
+    const chunk = try std.fmt.bufPrint(&chunk_buffer, "domain-root-churn worker={d} iter={d}\n", .{ context.worker_id, iteration });
+    try appendTextChunk(client, document_path, leaf_id, chunk);
+    try removeNode(client, document_path, subtree_id);
+    return .domain_root_subtree;
 }
 
 fn runTtyChurn(
