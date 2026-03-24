@@ -736,7 +736,10 @@ pub const Store = struct {
 
     pub fn refreshSourcesForDocument(self: *Store, document: *document_mod.Document) !void {
         const document_path = self.documentPathFor(document);
-        for (document.nodeIdsInOrder()) |node_id| {
+        const node_ids = try document.collectPreorderNodeIdsAlloc(self.allocator);
+        defer self.allocator.free(node_ids);
+
+        for (node_ids) |node_id| {
             const node = document.findNode(node_id) orelse continue;
             switch (node.source) {
                 .none => {},
@@ -1169,7 +1172,9 @@ pub const Store = struct {
         const entry = self.documentEntryForPath(root_document_path) catch return null;
         entry.runtime.node_registry_mutex.lock();
         defer entry.runtime.node_registry_mutex.unlock();
-        for (self.rootDocument().nodeIdsInOrder()) |node_id| {
+        const node_ids = self.rootDocument().collectPreorderNodeIdsAlloc(self.allocator) catch return null;
+        defer self.allocator.free(node_ids);
+        for (node_ids) |node_id| {
             const node = self.rootDocument().findNodeConst(node_id) orelse continue;
             switch (node.source) {
                 .tty => |tty| {

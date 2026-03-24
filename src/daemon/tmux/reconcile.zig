@@ -68,15 +68,29 @@ pub fn findSessionProjectionNode(
     document: *document_mod.Document,
     session_id: []const u8,
 ) ?ids.NodeId {
+    const FindContext = struct {
+        target_session_id: []const u8,
+        found: ?ids.NodeId = null,
+    };
+
     const bid = formatBackendId(document.allocator, session_backend_prefix, session_id) catch return null;
     defer document.allocator.free(bid);
     if (document.findChildByBackendId(document.root_node_id, .subdocument, bid)) |node_id| return node_id;
-    for (document.nodeIdsInOrder()) |node_id| {
-        const node = document.findNodeConst(node_id) orelse continue;
-        if (node.kind != .subdocument) continue;
-        if (backendIdMatches(node.backend_id, session_backend_prefix, session_id)) return node.id;
-    }
-    return null;
+
+    var context = FindContext{ .target_session_id = session_id };
+    document.walkPreorder(&context, struct {
+        fn visit(ctx: *FindContext, _: ids.NodeId, node: *const muxml.Node) !void {
+            if (node.kind != .subdocument) return;
+            if (backendIdMatches(node.backend_id, session_backend_prefix, ctx.target_session_id)) {
+                ctx.found = node.id;
+                return error.Found;
+            }
+        }
+    }.visit) catch |err| switch (err) {
+        error.Found => {},
+        else => return null,
+    };
+    return context.found;
 }
 
 pub fn removeSessionProjection(
@@ -92,23 +106,37 @@ pub fn listSessionProjections(
     document: *document_mod.Document,
     allocator: std.mem.Allocator,
 ) ![]SessionProjectionRef {
+    const CollectContext = struct {
+        allocator: std.mem.Allocator,
+        projections: *std.array_list.Managed(SessionProjectionRef),
+    };
+
     var projections = std.array_list.Managed(SessionProjectionRef).init(allocator);
     errdefer {
         for (projections.items) |*projection| projection.deinit(allocator);
         projections.deinit();
     }
 
-    for (document.nodeIdsInOrder()) |node_id| {
-        const node = document.findNodeConst(node_id) orelse continue;
-        if (node.kind != .subdocument) continue;
-        const session_id = backendSuffix(node.backend_id, session_backend_prefix) orelse continue;
-        const parent_id = node.parent_id orelse continue;
-        try projections.append(.{
-            .node_id = node.id,
-            .parent_id = parent_id,
-            .session_id = try allocator.dupe(u8, session_id),
-        });
-    }
+    var context = CollectContext{
+        .allocator = allocator,
+        .projections = &projections,
+    };
+    try document.walkPreorder(&context, struct {
+        fn visit(
+            ctx: *CollectContext,
+            _: ids.NodeId,
+            node: *const muxml.Node,
+        ) !void {
+            if (node.kind != .subdocument) return;
+            const session_id = backendSuffix(node.backend_id, session_backend_prefix) orelse return;
+            const parent_id = node.parent_id orelse return;
+            try ctx.projections.append(.{
+                .node_id = node.id,
+                .parent_id = parent_id,
+                .session_id = try ctx.allocator.dupe(u8, session_id),
+            });
+        }
+    }.visit);
 
     return try projections.toOwnedSlice();
 }
