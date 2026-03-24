@@ -182,6 +182,21 @@ accepts overrides like `--seed`, `--seconds-per-transport`, and
 python3 tests/integration/transport_stress_test.py --seed 123 --seconds-per-transport 3 --transports h2
 ```
 
+To run the Unix-only high-contention daemon torture target, use:
+
+```sh
+zig build test-unix-contention-stress
+```
+
+It is intentionally separate from the transport suite and defaults to a brutal
+10-minute runtime over a single `unix://` daemon. For a shorter local repro
+while iterating, run the probe directly:
+
+```sh
+zig build
+MUXLY_TEST_DAEMON_BINARY=zig-out/bin/muxlyd zig-out/bin/muxly-unix-contention-stress-probe --seconds 30 --workers 16
+```
+
 To run the Docker-backed integration coverage explicitly, including the raw TCP
 path that requires
 `--i-know-this-is-unencrypted-and-unauthenticated`, use either:

@@ -197,7 +197,8 @@ test "tmux snapshot reconcile rejects mixed-session snapshots" {
 }
 
 fn findPaneNodeId(document: *muxly.document.Document, pane_id: []const u8) ?muxly.ids.NodeId {
-    for (document.nodes.items) |node| {
+    for (document.nodeIdsInOrder()) |node_id| {
+        const node = document.findNodeConst(node_id) orelse continue;
         if (node.kind != .tty_leaf) continue;
         switch (node.source) {
             .tty => |tty| {

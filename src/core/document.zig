@@ -19,11 +19,17 @@ pub const Document = struct {
     lifecycle: types.LifecycleState = .live,
     root_node_id: ids.NodeId,
     view_root_node_id: ?ids.NodeId = null,
-    nodes: std.ArrayListUnmanaged(muxml.Node) = .{},
+    nodes_by_id: std.AutoHashMapUnmanaged(ids.NodeId, *muxml.Node) = .{},
+    node_order: std.ArrayListUnmanaged(ids.NodeId) = .{},
     elided_node_ids: std.ArrayListUnmanaged(ids.NodeId) = .{},
     content_bytes: usize = 0,
     max_content_bytes: usize = limits.default_max_document_content_bytes,
     next_node_id: ids.NodeId,
+
+    pub const ValidationSummary = struct {
+        node_count: usize,
+        content_bytes: usize,
+    };
 
     /// Initializes a new live document with a root `document` node.
     pub fn init(allocator: std.mem.Allocator, id: ids.DocumentId, title: []const u8) !Document {
@@ -44,14 +50,25 @@ pub const Document = struct {
         );
         root_node.name = try muxml.defaultNodeName(allocator, title);
         root_node.follow_tail = false;
-        try document.nodes.append(allocator, root_node);
+        const root_node_ptr = try allocator.create(muxml.Node);
+        errdefer allocator.destroy(root_node_ptr);
+        root_node_ptr.* = root_node;
+
+        try document.nodes_by_id.put(allocator, root_node_ptr.id, root_node_ptr);
+        errdefer _ = document.nodes_by_id.remove(root_node_ptr.id);
+        try document.node_order.append(allocator, root_node_ptr.id);
         return document;
     }
 
     /// Releases all document-owned nodes and shared view state.
     pub fn deinit(self: *Document) void {
-        for (self.nodes.items) |*node| node.deinit(self.allocator);
-        self.nodes.deinit(self.allocator);
+        for (self.node_order.items) |node_id| {
+            const node = self.findNode(node_id) orelse continue;
+            node.deinit(self.allocator);
+            self.allocator.destroy(node);
+        }
+        self.nodes_by_id.deinit(self.allocator);
+        self.node_order.deinit(self.allocator);
         self.elided_node_ids.deinit(self.allocator);
         self.allocator.free(self.title);
     }
@@ -64,30 +81,37 @@ pub const Document = struct {
         title: []const u8,
         source: source_mod.Source,
     ) !ids.NodeId {
-        const parent_index = self.findNodeIndex(parent_id) orelse return error.UnknownParent;
+        const parent = self.findNode(parent_id) orelse return error.UnknownParent;
         const node_id = self.nextNodeId();
         var node = try muxml.Node.init(self.allocator, node_id, kind, title, parent_id, source);
         node.name = try self.defaultChildName(parent_id, title);
         if (kind == .static_file_leaf) node.follow_tail = false;
-        try self.nodes.append(self.allocator, node);
-        try self.nodes.items[parent_index].children.append(self.allocator, node_id);
+        const node_ptr = try self.allocator.create(muxml.Node);
+        errdefer self.allocator.destroy(node_ptr);
+        node_ptr.* = node;
+
+        try self.nodes_by_id.put(self.allocator, node_id, node_ptr);
+        errdefer _ = self.nodes_by_id.remove(node_id);
+        try self.node_order.append(self.allocator, node_id);
+        errdefer _ = self.node_order.pop();
+        try parent.children.append(self.allocator, node_id);
         return node_id;
     }
 
     /// Appends text to an existing node content buffer.
     pub fn appendTextToNode(self: *Document, node_id: ids.NodeId, chunk: []const u8) !void {
-        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
         try self.reserveAdditionalContentBytes(chunk.len, self.max_content_bytes);
-        try self.nodes.items[index].appendContent(self.allocator, chunk);
+        try node.appendContent(self.allocator, chunk);
         self.content_bytes += chunk.len;
     }
 
     /// Replaces a node's content.
     pub fn setNodeContent(self: *Document, node_id: ids.NodeId, content: []const u8) !void {
-        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
-        const existing_len = self.nodes.items[index].content.len;
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        const existing_len = node.content.len;
         try self.reserveReplacementContentBytes(existing_len, content.len, self.max_content_bytes);
-        try self.nodes.items[index].setContent(self.allocator, content);
+        try node.setContent(self.allocator, content);
         self.content_bytes = self.content_bytes - existing_len + content.len;
     }
 
@@ -98,37 +122,43 @@ pub const Document = struct {
 
     /// Replaces a node's title.
     pub fn setNodeTitle(self: *Document, node_id: ids.NodeId, title: []const u8) !void {
-        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
-        try self.nodes.items[index].setTitle(self.allocator, title);
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        try node.setTitle(self.allocator, title);
     }
 
     /// Replaces a node's stable URL-segment name.
     pub fn setNodeName(self: *Document, node_id: ids.NodeId, name: ?[]const u8) !void {
-        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
         if (name) |value| {
-            if (self.siblingNameInUse(self.nodes.items[index].parent_id, node_id, value)) {
+            if (self.siblingNameInUse(node.parent_id, node_id, value)) {
                 return error.DuplicateNodeName;
             }
         }
-        try self.nodes.items[index].setName(self.allocator, name);
+        try node.setName(self.allocator, name);
     }
 
     /// Finds a mutable node pointer by id.
     ///
-    /// The returned pointer borrows from `self.nodes` and must not be retained
-    /// across document mutations that can move or remove nodes.
+    /// The returned pointer remains stable across unrelated document mutations
+    /// and becomes invalid only after the pointed-at node is removed.
     pub fn findNode(self: *Document, node_id: ids.NodeId) ?*muxml.Node {
-        const index = self.findNodeIndex(node_id) orelse return null;
-        return &self.nodes.items[index];
+        return self.nodes_by_id.get(node_id);
     }
 
     /// Finds an immutable node pointer by id.
     ///
-    /// The returned pointer borrows from `self.nodes` and must not be retained
-    /// across document mutations that can move or remove nodes.
+    /// The returned pointer remains stable across unrelated document mutations
+    /// and becomes invalid only after the pointed-at node is removed.
     pub fn findNodeConst(self: *const Document, node_id: ids.NodeId) ?*const muxml.Node {
-        const index = self.findNodeIndexConst(node_id) orelse return null;
-        return &self.nodes.items[index];
+        return self.nodes_by_id.get(node_id);
+    }
+
+    pub fn nodeCount(self: *const Document) usize {
+        return self.node_order.items.len;
+    }
+
+    pub fn nodeIdsInOrder(self: *const Document) []const ids.NodeId {
+        return self.node_order.items;
     }
 
     /// Returns whether `candidate_id` is `root_id` or a descendant of it.
@@ -145,28 +175,32 @@ pub const Document = struct {
     ///
     /// Callers must remove descendants before removing a parent node.
     pub fn removeNode(self: *Document, node_id: ids.NodeId) !void {
-        const index = self.findNodeIndex(node_id) orelse return error.UnknownNode;
-        if (self.nodes.items[index].children.items.len != 0) return error.NodeHasChildren;
-        const node_content_len = self.nodes.items[index].content.len;
+        const node = self.findNode(node_id) orelse return error.UnknownNode;
+        if (node.children.items.len != 0) return error.NodeHasChildren;
+        const node_content_len = node.content.len;
         if (node_content_len > self.content_bytes) return error.ContentAccountingDrift;
 
-        if (self.nodes.items[index].parent_id) |parent_id| {
-            const parent_index = self.findNodeIndex(parent_id) orelse return error.UnknownParent;
+        if (node.parent_id) |parent_id| {
+            const parent = self.findNode(parent_id) orelse return error.UnknownParent;
             var child_index: ?usize = null;
-            for (self.nodes.items[parent_index].children.items, 0..) |child_id, idx| {
+            for (parent.children.items, 0..) |child_id, idx| {
                 if (child_id == node_id) {
                     child_index = idx;
                     break;
                 }
             }
             if (child_index) |idx| {
-                _ = self.nodes.items[parent_index].children.swapRemove(idx);
+                _ = parent.children.swapRemove(idx);
             }
         }
 
         self.content_bytes -= node_content_len;
-        self.nodes.items[index].deinit(self.allocator);
-        _ = self.nodes.swapRemove(index);
+        _ = self.nodes_by_id.remove(node_id);
+        if (self.findNodeOrderIndex(node_id)) |order_index| {
+            _ = self.node_order.orderedRemove(order_index);
+        }
+        node.deinit(self.allocator);
+        self.allocator.destroy(node);
 
         if (self.view_root_node_id != null and self.view_root_node_id.? == node_id) {
             self.view_root_node_id = null;
@@ -210,7 +244,7 @@ pub const Document = struct {
 
     /// Sets the current shared document-scoped view root.
     pub fn setViewRoot(self: *Document, node_id: ids.NodeId) !void {
-        _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        _ = self.findNode(node_id) orelse return error.UnknownNode;
         self.view_root_node_id = node_id;
     }
 
@@ -227,7 +261,7 @@ pub const Document = struct {
 
     /// Toggles whether a node is hidden by shared document elision state.
     pub fn toggleElided(self: *Document, node_id: ids.NodeId) !void {
-        _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        _ = self.findNode(node_id) orelse return error.UnknownNode;
         for (self.elided_node_ids.items, 0..) |existing, index| {
             if (existing == node_id) {
                 _ = self.elided_node_ids.swapRemove(index);
@@ -239,7 +273,7 @@ pub const Document = struct {
 
     /// Sets whether a node is hidden by shared document elision state.
     pub fn setElided(self: *Document, node_id: ids.NodeId, enabled: bool) !void {
-        _ = self.findNodeIndex(node_id) orelse return error.UnknownNode;
+        _ = self.findNode(node_id) orelse return error.UnknownNode;
         for (self.elided_node_ids.items, 0..) |existing, index| {
             if (existing == node_id) {
                 if (!enabled) _ = self.elided_node_ids.swapRemove(index);
@@ -261,7 +295,8 @@ pub const Document = struct {
     }
 
     pub fn findNodeByBackendId(self: *Document, backend_id: []const u8) ?*muxml.Node {
-        for (self.nodes.items) |*node| {
+        for (self.node_order.items) |node_id| {
+            const node = self.findNode(node_id) orelse continue;
             if (node.backend_id) |bid| {
                 if (std.mem.eql(u8, bid, backend_id)) return node;
             }
@@ -336,7 +371,8 @@ pub const Document = struct {
             try writer.print("{d}", .{elided});
         }
         try writer.writeAll("],\"nodes\":[");
-        for (self.nodes.items, 0..) |node, index| {
+        for (self.node_order.items, 0..) |node_id, index| {
+            const node = self.findNodeConst(node_id) orelse continue;
             if (index != 0) try writer.writeAll(",");
             try node.writeJson(writer);
         }
@@ -354,7 +390,7 @@ pub const Document = struct {
         } else {
             try writer.writeAll("\"viewRootNodeId\":null,");
         }
-        try writer.print("\"nodeCount\":{d},", .{self.nodes.items.len});
+        try writer.print("\"nodeCount\":{d},", .{self.node_order.items.len});
         try writer.print("\"elidedCount\":{d}", .{self.elided_node_ids.items.len});
         try writer.writeAll("}");
     }
@@ -368,22 +404,72 @@ pub const Document = struct {
         try writer.writeAll("<title>");
         try writeEscapedXml(writer, self.title);
         try writer.writeAll("</title><nodes>");
-        for (self.nodes.items) |node| try node.writeXml(writer);
+        for (self.node_order.items) |node_id| {
+            const node = self.findNodeConst(node_id) orelse continue;
+            try node.writeXml(writer);
+        }
         try writer.writeAll("</nodes></muxml>");
     }
 
-    fn findNodeIndex(self: *Document, node_id: ids.NodeId) ?usize {
-        for (self.nodes.items, 0..) |node, index| {
-            if (node.id == node_id) return index;
-        }
-        return null;
-    }
+    pub fn validate(self: *const Document) !ValidationSummary {
+        var seen = std.AutoHashMap(ids.NodeId, void).init(self.allocator);
+        defer seen.deinit();
 
-    fn findNodeIndexConst(self: *const Document, node_id: ids.NodeId) ?usize {
-        for (self.nodes.items, 0..) |node, index| {
-            if (node.id == node_id) return index;
+        var computed_content_bytes: usize = 0;
+        var root_found = false;
+
+        for (self.node_order.items) |node_id| {
+            const node = self.findNodeConst(node_id) orelse return error.UnknownNode;
+            const entry = try seen.getOrPut(node.id);
+            if (entry.found_existing) return error.DuplicateNodeId;
+            computed_content_bytes += node.content.len;
+
+            if (node.id == self.root_node_id) {
+                root_found = true;
+                if (node.parent_id != null) return error.RootNodeHasParent;
+                if (node.kind != .document) return error.RootNodeKindMismatch;
+            } else {
+                const parent_id = node.parent_id orelse return error.NonRootNodeMissingParent;
+                const parent = self.findNodeConst(parent_id) orelse return error.UnknownParent;
+
+                var linked_from_parent = false;
+                for (parent.children.items) |child_id| {
+                    if (child_id == node.id) {
+                        linked_from_parent = true;
+                        break;
+                    }
+                }
+                if (!linked_from_parent) return error.ParentMissingChildLink;
+            }
+
+            var child_seen = std.AutoHashMap(ids.NodeId, void).init(self.allocator);
+            defer child_seen.deinit();
+            for (node.children.items) |child_id| {
+                const child_entry = try child_seen.getOrPut(child_id);
+                if (child_entry.found_existing) return error.DuplicateChildLink;
+
+                const child = self.findNodeConst(child_id) orelse return error.UnknownChild;
+                if (child.parent_id == null or child.parent_id.? != node.id) {
+                    return error.ChildParentMismatch;
+                }
+            }
         }
-        return null;
+
+        if (!root_found) return error.MissingRootNode;
+        if (computed_content_bytes != self.content_bytes) return error.ContentAccountingDrift;
+
+        if (self.view_root_node_id) |view_root_node_id| {
+            _ = self.findNodeConst(view_root_node_id) orelse return error.UnknownViewRootNode;
+        }
+
+        for (self.elided_node_ids.items) |node_id| {
+            _ = self.findNodeConst(node_id) orelse return error.UnknownElidedNode;
+        }
+
+        return .{
+            .node_count = self.node_order.items.len,
+            .content_bytes = computed_content_bytes,
+        };
     }
 
     fn reserveAdditionalContentBytes(
@@ -415,6 +501,13 @@ pub const Document = struct {
         const id = self.next_node_id;
         self.next_node_id += 1;
         return id;
+    }
+
+    fn findNodeOrderIndex(self: *const Document, node_id: ids.NodeId) ?usize {
+        for (self.node_order.items, 0..) |listed_id, index| {
+            if (listed_id == node_id) return index;
+        }
+        return null;
     }
 
     fn defaultChildName(self: *const Document, parent_id: ids.NodeId, title: []const u8) !?[]u8 {

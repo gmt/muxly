@@ -43,7 +43,8 @@ test "tmux snapshots can rebuild projected subtree from external tmux state" {
     try std.testing.expect(session_node.children.items.len >= 1);
 
     var pane_count: usize = 0;
-    for (document.nodes.items) |node| {
+    for (document.nodeIdsInOrder()) |node_id| {
+        const node = document.findNodeConst(node_id) orelse continue;
         if (node.kind != .tty_leaf) continue;
         switch (node.source) {
             .tty => |tty| {

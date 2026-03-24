@@ -71,7 +71,8 @@ pub fn findSessionProjectionNode(
     const bid = formatBackendId(document.allocator, session_backend_prefix, session_id) catch return null;
     defer document.allocator.free(bid);
     if (document.findChildByBackendId(document.root_node_id, .subdocument, bid)) |node_id| return node_id;
-    for (document.nodes.items) |node| {
+    for (document.nodeIdsInOrder()) |node_id| {
+        const node = document.findNodeConst(node_id) orelse continue;
         if (node.kind != .subdocument) continue;
         if (backendIdMatches(node.backend_id, session_backend_prefix, session_id)) return node.id;
     }
@@ -97,7 +98,8 @@ pub fn listSessionProjections(
         projections.deinit();
     }
 
-    for (document.nodes.items) |node| {
+    for (document.nodeIdsInOrder()) |node_id| {
+        const node = document.findNodeConst(node_id) orelse continue;
         if (node.kind != .subdocument) continue;
         const session_id = backendSuffix(node.backend_id, session_backend_prefix) orelse continue;
         const parent_id = node.parent_id orelse continue;

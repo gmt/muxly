@@ -240,8 +240,8 @@ pub const Store = struct {
 
     pub fn refreshSourcesForDocument(self: *Store, document: *document_mod.Document) !void {
         const document_path = self.documentPathFor(document);
-        for (document.nodes.items) |*node| {
-            const node_id = node.id;
+        for (document.nodeIdsInOrder()) |node_id| {
+            const node = document.findNode(node_id) orelse continue;
             switch (node.source) {
                 .none => {},
                 .tty => |tty| {
@@ -516,6 +516,67 @@ pub const Store = struct {
         );
     }
 
+    pub fn appendTextChunk(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+    ) !void {
+        try document.appendTextToNode(node_id, chunk);
+        self.notifyInvalidate(document_path, document, node_id, .content);
+    }
+
+    pub fn attachSyntheticTty(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        parent_id: ids.NodeId,
+        title: []const u8,
+        session_name: []const u8,
+    ) !ids.NodeId {
+        const node_id = try document.appendNode(
+            parent_id,
+            .tty_leaf,
+            title,
+            .{ .tty = .{
+                .session_name = @constCast(session_name),
+                .window_id = null,
+                .pane_id = null,
+            } },
+        );
+        self.notifyInvalidate(document_path, document, node_id, .structure);
+        return node_id;
+    }
+
+    pub fn pushSyntheticTtyChunk(
+        self: *Store,
+        document_path: []const u8,
+        document: *document_mod.Document,
+        node_id: ids.NodeId,
+        chunk: []const u8,
+    ) !void {
+        const node = document.findNode(node_id) orelse return error.UnknownNode;
+        switch (node.source) {
+            .tty => |tty| {
+                if (tty.pane_id != null) return error.InvalidSourceKind;
+            },
+            else => return error.InvalidSourceKind,
+        }
+
+        try document.appendTextToNode(node_id, chunk);
+        self.notifyInvalidate(document_path, document, node_id, .content);
+        self.notifyTtyData(document_path, document, node_id, chunk);
+    }
+
+    pub fn validateDocument(
+        self: *Store,
+        document: *const document_mod.Document,
+    ) !document_mod.Document.ValidationSummary {
+        _ = self;
+        return try document.validate();
+    }
+
     pub fn freezeTerminalNode(
         self: *Store,
         document: *document_mod.Document,
@@ -559,7 +620,8 @@ pub const Store = struct {
     }
 
     pub fn findNodeIdByPaneId(self: *Store, pane_id: []const u8) ?ids.NodeId {
-        for (self.rootDocument().nodes.items) |node| {
+        for (self.rootDocument().nodeIdsInOrder()) |node_id| {
+            const node = self.rootDocument().findNodeConst(node_id) orelse continue;
             switch (node.source) {
                 .tty => |tty| {
                     if (tty.pane_id) |value| {

@@ -110,8 +110,9 @@ pub fn handleRequest(
         defer entry.mutex.unlock();
     }
     const document = if (document_entry) |entry| &entry.document else store.rootDocument();
+    const debug_rpc_enabled = debugRpcEnabled(allocator);
 
-    if (std.mem.eql(u8, parsed.value.method, "debug.sleep") and debugRpcEnabled(allocator)) {
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.sleep")) {
         const ms = protocol.getInteger(parsed.value.params, "ms") orelse
             return try buildError(allocator, parsed.value.id, .invalid_params, "ms is required");
         if (ms < 0) {
@@ -126,6 +127,70 @@ pub fn handleRequest(
         );
         defer allocator.free(result_json);
         return try buildResult(allocator, parsed.value.id, result_json);
+    }
+
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.document.validate")) {
+        const summary = store.validateDocument(document) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "document validation failed: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_request, message);
+        };
+
+        const result_json = try std.fmt.allocPrint(
+            allocator,
+            "{{\"ok\":true,\"nodeCount\":{d},\"contentBytes\":{d}}}",
+            .{ summary.node_count, summary.content_bytes },
+        );
+        defer allocator.free(result_json);
+        return try buildResult(allocator, parsed.value.id, result_json);
+    }
+
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.text.append")) {
+        const node_id = requestNodeIdOrError(document, parsed.value) catch |err|
+            return try buildNodeTargetError(allocator, parsed.value.id, err);
+        const chunk = protocol.getString(parsed.value.params, "chunk") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "chunk is required");
+        store.appendTextChunk(document_path, document, @intCast(node_id), chunk) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to append text: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
+    }
+
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.tty.attach")) {
+        const parent_id = protocol.getInteger(parsed.value.params, "parentId") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "parentId is required");
+        if (parent_id < 0) {
+            return try buildError(allocator, parsed.value.id, .invalid_params, "parentId must be non-negative");
+        }
+        const title = protocol.getString(parsed.value.params, "title") orelse "synthetic-tty";
+        const session_name = protocol.getString(parsed.value.params, "sessionName") orelse "synthetic-tty";
+        const node_id = store.attachSyntheticTty(
+            document_path,
+            document,
+            @intCast(parent_id),
+            title,
+            session_name,
+        ) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to attach synthetic tty: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildNodeAttached(allocator, parsed.value.id, node_id, "tty");
+    }
+
+    if (debug_rpc_enabled and std.mem.eql(u8, parsed.value.method, "debug.tty.push")) {
+        const node_id = requestNodeIdOrError(document, parsed.value) catch |err|
+            return try buildNodeTargetError(allocator, parsed.value.id, err);
+        const chunk = protocol.getString(parsed.value.params, "chunk") orelse
+            return try buildError(allocator, parsed.value.id, .invalid_params, "chunk is required");
+        store.pushSyntheticTtyChunk(document_path, document, @intCast(node_id), chunk) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "unable to push synthetic tty chunk: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return try buildError(allocator, parsed.value.id, .invalid_params, message);
+        };
+        return try buildResult(allocator, parsed.value.id, "{\"ok\":true}");
     }
 
     if (std.mem.eql(u8, document_path, "/")) {
@@ -698,7 +763,7 @@ fn writeDocumentSummary(
     try writer.print(",\"lifecycle\":\"{s}\"", .{@tagName(document.lifecycle)});
     try writer.print(",\"retentionPolicy\":\"{s}\"", .{document_retention_policy});
     try writer.print(",\"rootNodeId\":{d}", .{document.root_node_id});
-    try writer.print(",\"nodeCount\":{d}", .{document.nodes.items.len});
+    try writer.print(",\"nodeCount\":{d}", .{document.nodeCount()});
     try writer.writeAll("}");
 }
 
@@ -721,7 +786,7 @@ fn writeDocumentStatus(
     } else {
         try writer.writeAll("\"viewRootNodeId\":null,");
     }
-    try writer.print("\"nodeCount\":{d},", .{document.nodes.items.len});
+    try writer.print("\"nodeCount\":{d},", .{document.nodeCount()});
     try writer.print("\"elidedCount\":{d}", .{document.elided_node_ids.items.len});
     try writer.writeAll("}");
 }
@@ -839,6 +904,10 @@ fn requestRunsOnDocumentLane(method: []const u8, params: ?std.json.Value) bool {
         std.mem.eql(u8, method, "document.serialize") or
         std.mem.eql(u8, method, "document.freeze") or
         std.mem.eql(u8, method, "debug.sleep") or
+        std.mem.eql(u8, method, "debug.document.validate") or
+        std.mem.eql(u8, method, "debug.text.append") or
+        std.mem.eql(u8, method, "debug.tty.attach") or
+        std.mem.eql(u8, method, "debug.tty.push") or
         std.mem.eql(u8, method, "node.get") or
         std.mem.eql(u8, method, "node.append") or
         std.mem.eql(u8, method, "node.update") or

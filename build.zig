@@ -5,6 +5,7 @@ const transport_bridge_unit_timeout_seconds: u32 = 600;
 const transport_integration_timeout_seconds: u32 = 900;
 const docker_transport_timeout_seconds: u32 = 1_200;
 const transport_stress_timeout_seconds: u32 = 2_700;
+const unix_contention_stress_timeout_seconds: u32 = 1_200;
 
 fn envVarEnabled(allocator: std.mem.Allocator, name: []const u8) bool {
     const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
@@ -132,6 +133,20 @@ pub fn build(b: *std.Build) void {
     });
     const install_async_transport_stress_probe = b.addInstallArtifact(async_transport_stress_probe, .{});
     b.getInstallStep().dependOn(&install_async_transport_stress_probe.step);
+
+    const unix_contention_stress_probe = b.addExecutable(.{
+        .name = "muxly-unix-contention-stress-probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/unix_contention_stress_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "muxly", .module = muxly_module },
+            },
+        }),
+    });
+    const install_unix_contention_stress_probe = b.addInstallArtifact(unix_contention_stress_probe, .{});
+    b.getInstallStep().dependOn(&install_unix_contention_stress_probe.step);
 
     const install_transport_bridge = b.addInstallDirectory(.{
         .source_dir = b.path("tools/transport_bridge"),
@@ -323,6 +338,23 @@ pub fn build(b: *std.Build) void {
     );
     test_transport_stress_step.dependOn(&run_transport_stress_tests.step);
 
+    const run_unix_contention_stress = addTimedSystemCommand(b, unix_contention_stress_timeout_seconds, &.{
+        b.getInstallPath(.prefix, "bin/muxly-unix-contention-stress-probe"),
+    });
+    run_unix_contention_stress.setCwd(b.path("."));
+    run_unix_contention_stress.step.dependOn(&install_daemon.step);
+    run_unix_contention_stress.step.dependOn(&install_unix_contention_stress_probe.step);
+    run_unix_contention_stress.setEnvironmentVariable(
+        "MUXLY_TEST_DAEMON_BINARY",
+        b.getInstallPath(.prefix, "bin/muxlyd"),
+    );
+
+    const test_unix_contention_stress_step = b.step(
+        "test-unix-contention-stress",
+        "Run the Unix-only high-contention daemon stress probe",
+    );
+    test_unix_contention_stress_step.dependOn(&run_unix_contention_stress.step);
+
     const test_ci_step = b.step(
         "test-ci",
         "Run CI tests; add Docker transport coverage when MUXLY_ENABLE_DOCKER_TESTS is enabled",
@@ -358,6 +390,12 @@ pub fn build(b: *std.Build) void {
         "Build async transport stress probe",
     );
     async_transport_stress_probe_step.dependOn(&install_async_transport_stress_probe.step);
+
+    const unix_contention_stress_probe_step = b.step(
+        "unix-contention-stress-probe",
+        "Build the Unix-only contention stress probe",
+    );
+    unix_contention_stress_probe_step.dependOn(&install_unix_contention_stress_probe.step);
 
     const ffi_docs_step = b.step("docs-ffi", "Build generated C/FFI reference docs");
     ffi_docs_step.dependOn(&build_ffi_docs.step);
