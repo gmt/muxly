@@ -42,6 +42,7 @@ const DomainWritePlan = union(enum) {
 };
 
 const RemoveExecutionMode = enum {
+    root_policy_reject,
     leaf_domain_safe,
     leaf_coordinator,
     recursive_domain_safe,
@@ -926,7 +927,7 @@ pub const Store = struct {
         switch (mode) {
             .leaf_domain_safe, .leaf_coordinator => try document.removeNode(node_id),
             .recursive_domain_safe, .recursive_coordinator_safe => try document.removeSubtree(node_id),
-            .unsupported => return error.NodeHasChildren,
+            .root_policy_reject, .unsupported => return error.NodeHasChildren,
         }
         self.notifyInvalidate(document_path, document, node_id, .structure);
     }
@@ -1238,6 +1239,7 @@ pub const Store = struct {
         };
         switch (mode) {
             .leaf_domain_safe, .recursive_domain_safe => {},
+            .root_policy_reject,
             .leaf_coordinator,
             .recursive_coordinator_safe,
             .unsupported,
@@ -1333,7 +1335,7 @@ fn classifyRemoveExecutionMode(
     document: *const document_mod.Document,
     node_id: ids.NodeId,
 ) !RemoveExecutionMode {
-    if (node_id == document.root_node_id) return .unsupported;
+    if (node_id == document.root_node_id) return .root_policy_reject;
 
     const node = document.findNodeConst(node_id) orelse return error.UnknownNode;
     const parent_id = node.parent_id orelse return error.UnknownParent;

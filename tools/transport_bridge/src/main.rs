@@ -2302,6 +2302,17 @@ mod tests {
     }
 
     #[test]
+    fn classify_upstream_lane_key_keeps_root_target_node_remove_on_document_lane() {
+        let request =
+            br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo","nodeId":1},"method":"node.remove","params":{}}"#;
+
+        assert_eq!(
+            classify_upstream_lane_key(request),
+            UpstreamLaneKey::Document("/demo".to_string())
+        );
+    }
+
+    #[test]
     fn classify_upstream_lane_key_keeps_root_only_requests_on_root_lane() {
         let request = br#"{"jsonrpc":"2.0","id":1,"target":{"documentPath":"/demo"},"method":"session.create","params":{"sessionName":"demo"}}"#;
         let envelope = format!(
