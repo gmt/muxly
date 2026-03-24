@@ -787,6 +787,72 @@ test "request guards keep current-domain-root subtree remove on the coordinator 
     try std.testing.expect(acquired.load(.acquire));
 }
 
+test "request guards keep first-layer island-root subtree remove on the coordinator path" {
+    var store = try router.Store.init(std.testing.allocator);
+    defer store.deinit();
+
+    const document = try store.createDocument("/demo", null);
+    const island_a = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-a");
+    const island_b = try store.appendNode("/demo", document, document.root_node_id, .subdocument, "island-b");
+    _ = try store.appendNode("/demo", document, island_a, .container, "nested");
+    const leaf_b = try store.appendNode("/demo", document, island_b, .text_leaf, "leaf-b");
+
+    const slow_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.update\",\"params\":{{\"title\":\"renamed\"}}}}",
+        .{leaf_b},
+    );
+    defer std.testing.allocator.free(slow_request);
+    const remove_request = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"target\":{{\"documentPath\":\"/demo\",\"nodeId\":{d}}},\"method\":\"node.remove\",\"params\":{{}}}}",
+        .{island_a},
+    );
+    defer std.testing.allocator.free(remove_request);
+
+    var slow_guard = try store.acquireRequestGuard(std.testing.allocator, slow_request);
+    errdefer slow_guard.release();
+
+    const ThreadContext = struct {
+        store: *router.Store,
+        request: []const u8,
+        acquired: *std.atomic.Value(bool),
+        mutex: *std.Thread.Mutex,
+        failure: *?anyerror,
+
+        fn run(context: *@This()) void {
+            var guard = context.store.acquireRequestGuard(std.heap.page_allocator, context.request) catch |err| {
+                context.mutex.lock();
+                context.failure.* = err;
+                context.mutex.unlock();
+                return;
+            };
+            defer guard.release();
+            context.acquired.store(true, .release);
+        }
+    };
+
+    var acquired = std.atomic.Value(bool).init(false);
+    var failure: ?anyerror = null;
+    var failure_mutex = std.Thread.Mutex{};
+    var context = ThreadContext{
+        .store = &store,
+        .request = remove_request,
+        .acquired = &acquired,
+        .mutex = &failure_mutex,
+        .failure = &failure,
+    };
+
+    const worker = try std.Thread.spawn(.{}, ThreadContext.run, .{&context});
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!acquired.load(.acquire));
+
+    slow_guard.release();
+    worker.join();
+    if (failure) |err| return err;
+    try std.testing.expect(acquired.load(.acquire));
+}
+
 test "request guards let horizontal and vertical split siblings acquire separate domains while same-child work stays serialized" {
     var store = try router.Store.init(std.testing.allocator);
     defer store.deinit();

@@ -179,7 +179,8 @@ pub fn runTransportScenario(
             try runPublicVerticalDomainRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicDomainSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
             try runPublicCoordinatorSafeSubtreeRemoveSucceeds(allocator, kind, daemon.actual_spec);
-            try runPublicUnsupportedSubtreeRemoveRejects(allocator, kind, daemon.actual_spec);
+            try runPublicIslandRootRemoveSucceeds(allocator, kind, daemon.actual_spec);
+            try runPublicDocumentRootRemoveRejects(allocator, kind, daemon.actual_spec);
             try runDifferentIslandTextAppendOverlap(allocator, kind, daemon.actual_spec);
             try runSameIslandTextAppendSerialization(allocator, kind, daemon.actual_spec);
             try runDifferentIslandTtyPushOverlap(allocator, kind, daemon.actual_spec);
@@ -1397,7 +1398,7 @@ fn runPublicCoordinatorSafeSubtreeRemoveSucceeds(
     try expectNodeMissing(allocator, &client, "/a", leaf);
 }
 
-fn runPublicUnsupportedSubtreeRemoveRejects(
+fn runPublicIslandRootRemoveSucceeds(
     allocator: std.mem.Allocator,
     kind: TransportKind,
     actual_spec: []const u8,
@@ -1406,12 +1407,37 @@ fn runPublicUnsupportedSubtreeRemoveRejects(
     var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
     defer client.deinit();
 
-    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-subtree-unsupported");
-    _ = try appendNode(allocator, &client, "/a", island, .text_leaf, "leaf");
+    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-island-root");
+    const nested = try appendNode(allocator, &client, "/a", island, .container, "nested");
+    const leaf = try appendNode(allocator, &client, "/a", nested, .text_leaf, "leaf");
 
     const response = try client.requestTarget(.{
         .documentPath = "/a",
         .nodeId = island,
+    }, "node.remove", "{}");
+    defer allocator.free(response);
+    try expectOk(allocator, response);
+
+    try expectNodeMissing(allocator, &client, "/a", island);
+    try expectNodeMissing(allocator, &client, "/a", nested);
+    try expectNodeMissing(allocator, &client, "/a", leaf);
+}
+
+fn runPublicDocumentRootRemoveRejects(
+    allocator: std.mem.Allocator,
+    kind: TransportKind,
+    actual_spec: []const u8,
+) !void {
+    _ = kind;
+    var client = try muxly.client.ConversationClient.init(allocator, actual_spec);
+    defer client.deinit();
+
+    const island = try appendNode(allocator, &client, "/a", 1, .subdocument, "public-root-reject-island");
+    _ = try appendNode(allocator, &client, "/a", island, .text_leaf, "leaf");
+
+    const response = try client.requestTarget(.{
+        .documentPath = "/a",
+        .nodeId = 1,
     }, "node.remove", "{}");
     defer allocator.free(response);
     try expectErrorMessageSuffix(allocator, response, "NodeHasChildren");

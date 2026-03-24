@@ -1345,7 +1345,7 @@ fn classifyRemoveExecutionMode(
         return .leaf_domain_safe;
     }
 
-    if (parent_id == document.root_node_id) return .unsupported;
+    if (parent_id == document.root_node_id) return .recursive_coordinator_safe;
     if (parent.kind == .h_container or parent.kind == .v_container) return .recursive_coordinator_safe;
 
     const concurrent_kinds = enabledConcurrentContainerKinds();
